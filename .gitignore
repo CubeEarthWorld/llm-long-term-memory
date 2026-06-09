@@ -3,7 +3,11 @@
 secrets/
 
 # Generated data & caches
-data/
+# Keep CSV prompts and seed data under version control; ignore runtime artifacts only.
+data/*.db
+data/*.db-*
+data/*.log
+data/*.json
 model/
 .venv/
 venv/
