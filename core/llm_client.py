@@ -1,6 +1,7 @@
 """Unified LLM client for the LLM Long-Term Memory prototype."""
 from __future__ import annotations
 
+import csv
 import json
 import os
 import re
@@ -8,11 +9,80 @@ import time
 from dataclasses import dataclass
 from typing import Dict, List, Optional
 
-SYSTEM_PROMPT = (
+_DEFAULT_SYSTEM_PROMPT = (
     "あなたは長期記憶を持つ日本語アシスタントです。"
     "想起された記憶だけを過去文脈として扱い、現在のユーザー発話に簡潔に答えてください。"
     "記憶が空、または無関係な場合は無理に参照しないでください。"
 )
+
+_DEFAULT_USER_TEMPLATE = (
+    "# 想起された記憶\n{memory_pack}\n\n"
+    "# ユーザーの発話\n{user_text}\n\n"
+    "# あなたの応答（簡潔に）"
+)
+
+_DEFAULT_EXTRACT_INSTRUCTION = (
+    "次のユーザー発話とアシスタント応答から、長期記憶に保存すべき重要情報だけを抽出してください。\n"
+    "保存対象は、ユーザーの好み、名前、所属、継続的な予定や制約、明示的な指示、"
+    "あとで役立つ安定した事実です。\n"
+    "保存しない対象は、挨拶、一時的な雑談、天気のような一般知識、単発の質問です。\n"
+    "1つの発話に独立した複数の事実が含まれる場合は、無理に1件へまとめず、"
+    "事実ごとに別々の memory に分割してください（1 memory = 1 つの事実）。"
+    "保存すべき事実が1つだけのとき、または無いときは、1件のみ、または空配列にしてください。\n"
+    "JSON オブジェクト {{\"memories\": [...]}} のみを返してください。該当なしは {{\"memories\": []}}。\n"
+    "各 memory の形式: {schema}\n\n"
+    "# ユーザー発話\n{user_text}\n\n"
+    "# アシスタント応答\n{assistant_text}"
+)
+
+_DEFAULT_EXTRACT_SYSTEM_PROMPT = "You are a memory extraction engine. Return JSON only."
+
+_DEFAULT_DREAM_INSTRUCTION = (
+    "あなたは長期記憶を「夢を見る」ように整理する統合エンジンです。\n"
+    "以下は同じ意味クラスタに属する記憶の一覧です。各記憶には内容時刻"
+    "(updated_at_local / updated_at_unix / timezone)と重要度 w、保持率 r(0-1, 想起しやすさ) があります。\n\n"
+    "次のいずれかを選んでください:\n"
+    "- merge: 重複や関連する記憶を、より少数の記憶へ統合・抽象化する。"
+    "細かい具体やエピソードの枝葉は削り、後で役立つ要点(gist)を残す。"
+    "古くなった内容は現在時刻を踏まえて更新する"
+    "(例『7月に旅行予定』→『2026年7月に旅行済み』)。矛盾は新しい時刻のものを優先。\n"
+    "- split: 1つの記憶に複数の事実が詰め込まれている場合、独立した記憶へ分割する。\n"
+    "- none: 整理が不要なら何もしない。\n\n"
+    "無理に1つへまとめる必要はありません。異なる事実は別々の記憶として残してください"
+    "(例: 10件を3件にする等)。\n"
+    "新しい各記憶には text, w(0.0-1.0), provenance(user|inferred), "
+    "timezone(IANA名 例 Asia/Tokyo) を必ず書いてください。\n"
+    "出力は JSON オブジェクトのみ: "
+    '{"action": "merge|split|none", "memories": [{"text": "...", "w": 0.7, '
+    '"provenance": "user", "timezone": "Asia/Tokyo"}]}\n'
+    "action が none のときは memories を空配列にしてください。\n\n"
+    "# クラスタ内の記憶\n{listing}\n"
+)
+
+_DEFAULT_DREAM_SYSTEM_PROMPT = "You are a memory consolidation engine. Return JSON only."
+
+_DEFAULT_EXTRACT_SCHEMA = (
+    '{"text": "保存する短い記憶", "w": 0.0-1.0 の重要度, '
+    '"provenance": "user または inferred"}'
+)
+
+
+def _load_prompts(path: Optional[str] = None) -> Dict[str, str]:
+    if path is None:
+        path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "prompts.csv")
+    if not os.path.exists(path):
+        return {}
+    prompts: Dict[str, str] = {}
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            for row in csv.DictReader(f):
+                key = (row.get("key") or "").strip()
+                prompt = (row.get("prompt") or "").strip()
+                if key:
+                    prompts[key] = prompt
+    except Exception:
+        pass
+    return prompts
 
 
 @dataclass
@@ -33,6 +103,7 @@ class LLMClient:
         gemini_model: str = "gemini-3.5-flash",
         temperature: float = 0.7,
         max_output_tokens: int = 1024,
+        prompts: Optional[Dict[str, str]] = None,
     ):
         self.provider = provider.lower()
         self.deepseek_model = deepseek_model
@@ -42,6 +113,7 @@ class LLMClient:
         self.max_output_tokens = max_output_tokens
         self.init_error: Optional[str] = None
         self._client = None
+        self._prompts = prompts if prompts is not None else _load_prompts()
         self._init()
 
     @property
@@ -76,25 +148,26 @@ class LLMClient:
             return f"ERROR - {self.init_error}"
         return f"OK - {self.provider}:{self.model}"
 
+    def _get_prompt(self, key: str, default: str) -> str:
+        return self._prompts.get(key, default)
+
     def _build_prompt(self, memory_pack: str, user_text: str) -> str:
         pack = memory_pack.strip() or "(関連する記憶なし)"
-        return (
-            f"# 想起された記憶\n{pack}\n\n"
-            f"# ユーザーの発話\n{user_text}\n\n"
-            "# あなたの応答（簡潔に）"
-        )
+        template = self._get_prompt("user_prompt_template", _DEFAULT_USER_TEMPLATE)
+        return template.replace("{memory_pack}", pack).replace("{user_text}", user_text)
 
     def respond(self, memory_pack: str, user_text: str) -> LLMResult:
         """Generate an assistant response given recalled memories and the current user utterance."""
         prompt = self._build_prompt(memory_pack, user_text)
         if self._client is None:
             return LLMResult("", 0.0, False, self.init_error, prompt)
+        system_prompt = self._get_prompt("system_prompt", _DEFAULT_SYSTEM_PROMPT)
         t0 = time.perf_counter()
         try:
             if self.provider == "deepseek":
-                text = self._deepseek_chat(SYSTEM_PROMPT, prompt, json_mode=False)
+                text = self._deepseek_chat(system_prompt, prompt, json_mode=False)
             else:
-                text = self._gemini_chat(SYSTEM_PROMPT, prompt)
+                text = self._gemini_chat(system_prompt, prompt)
             dt = (time.perf_counter() - t0) * 1000.0
             return LLMResult(text.strip(), dt, True, None, prompt)
         except Exception as e:  # noqa: BLE001
@@ -105,30 +178,26 @@ class LLMClient:
         """Ask the LLM to extract storable facts from a user/assistant exchange. Returns a list of memory dicts."""
         if self._client is None:
             return []
+        schema = self._get_prompt("extract_schema", _DEFAULT_EXTRACT_SCHEMA)
+        instruction_template = self._get_prompt("extract_instruction", _DEFAULT_EXTRACT_INSTRUCTION)
         instruction = (
-            "次のユーザー発話とアシスタント応答から、長期記憶に保存すべき重要情報だけを抽出してください。\n"
-            "保存対象は、ユーザーの好み、名前、所属、継続的な予定や制約、明示的な指示、"
-            "あとで役立つ安定した事実です。\n"
-            "保存しない対象は、挨拶、一時的な雑談、天気のような一般知識、単発の質問です。\n"
-            "1つの発話に独立した複数の事実が含まれる場合は、無理に1件へまとめず、"
-            "事実ごとに別々の memory に分割してください（1 memory = 1 つの事実）。"
-            "保存すべき事実が1つだけのとき、または無いときは、1件のみ、または空配列にしてください。\n"
-            "JSON オブジェクト {\"memories\": [...]} のみを返してください。該当なしは {\"memories\": []}。\n"
-            f"各 memory の形式: {_EXTRACT_SCHEMA_LONG_MEMORY}\n\n"
-            f"# ユーザー発話\n{user_text}\n\n"
-            f"# アシスタント応答\n{assistant_text}\n"
+            instruction_template
+            .replace("{schema}", schema)
+            .replace("{user_text}", user_text)
+            .replace("{assistant_text}", assistant_text)
         )
+        sys_prompt = self._get_prompt("extract_system_prompt", _DEFAULT_EXTRACT_SYSTEM_PROMPT)
         try:
             if self.provider == "deepseek":
                 raw = self._deepseek_chat(
-                    "You are a memory extraction engine. Return JSON only.",
+                    sys_prompt,
                     instruction,
                     json_mode=True,
                     temperature=0.0,
                 )
             else:
                 raw = self._gemini_chat(
-                    "You are a memory extraction engine. Return JSON only.",
+                    sys_prompt,
                     instruction,
                     json_mode=True,
                     temperature=0.0,
@@ -149,29 +218,10 @@ class LLMClient:
         if self._client is None or not members:
             return {"action": "none", "memories": []}
         listing = json.dumps(members, ensure_ascii=False, indent=2)
-        instruction = (
-            "あなたは長期記憶を「夢を見る」ように整理する統合エンジンです。\n"
-            "以下は同じ意味クラスタに属する記憶の一覧です。各記憶には内容時刻"
-            "(updated_at_local / updated_at_unix / timezone)と重要度 w、保持率 r(0-1, 想起しやすさ) があります。\n\n"
-            "次のいずれかを選んでください:\n"
-            "- merge: 重複や関連する記憶を、より少数の記憶へ統合・抽象化する。"
-            "細かい具体やエピソードの枝葉は削り、後で役立つ要点(gist)を残す。"
-            "古くなった内容は現在時刻を踏まえて更新する"
-            "(例『7月に旅行予定』→『2026年7月に旅行済み』)。矛盾は新しい時刻のものを優先。\n"
-            "- split: 1つの記憶に複数の事実が詰め込まれている場合、独立した記憶へ分割する。\n"
-            "- none: 整理が不要なら何もしない。\n\n"
-            "無理に1つへまとめる必要はありません。異なる事実は別々の記憶として残してください"
-            "(例: 10件を3件にする等)。\n"
-            "新しい各記憶には text, w(0.0-1.0), provenance(user|inferred), "
-            "timezone(IANA名 例 Asia/Tokyo) を必ず書いてください。\n"
-            "出力は JSON オブジェクトのみ: "
-            '{"action": "merge|split|none", "memories": [{"text": "...", "w": 0.7, '
-            '"provenance": "user", "timezone": "Asia/Tokyo"}]}\n'
-            "action が none のときは memories を空配列にしてください。\n\n"
-            f"# クラスタ内の記憶\n{listing}\n"
-        )
+        instruction_template = self._get_prompt("dream_instruction", _DEFAULT_DREAM_INSTRUCTION)
+        instruction = instruction_template.replace("{listing}", listing)
+        sys_prompt = self._get_prompt("dream_system_prompt", _DEFAULT_DREAM_SYSTEM_PROMPT)
         try:
-            sys_prompt = "You are a memory consolidation engine. Return JSON only."
             if self.provider == "deepseek":
                 raw = self._deepseek_chat(sys_prompt, instruction, json_mode=True, temperature=0.2)
             else:
@@ -212,10 +262,7 @@ class LLMClient:
         return resp.text or ""
 
 
-_EXTRACT_SCHEMA_LONG_MEMORY = (
-    '{"text": "保存する短い記憶", "w": 0.0-1.0 の重要度, '
-    '"provenance": "user または inferred"}'
-)
+
 
 
 def _parse_dream(text: Optional[str]) -> Dict:

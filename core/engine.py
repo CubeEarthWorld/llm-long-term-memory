@@ -48,6 +48,24 @@ DB_FILENAME = "llm_long_term_memory.db"
 
 
 def default_seed() -> List[dict]:
+    csv_path = os.path.join(DATA_DIR, "seed_utterances.csv")
+    if os.path.exists(csv_path):
+        try:
+            import csv
+            with open(csv_path, encoding="utf-8-sig", newline="") as f:
+                rows = [
+                    {
+                        "text": (r.get("text") or "").strip(),
+                        "note": (r.get("note") or "").strip(),
+                        "advance": ((r.get("advance") or "0").strip() or "0"),
+                    }
+                    for r in csv.DictReader(f)
+                ]
+            rows = [r for r in rows if r["text"]]
+            if rows:
+                return rows
+        except Exception:
+            pass
     return [
         {
             "text": text,
