@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>LLM Long-Term Memory</title>
+<style>
+  :root{--fg:#1b1f24;--mut:#5b6570;--bd:#e2e6ea;--bg:#ffffff;--soft:#f6f8fa;--key:#2563eb}
+  *{box-sizing:border-box}
+  body{font-family:-apple-system,"Segoe UI","Hiragino Kaku Gothic ProN",Meiryo,sans-serif;color:var(--fg);background:var(--bg);margin:0;line-height:1.75}
+  .wrap{max-width:920px;margin:0 auto;padding:42px 22px 88px}
+  h1{font-size:2rem;margin:.2em 0 .1em}
+  h2{font-size:1.25rem;margin:2em 0 .4em;border-bottom:1px solid var(--bd);padding-bottom:.25em}
+  h3{font-size:1.05rem;margin:1.4em 0 .3em}
+  p,li{font-size:1rem}
+  code{background:var(--soft);padding:.1em .4em;border-radius:5px;font-size:.9em}
+  pre{background:#0f172a;color:#e5edf7;padding:14px 16px;border-radius:8px;overflow:auto;font-size:.88rem}
+  table{border-collapse:collapse;width:100%;margin:14px 0;font-size:.95rem}
+  th,td{border:1px solid var(--bd);padding:8px 10px;text-align:left;vertical-align:top}
+  th{background:var(--soft)}
+  .tag{display:inline-block;background:var(--key);color:#fff;border-radius:999px;padding:.12em .7em;font-size:.75rem;font-weight:700}
+  .note{color:var(--mut);font-size:.92rem}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <span class="tag">Technical Prototype</span>
+  <h1>LLM Long-Term Memory</h1>
+  <p class="note">人間の記憶メカニズム（Ebbinghaus 忘却曲線・間隔/テスト効果・固定化・連想想起・savings）に
+  着想を得て、LLM に長期宣言記憶を持たせる研究用プロトタイプ。LLM を呼ぶのは<b>書き込み（抽出）</b>と
+  <b>Dreaming（統合）</b>のみで、想起・スコアリング・忘却はローカル埋め込みと数値計算で行う。</p>
+
+  <h2>概要</h2>
+  <ul>
+    <li>埋め込みモデル: <code>google/embeddinggemma-300m</code>（768次元 full、256次元 coarse は MRL 切り詰め）</li>
+    <li>記憶は2層: <b>active（hot, 上限 1000件, full vec 保持）</b> と <b>archive（cold, 上限 5000件, coarse のみ）</b></li>
+    <li>総容量は <code>total_cap + archive_cap</code> で有界（~数十MB）</li>
+    <li>検索: 入力ターンを段落に分割し、各段落を個別に埋め込んで 768次元 full embedding の総当たりコサインで想起、結果を和集合（記憶ごとに最大 cos を採用、<code>sim_floor</code> 未満は足切り）。coarse はクラスタ・多様性(MMR)・連想拡散・archive 照合に使用</li>
+    <li>取得 memory pack は最大 1024 文字。各記憶は IANA タイムゾーン付き時刻を保持</li>
+  </ul>
+
+  <h2>3軸モデル（重要度・信頼度・定着度を分離）</h2>
+  <p>従来の単一 <code>freq</code> を、人間の記憶に倣って3つの独立軸に分離した。</p>
+  <table>
+    <tr><th>軸</th><th>記号</th><th>意味</th></tr>
+    <tr><td>重要度 / 顕著性</td><td><code>w</code></td><td>0–1。抽出時に LLM が付与。耐久性を伸ばす主因。</td></tr>
+    <tr><td>信頼度</td><td><code>confidence</code></td><td>出典（provenance: user/inferred）由来。矛盾解決・削除保護・想起の弱い加点に使い、それ自体は不滅化の理由にしない。</td></tr>
+    <tr><td>定着度 / 安定度</td><td><code>S</code>（秒）</td><td>忘れにくさ。想起成功と固定化で増大する。</td></tr>
+    <tr><td>アクセス回数</td><td><code>freq</code></td><td>累積参照回数。想起ランキングの補助項のみ。</td></tr>
+  </table>
+
+  <h2>保持・想起・忘却（FSRS 型 + べき乗則）</h2>
+  <pre>S0        = stab_base * (1 + kappa*w) * (labile_frac + (1-labile_frac)*confidence)
+r(t)      = (1 + (now - accessed_at) / S) ^ (-forget_beta)            # 保持率（忘却曲線・べき乗則）
+補強      : S = S * (1 + stab_growth_c * (1 - r)); freq += reinforce_inc; accessed_at = now
+&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;S と freq は長期使用で無限増大しないよう、それぞれ上限でクリップされる
+score     = alpha*cos + beta*r + delta*w + eta*log1p(freq) + zeta*confidence  (+ spreading)
+spreading : spread(m) = spread_gamma * max_{兄弟 s}[ r(s) * cos(query, s) ]   # 連想拡散（候補集合内）
+想起ゲート: gate_w_cos*cos + gate_w_r*r (+noise) >= gate_theta         # 機能的忘却（cue 依存）</pre>
+  <ul>
+    <li><b>段落単位の想起</b>: ターンを段落に分けて各々で検索する。テキスト全体を1ベクトルにすると複数話題が平均されて薄まるため、どの段落に関連する記憶も拾えるようにしている（記憶は最良の手がかり＝最大 cos でゲート・スコア評価）。</li>
+    <li><b>べき乗則の忘却</b>: 単一指数より現実に近く、初期に急落し長い裾を残す。</li>
+    <li><b>間隔/テスト効果</b>: 想起のたびに <code>S</code> が増え、忘れかけ（<code>r</code> 低）で想起するほど大きく伸びる（Jost の法則）。</li>
+    <li><b>想起ゲート</b>: 減衰した記憶は cosine が合っても引けなくなる（人間の想起失敗・手がかり依存忘却）。<code>recall_noise_sigma>0</code> で確率的想起。</li>
+    <li><b>連想拡散</b>: クエリに関連する同クラスタの兄弟を持つ記憶が底上げされる（ACT-R 的）。追加の埋め込み計算・I/O は不要。</li>
+  </ul>
+
+  <h2>2段階の忘却（容量有界 + savings）</h2>
+  <ol>
+    <li><b>active → archive</b>: <code>r</code> が <code>r_archive_floor</code> を（<code>archive_grace_seconds</code> を超えて）下回ると archive へ退避。想起では引けなくなるが savings として残る。768d を捨て 256d coarse のみ保持。容量超過時は最小 <code>r</code> から退避（高 <code>w</code>＋高 <code>confidence</code> は <code>r_hard_floor</code> まで保護、クラスタ medoid も保護）。</li>
+    <li><b>archive → 永久削除</b>: archive が <code>archive_cap</code> を超えると最小 <code>last_r</code> から削除。これにより総容量が有界になる。</li>
+    <li><b>savings（再出現）</b>: 同一/類似テキスト（coarse cos ≥ <code>tau_savings</code>、または <code>text_hash</code> 一致）が再来すると、安定度の先取り（<code>× savings_gain</code>）で active に復元（再学習の節約・Ebbinghaus の savings）。</li>
+    <li><b>干渉</b>: 想起された記憶は、同クラスタの非想起競合の <code>S</code> を僅かに減衰させる（想起誘導性忘却）。</li>
+  </ol>
+
+  <h2>Dreaming（睡眠的固定化）</h2>
+  <p>オンデマンド実行。優先度の高いクラスタを LLM が <b>統合(merge) / 分割(split) / 維持(none)</b> する。</p>
+  <pre>priority = w_size*log(1+size) + w_spread*(spread/norm) + w_age*(since_dream/norm) + w_disp*dispersion</pre>
+  <ul>
+    <li>merge では細部を削り<b>要点（gist）</b>を残す（エピソード→意味記憶化）。矛盾は新しい時刻のものを優先。</li>
+    <li>統合記憶の <b>stability は元の最大値を超えない</b>: <code>S_new = max(member S)</code>（ dreaming では durability を上げない）。</li>
+    <li>由来 <code>source_ids</code> / <code>created_by_dream_id</code> を保持（lineage、幻覚・細部喪失の検査用）。</li>
+  </ul>
+
+  <h2>スキーマ</h2>
+  <table>
+    <tr><th>テーブル</th><th>主な列</th></tr>
+    <tr><td><code>memories</code>（hot）</td><td><code>id, text, v_full(768d), w, provenance, confidence, freq, stability, accessed_at_unix, updated_at_unix, timezone, cluster_id, source_ids, summary_of, dream_action, created_by_dream_id</code></td></tr>
+    <tr><td><code>archive</code>（cold）</td><td><code>id, text, v_coarse(256d), w, provenance, confidence, last_r, archived_at_unix, text_hash, timezone</code></td></tr>
+    <tr><td><code>clusters</code></td><td><code>id, last_dreaming_unix</code></td></tr>
+  </table>
+  <p class="note">centroid / size / medoid はメンバから都度導出（保存しない）。スキーマは起動時に作成され、旧 DB からの移行は行わない（研究用プロトタイプのため空から作り直す）。</p>
+
+  <h2>主な定数（<code>config.py</code>）</h2>
+  <table>
+    <tr><th>定数</th><th>既定</th><th>意味</th></tr>
+    <tr><td><code>stab_base_seconds</code></td><td>14日</td><td>基準安定度 S</td></tr>
+    <tr><td><code>kappa</code></td><td>3.0</td><td>重要度 → 安定度の係数</td></tr>
+    <tr><td><code>forget_beta</code></td><td>0.5</td><td>忘却べき指数</td></tr>
+    <tr><td><code>stab_growth_c</code></td><td>1.0</td><td>想起時の安定度成長（r=0 で最大2倍）</td></tr>
+    <tr><td><code>max_stability_seconds</code></td><td>10年</td><td>安定度 S の上限（無限増大防止）</td></tr>
+    <tr><td><code>max_freq</code></td><td>1,000,000</td><td>累積アクセス回数 freq の上限</td></tr>
+    <tr><td><code>confidence_user / _inferred</code></td><td>0.9 / 0.6</td><td>信頼度（provenance 由来）</td></tr>
+    <tr><td><code>alpha, beta, delta, eta, zeta</code></td><td>0.55, 0.2, 0.2, 0.05, 0.05</td><td>想起スコア係数（cos, r, w, log1p(freq), confidence）</td></tr>
+    <tr><td><code>spread_gamma</code></td><td>0.15</td><td>連想拡散</td></tr>
+    <tr><td><code>gate_w_cos, gate_w_r, gate_theta</code></td><td>0.6, 0.4, 0.2</td><td>想起ゲート</td></tr>
+    <tr><td><code>r_archive_floor / r_hard_floor</code></td><td>0.1 / 0.05</td><td>退避閾値 / 保護解除下限</td></tr>
+    <tr><td><code>archive_grace_seconds</code></td><td>7日</td><td>退避までの猶予</td></tr>
+    <tr><td><code>tau_savings / savings_gain</code></td><td>0.85 / 1.6</td><td>再出現判定 / 復元時の安定度先取り</td></tr>
+    <tr><td><code>tau_recall / max_recall_per_turn</code></td><td>0.6 / 3</td><td>archive からの思い出し閾値 / 1ターンあたり最大復元数</td></tr>
+    <tr><td><code>interference_decay</code></td><td>0.05</td><td>想起誘導性忘却</td></tr>
+    <tr><td><code>consolidation_gain</code></td><td>1.5</td><td>（現在未使用）固定化での耐久化</td></tr>
+    <tr><td><code>protect_max_seconds</code></td><td>10年</td><td>高信頼記憶の保護期間上限</td></tr>
+    <tr><td><code>total_cap / archive_cap</code></td><td>1000 / 5000</td><td>hot / cold 上限</td></tr>
+    <tr><td><code>max_turn_log / max_metrics_history</code></td><td>1000 / 1000</td><td>メモリ内ターン履歴 / メトリクス履歴のスライディング上限</td></tr>
+  </table>
+
+  <h2>評価ベンチ</h2>
+  <p><code>python eval/run_eval.py</code> が仮想時計＋モック埋め込み/LLM で、記憶忠実度を決定論的に検証する
+  （モデル DL・API キー不要）。シナリオ: 間隔効果（spaced &gt; massed）・べき乗則の忘却曲線・想起ゲート・
+  安定度成長・archive→savings 復元・容量有界・3軸保護・連想拡散。</p>
+
+  <h2>起動</h2>
+  <pre>Windows: ./start.bat    macOS/Linux: ./start.sh    → http://localhost:8501
+python cli.py --say "私は京都に住んでいます"
+python cli.py --dream 3 --inspect      # 上位3クラスタを整理し DB をダンプ
+python eval/run_eval.py                # 記憶忠実度ベンチ</pre>
+  <p class="note">タイムゾーン既定は <code>MEMORY_TZ</code>（無ければ <code>Asia/Tokyo</code>）。結果は <code>data/results.json</code>。</p>
+</div>
+</body>
+</html>

@@ -1,0 +1,18 @@
+# LLM Long-Term Memory prototype
+# Backend: FastAPI (serves REST + the no-build React frontend in ./frontend)
+fastapi>=0.110
+uvicorn>=0.29
+
+# LLM providers
+openai>=1.40            # Deepseek (OpenAI-compatible endpoint)
+google-genai>=0.3       # Gemini (optional)
+
+# Local embedding: EmbeddingGemma (downloads into ./model)
+sentence-transformers>=5.0
+transformers>=4.56
+torch>=2.4
+
+# data / env
+numpy>=1.26
+pandas>=2.0
+python-dotenv>=1.0

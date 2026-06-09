@@ -1,0 +1,28 @@
+# Secrets & local config — NEVER commit API keys or tokens.
+.env
+secrets/
+
+# Generated data & caches
+data/
+model/
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.db
+*.sqlite
+*.sqlite3
+.streamlit/secrets.toml
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# IDE / editor settings
+.idea/
+.vscode/
+*.swp
+*~
+
+# Log files
+*.log
