@@ -78,10 +78,9 @@ class TurnRunner:
         system = self.memory_system
         metrics = TurnMetrics(turn=turn, system_id=system.system_id, utterance=utterance)
 
-        retrieved, embed_ms = self._timed_with_embedding(lambda: system.retrieve(utterance, turn))
-        metrics.retrieve_ms = retrieved["logic_ms"]
+        result, logic_ms, embed_ms = self._timed_with_embedding(lambda: system.retrieve(utterance, turn))
+        metrics.retrieve_ms = logic_ms
         metrics.embed_ms += embed_ms
-        result = retrieved["result"]
         metrics.pack_text = result.pack_text
         metrics.pack_chars = len(result.pack_text)
         metrics.pack_n = len(result.recalled)
@@ -92,17 +91,16 @@ class TurnRunner:
         metrics.response = response.text
         metrics.prompt = response.prompt
 
-        written, embed_ms = self._timed_with_embedding(lambda: system.write(turn, utterance, response.text))
-        metrics.write_ms = written["logic_ms"]
+        write_result, logic_ms, embed_ms = self._timed_with_embedding(lambda: system.write(turn, utterance, response.text))
+        metrics.write_ms = logic_ms
         metrics.embed_ms += embed_ms
-        write_result = written["result"]
         metrics.llm_ms += write_result.extract_ms
         metrics.written_ids = write_result.written_ids
         metrics.written_rows = write_result.written_rows
         metrics.write_note = write_result.note
 
-        maintained, embed_ms = self._timed_with_embedding(lambda: system.maintain(turn))
-        metrics.maintain_ms = maintained["logic_ms"]
+        _, logic_ms, embed_ms = self._timed_with_embedding(lambda: system.maintain(turn))
+        metrics.maintain_ms = logic_ms
         metrics.embed_ms += embed_ms
 
         metrics.total_records = system.total_records()
@@ -119,4 +117,4 @@ class TurnRunner:
         result = fn()
         wall_ms = (time.perf_counter() - t0) * 1000.0
         embed_ms = self.provider.pop_ms()
-        return {"result": result, "logic_ms": max(0.0, wall_ms - embed_ms)}, embed_ms
+        return result, max(0.0, wall_ms - embed_ms), embed_ms

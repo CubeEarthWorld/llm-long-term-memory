@@ -47,6 +47,32 @@ class TurnMetrics:
     def total_ms(self) -> float:
         return self.embed_ms + self.retrieve_ms + self.llm_ms + self.write_ms + self.maintain_ms
 
+    def to_detail_dict(self, title: str = "") -> Dict[str, Any]:
+        """Return a rich detail dict suitable for API responses and JSON export."""
+        return {
+            "title": title,
+            "response": self.response,
+            "write_note": self.write_note,
+            "records": self.total_records,
+            "pack_chars": self.pack_chars,
+            "pack_n": self.pack_n,
+            "pack_text": self.pack_text,
+            "prompt": self.prompt,
+            "written": self.written_rows,
+            "times": {
+                "total": round(self.total_ms, 1),
+                "llm": round(self.llm_ms, 1),
+                "retrieve": round(self.retrieve_ms, 1),
+                "write": round(self.write_ms, 1),
+                "maintain": round(self.maintain_ms, 1),
+                "embed": round(self.embed_ms, 1),
+            },
+            "recalled": [
+                {"id": item.mem_id, "text": item.text, "score": round(item.score, 3), **item.extra}
+                for item in self.recalled
+            ],
+        }
+
     def row(self) -> Dict[str, Any]:
         return {
             "turn": self.turn,
@@ -85,10 +111,7 @@ class MetricsRecorder:
         return pd.DataFrame(rows)
 
     def for_turn(self, turn: int, system_id: str) -> Optional[TurnMetrics]:
-        for metrics in self.history:
-            if metrics.turn == turn and metrics.system_id == system_id:
-                return metrics
-        return None
+        return next((m for m in self.history if m.turn == turn and m.system_id == system_id), None)
 
     def latest_turn(self) -> int:
         return max((m.turn for m in self.history), default=0)

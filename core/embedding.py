@@ -14,8 +14,9 @@ from typing import List, Optional
 
 import numpy as np
 
+from core import BASE_DIR
+
 # Project-local model cache so ./model is portable across PCs.
-BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 MODEL_DIR = os.path.join(BASE_DIR, "model")
 os.makedirs(MODEL_DIR, exist_ok=True)
 # Route all HF downloads into ./model BEFORE huggingface_hub / transformers import.
@@ -24,10 +25,14 @@ os.environ.setdefault("HF_HUB_CACHE", os.path.join(MODEL_DIR, "hub"))
 os.environ.setdefault("SENTENCE_TRANSFORMERS_HOME", MODEL_DIR)
 
 
-def _l2_normalize(mat: np.ndarray) -> np.ndarray:
-    norms = np.linalg.norm(mat, axis=1, keepdims=True)
+def l2_normalize(vec: np.ndarray) -> np.ndarray:
+    """L2-normalise a 1-D or 2-D array, avoiding division by zero."""
+    if vec.ndim == 1:
+        n = np.linalg.norm(vec)
+        return vec / n if n else vec
+    norms = np.linalg.norm(vec, axis=1, keepdims=True)
     norms = np.where(norms == 0.0, 1.0, norms)
-    return mat / norms
+    return vec / norms
 
 
 def truncate_normalize(vec: np.ndarray, dim: int) -> np.ndarray:
@@ -37,7 +42,7 @@ def truncate_normalize(vec: np.ndarray, dim: int) -> np.ndarray:
         n = np.linalg.norm(v)
         return v / n if n else v
     v = vec[:, :dim]
-    return _l2_normalize(v)
+    return l2_normalize(v)
 
 
 class EmbeddingProvider:

@@ -34,6 +34,11 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
+def vec_label(blob: Optional[bytes]) -> str:
+    """Human-readable label for a stored vector blob."""
+    return "" if blob is None else f"<{len(blob)}B vec>"
+
+
 class Store:
     def __init__(self, path: str):
         self.path = path
@@ -73,14 +78,20 @@ class Store:
         where: str = "",
         params: Sequence = (),
         id_col: str = "id",
+        max_scan: int = 0,
     ) -> List[Tuple]:
         """Return [(id, score, row), ...] top-k by cosine over rows matching `where`.
 
         Vectors are assumed L2-normalized, so cosine == dot product.
+
+        ``max_scan`` (default 0 = no limit) caps the number of rows loaded from the
+        table. Use for large tables (e.g. archive) to bound per-query cost.
         """
         sql = f"SELECT * FROM {table}"
         if where:
             sql += f" WHERE {where}"
+        if max_scan > 0:
+            sql += f" LIMIT {int(max_scan)}"
         rows = self.query(sql, params)
         if not rows:
             return []
@@ -124,16 +135,14 @@ class Store:
         return total / (1024 * 1024)
 
     def rows_as_dicts(self, table: str, drop_blobs: bool = True, limit: int = 5000) -> List[Dict]:
-        rows = self.query(f"SELECT * FROM {table} LIMIT ?", (limit,))
-        out = []
-        for r in rows:
-            d = dict(r)
+        def _clean(row: sqlite3.Row) -> Dict:
+            d = dict(row)
             if drop_blobs:
                 for k, v in list(d.items()):
                     if isinstance(v, (bytes, bytearray)):
-                        d[k] = f"<{len(v)}B vec>"
-            out.append(d)
-        return out
+                        d[k] = vec_label(v)
+            return d
+        return [_clean(r) for r in self.query(f"SELECT * FROM {table} LIMIT ?", (limit,))]
 
     def close(self) -> None:
         try:

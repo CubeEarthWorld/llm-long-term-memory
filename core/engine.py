@@ -7,13 +7,15 @@ dreaming, and seed replay.
 """
 from __future__ import annotations
 
+import csv
+import io
 import os
 import time
-from typing import Callable, List, Optional
+from typing import Any, Callable, Dict, List, Optional, TypedDict
 
 from config import Config
 from core.base import TurnRunner
-from core.embedding import get_provider
+from core.embedding import EmbeddingProvider, get_provider
 from core.llm_client import LLMClient
 from core.metrics import MetricsRecorder
 from core.storage import Store
@@ -26,7 +28,7 @@ from seed_utterances import SEED_ADVANCE, SEED_NOTES, SEED_UTTERANCES
 _DURATION_UNITS = {"s": 1, "m": 60, "h": 3600, "d": 86400, "w": 604800, "y": 31536000}
 
 
-def _parse_duration(spec) -> float:
+def _parse_duration(spec: object) -> float:
     """Parse a seed 'advance' value into seconds. '5y' '8d' '12h' '30m' -> seconds;
     a bare number means days; '0'/''/garbage -> 0."""
     s = str(spec or "0").strip().lower()
@@ -41,31 +43,55 @@ def _parse_duration(spec) -> float:
 
 # Project layout constants
 BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # repository root
-DATA_DIR = os.path.join(BASE_DIR, "data")                               # runtime SQLite + JSON output
+DATA_DIR = os.environ.get("MEMORY_DATA_DIR", os.path.join(BASE_DIR, "data"))  # runtime SQLite + JSON output
 SYSTEM_ID = "llm_long_term_memory"
 SYSTEM_TITLE = "LLM Long-Term Memory"
-DB_FILENAME = "llm_long_term_memory.db"
+DB_FILENAME = os.environ.get("MEMORY_DB_NAME", "llm_long_term_memory.db")
+
+SEED_CSV_PATH = os.path.join(DATA_DIR, "seed_utterances.csv")
 
 
-def default_seed() -> List[dict]:
-    csv_path = os.path.join(DATA_DIR, "seed_utterances.csv")
-    if os.path.exists(csv_path):
-        try:
-            import csv
-            with open(csv_path, encoding="utf-8-sig", newline="") as f:
-                rows = [
-                    {
-                        "text": (r.get("text") or "").strip(),
-                        "note": (r.get("note") or "").strip(),
-                        "advance": ((r.get("advance") or "0").strip() or "0"),
-                    }
-                    for r in csv.DictReader(f)
-                ]
-            rows = [r for r in rows if r["text"]]
-            if rows:
-                return rows
-        except Exception:
-            pass
+class Engine(TypedDict, total=False):
+    """Typed structure for the runtime engine dict."""
+    provider: EmbeddingProvider
+    llm: LLMClient
+    store: Store
+    system: LongTermMemory
+    recorder: MetricsRecorder
+    runner: TurnRunner
+    turn: int
+    log: List[Dict[str, Any]]
+    start_time: Optional[float]
+    seeded: bool
+    last_dream: List[Dict[str, Any]]
+    cfg: Config
+    seed: List[Dict[str, str]]
+
+
+def load_seed_csv(path: str) -> List[Dict[str, str]]:
+    """Load seed items from a CSV file. Returns empty list on missing/unparseable file."""
+    if not os.path.exists(path):
+        return []
+    try:
+        with open(path, encoding="utf-8-sig", newline="") as f:
+            return [
+                {
+                    "text": (r.get("text") or "").strip(),
+                    "note": (r.get("note") or "").strip(),
+                    "advance": ((r.get("advance") or "0").strip() or "0"),
+                }
+                for r in csv.DictReader(f)
+                if (r.get("text") or "").strip()
+            ]
+    except Exception:
+        return []
+
+
+def default_seed() -> List[Dict[str, str]]:
+    """Return seed utterances: CSV if available, otherwise built-in scenario."""
+    rows = load_seed_csv(SEED_CSV_PATH)
+    if rows:
+        return rows
     return [
         {
             "text": text,
@@ -76,7 +102,43 @@ def default_seed() -> List[dict]:
     ]
 
 
-def build_engine(cfg: Config, wipe: bool = False, seed: Optional[List[dict]] = None) -> dict:
+def clean_seed_items(raw) -> List[Dict[str, str]]:
+    """Normalise a list of raw dicts into valid seed items (text/note/advance)."""
+    items = []
+    for item in raw or []:
+        text = str((item or {}).get("text", "")).strip()
+        if text:
+            items.append({
+                "text": text,
+                "note": str((item or {}).get("note", "")).strip(),
+                "advance": (str((item or {}).get("advance", "0")).strip() or "0"),
+            })
+    return items
+
+
+def parse_seed_csv(text: str) -> List[Dict[str, str]]:
+    """Tolerant CSV parser that accepts both header and header-less CSV for seeds."""
+    reader = csv.DictReader(io.StringIO(text))
+    items: List[Dict[str, str]] = []
+    if reader.fieldnames and any((h or "").strip().lower() == "text" for h in reader.fieldnames):
+        for row in reader:
+            items.append({
+                "text": (row.get("text") or "").strip(),
+                "note": (row.get("note") or row.get("memo") or "").strip(),
+                "advance": ((row.get("advance") or "0").strip() or "0"),
+            })
+    else:
+        for row in csv.reader(io.StringIO(text)):
+            if row:
+                items.append({
+                    "text": (row[0] or "").strip(),
+                    "note": (row[1].strip() if len(row) > 1 else ""),
+                    "advance": ((row[2].strip() if len(row) > 2 else "0") or "0"),
+                })
+    return clean_seed_items(items)
+
+
+def build_engine(cfg: Config, wipe: bool = False, seed: Optional[List[Dict[str, str]]] = None) -> Engine:
     """Assemble a full engine dict from configuration.
 
     Args:
@@ -125,14 +187,14 @@ def _open_store(wipe: bool) -> Store:
     return Store(path)
 
 
-def dispose_engine(engine: dict) -> None:
+def dispose_engine(engine: Engine) -> None:
     """Close the underlying SQLite store and release resources."""
     store = engine.get("store")
     if store:
         store.close()
 
 
-def reset_state(engine: dict) -> None:
+def reset_state(engine: Engine) -> None:
     """Reset the memory system, metrics, and turn log while keeping the DB open."""
     engine["system"].reset()
     engine["system"].set_clock(None)  # drop any virtual seed clock -> back to real time
@@ -143,7 +205,7 @@ def reset_state(engine: dict) -> None:
     engine["last_dream"] = []
 
 
-def run_turn(engine: dict, utterance: str, note: str = "") -> int:
+def run_turn(engine: Engine, utterance: str, note: str = "") -> int:
     """Execute one user turn (retrieve → respond → write → maintain) and append to the log.
 
     Args:
@@ -153,11 +215,10 @@ def run_turn(engine: dict, utterance: str, note: str = "") -> int:
     Returns:
         The turn number that was just executed.
     """
-    import time as _time
     turn = engine["turn"] + 1
     engine["runner"].run_turn(turn, utterance)
     engine["turn"] = turn
-    now = _time.time()
+    now = time.time()
     if engine.get("start_time") is None:
         engine["start_time"] = now
     engine["log"].append({"turn": turn, "utterance": utterance, "note": note, "timestamp": now})
@@ -169,14 +230,14 @@ def run_turn(engine: dict, utterance: str, note: str = "") -> int:
     return turn
 
 
-def run_dream(engine: dict, max_clusters: int = 1, force: bool = False) -> List[dict]:
+def run_dream(engine: Engine, max_clusters: int = 1, force: bool = False) -> List[Dict[str, Any]]:
     """Trigger memory consolidation (dreaming) on the engine's memory system."""
     results = engine["system"].dream(max_clusters=max_clusters, force=force)
     engine["last_dream"] = results
     return results
 
 
-def run_seed(engine: dict, on_progress: Optional[Callable[[int, str], None]] = None) -> None:
+def run_seed(engine: Engine, on_progress: Optional[Callable[[int, str], None]] = None) -> None:
     """Replay seed utterances along a virtual timeline to exercise forgetting.
 
     The first utterance is anchored at the current wall-clock time.  Each item's
@@ -186,9 +247,13 @@ def run_seed(engine: dict, on_progress: Optional[Callable[[int, str], None]] = N
     """
     state = {"offset": 0.0}
     engine["system"].set_clock(lambda: time.time() + state["offset"])
-    for item in engine.get("seed") or default_seed():
-        state["offset"] += _parse_duration(item.get("advance", "0"))
-        turn = run_turn(engine, item["text"], item.get("note", ""))
-        if on_progress:
-            on_progress(turn, item["text"])
+    try:
+        for item in engine.get("seed") or default_seed():
+            state["offset"] += _parse_duration(item.get("advance", "0"))
+            turn = run_turn(engine, item["text"], item.get("note", ""))
+            if on_progress:
+                on_progress(turn, item["text"])
+    finally:
+        # Always restore real clock, even if seed replay is interrupted.
+        engine["system"].set_clock(None)
     engine["seeded"] = True

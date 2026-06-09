@@ -41,12 +41,17 @@ from typing import Dict, List, Optional
 
 import numpy as np
 
+try:
+    from zoneinfo import ZoneInfo
+except Exception:  # pragma: no cover
+    ZoneInfo = None  # type: ignore[misc,assignment]
+
 from config import GlobalConfig, LongTermMemoryConfig
 from core.base import MemorySystem, RetrieveResult, WriteResult
-from core.embedding import EmbeddingProvider, truncate_normalize
+from core.embedding import EmbeddingProvider, l2_normalize, truncate_normalize
 from core.llm_client import LLMClient
 from core.metrics import RecalledItem
-from core.storage import Store, cosine, pack_vec, unpack_vec
+from core.storage import Store, cosine, pack_vec, unpack_vec, vec_label
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS memories (
@@ -66,6 +71,10 @@ CREATE TABLE IF NOT EXISTS archive (
 CREATE TABLE IF NOT EXISTS clusters (
   id TEXT PRIMARY KEY,
   last_dreaming_unix REAL
+);
+CREATE TABLE IF NOT EXISTS meta (
+  key TEXT PRIMARY KEY,
+  value TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_archive_hash ON archive(text_hash);
 CREATE INDEX IF NOT EXISTS idx_archive_evict ON archive(last_r, archived_at_unix);
@@ -97,6 +106,7 @@ class LongTermMemory(MemorySystem):
         existing = {c["name"] for c in self.store.query("PRAGMA table_info(memories)")}
         if "created_at_unix" not in existing:
             self.store.exec("ALTER TABLE memories ADD COLUMN created_at_unix REAL")
+        self._check_schema_compatibility()
 
     # -- time / clock -------------------------------------------------- #
     def now_unix(self) -> float:
@@ -105,6 +115,28 @@ class LongTermMemory(MemorySystem):
     def set_clock(self, fn) -> None:
         """Inject a clock (callable -> unix seconds) so experiments can accelerate time."""
         self._clock = fn
+
+    def _check_schema_compatibility(self) -> None:
+        """Detect embedding dimension changes so existing vectors are not silently skipped."""
+        stored = self.store.scalar("SELECT value FROM meta WHERE key='dim_full'")
+        if stored is not None and int(stored) != self.glob.dim_full:
+            raise RuntimeError(
+                f"Embedding dimension mismatch: DB was created with dim_full={stored}, "
+                f"but current config uses dim_full={self.glob.dim_full}. "
+                f"Please reset the DB or revert the config."
+            )
+        self.store.exec(
+            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
+            ("dim_full", str(self.glob.dim_full)),
+        )
+
+    def _sanitize_timestamps(self, now_unix: float) -> None:
+        """Clamp future timestamps to now_unix so clock rollbacks cannot create immortal memories."""
+        self.store.exec(
+            "UPDATE memories SET accessed_at_unix = ?, updated_at_unix = ?, created_at_unix = ? "
+            "WHERE accessed_at_unix > ? OR updated_at_unix > ? OR created_at_unix > ?",
+            (now_unix, now_unix, now_unix, now_unix, now_unix, now_unix),
+        )
 
     # -- stability / retrievability ------------------------------------ #
     def _confidence(self, provenance: str) -> float:
@@ -136,6 +168,7 @@ class LongTermMemory(MemorySystem):
             return WriteResult(written_ids=[], note="保存なし（重要でない発話）", extract_ms=extract_ms)
 
         now_unix = self.now_unix()
+        self._sanitize_timestamps(now_unix)
         tz = self.glob.default_timezone
         written, written_rows = [], []
         for cand in cands:
@@ -166,20 +199,23 @@ class LongTermMemory(MemorySystem):
                 "UPDATE memories SET text=?, w=?, updated_at_unix=?, timezone=? WHERE id=?",
                 (text, max(w, float(nn[2]["w"])), now_unix, timezone, nn[0]),
             )
-            row = self.store.one("SELECT * FROM memories WHERE id=?", (nn[0],))
+            row = self._get_memory(nn[0])
             return nn[0], [_memory_event("updated", row, self.retrievability(row, now_unix))]
 
         # 2) Reappearance of an archived memory: restore with a stability head-start (savings).
         arc = self._savings_lookup(vc, text)
         if arc is not None:
             mid = self._restore_from_archive(arc, text, w, v, vc, timezone, now_unix)
-            row = self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
+            row = self._get_memory(mid)
             return mid, [_memory_event("restored", row, self.retrievability(row, now_unix))]
 
         # 3) Fresh insert.
         S0 = self.initial_stability(w, confidence)
         mid, row = self._insert_memory(text, v, w, provenance, confidence, S0, timezone, now_unix, vc=vc)
         return mid, [_memory_event("inserted", row, self.retrievability(row, now_unix))]
+
+    def _get_memory(self, mid: str):
+        return self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
 
     def _nearest(self, v):
         """Return the single nearest live memory to vector ``v`` as (id, cos, row), or None."""
@@ -217,7 +253,8 @@ class LongTermMemory(MemorySystem):
              lin.get("dream_action"), lin.get("created_by_dream_id")),
         )
         self._assign_cluster(mid, vc if vc is not None else self._coarse(v), now_unix)
-        return mid, self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
+        self._invalidate_centroids()
+        return mid, self._get_memory(mid)
 
     # -- savings (archive reappearance) -------------------------------- #
     def _savings_lookup(self, vc: np.ndarray, text: str):
@@ -230,7 +267,7 @@ class LongTermMemory(MemorySystem):
         exact = self.store.one("SELECT * FROM archive WHERE text_hash=?", (_text_hash(text),))
         if exact is not None:
             return exact
-        hits = self.store.cosine_search("archive", "v_coarse", vc, k=1)
+        hits = self.store.cosine_search("archive", "v_coarse", vc, k=1, max_scan=2000)
         if hits and hits[0][1] >= self.memory.tau_savings:
             return hits[0][2]
         return None
@@ -245,15 +282,27 @@ class LongTermMemory(MemorySystem):
         return mid
 
     # -- clustering (centroid/medoid derived from members) ------------- #
+    def _invalidate_centroids(self) -> None:
+        """Clear the cached cluster centroids after any mutation that changes cluster membership."""
+        self._centroids_cache = None
+
     def _cluster_centroids(self) -> Dict[str, np.ndarray]:
-        """Derive the centroid (mean coarse vector, L2-normalised) for every cluster."""
+        """Derive the centroid (mean coarse vector, L2-normalised) for every cluster.
+
+        Results are cached until the next mutation (insert / archive / dream / reset)
+        so that successive writes within the same turn don't recompute from scratch.
+        """
+        cached = getattr(self, "_centroids_cache", None)
+        if cached is not None:
+            return cached
         rows = self.store.query("SELECT cluster_id, v_full FROM memories WHERE cluster_id IS NOT NULL")
         acc: Dict[str, List[np.ndarray]] = {}
         for r in rows:
             acc.setdefault(r["cluster_id"], []).append(self._coarse(unpack_vec(r["v_full"])))
         out: Dict[str, np.ndarray] = {}
         for cid, vecs in acc.items():
-            out[cid] = _normalize(np.mean(np.stack(vecs), axis=0))
+            out[cid] = l2_normalize(np.mean(np.stack(vecs), axis=0))
+        self._centroids_cache = out
         return out
 
     def _cluster_medoid(self, cid: str, members=None) -> Optional[str]:
@@ -263,7 +312,9 @@ class LongTermMemory(MemorySystem):
         if not members:
             return None
         coarse = [(m["id"], self._coarse(unpack_vec(m["v_full"]))) for m in members]
-        cen = _normalize(np.mean(np.stack([c for _, c in coarse]), axis=0))
+        cen = self._cluster_centroids().get(cid)
+        if cen is None:
+            cen = l2_normalize(np.mean(np.stack([c for _, c in coarse]), axis=0))
         return max(coarse, key=lambda t: float(np.dot(t[1], cen)))[0]
 
     def _assign_cluster(self, mid: str, vc: np.ndarray, now_unix: float) -> str:
@@ -296,11 +347,15 @@ class LongTermMemory(MemorySystem):
     def _enforce_capacity(self, now_unix: float) -> None:
         """Ensure active store stays within total_cap by archiving decayed and then evicting lowest-r memories."""
         self._archive_decayed(now_unix)
+        evicted = 0
         while self.store.count("memories") > self.glob.total_cap:
+            if evicted >= self.memory.max_evict_per_turn:
+                break
             victim = self._evict_target(now_unix)
             if victim is None:
                 break
             self._archive_memory(victim, now_unix)
+            evicted += 1
         self._enforce_archive_cap()
 
     def _archive_decayed(self, now_unix: float) -> None:
@@ -366,16 +421,18 @@ class LongTermMemory(MemorySystem):
         self.store.exec("DELETE FROM memories WHERE id=?", (mid,))
         if cid is not None and self.store.count("memories", "cluster_id=?", (cid,)) == 0:
             self.store.exec("DELETE FROM clusters WHERE id=?", (cid,))
+        self._invalidate_centroids()
 
     def _enforce_archive_cap(self) -> None:
         """Permanently delete oldest/lowest-r archived memories when archive_cap is exceeded."""
-        while self.store.count("archive") > self.glob.archive_cap:
-            victim = self.store.one(
-                "SELECT id FROM archive ORDER BY last_r ASC, archived_at_unix ASC LIMIT 1"
+        excess = self.store.count("archive") - self.glob.archive_cap
+        if excess > 0:
+            self.store.exec(
+                "DELETE FROM archive WHERE id IN ("
+                "SELECT id FROM archive ORDER BY last_r ASC, archived_at_unix ASC LIMIT ?"
+                ")",
+                (excess,),
             )
-            if victim is None:
-                break
-            self.store.exec("DELETE FROM archive WHERE id=?", (victim["id"],))
 
     # -- retrieve ------------------------------------------------------ #
     def retrieve(self, query: str, turn: int) -> RetrieveResult:
@@ -402,15 +459,15 @@ class LongTermMemory(MemorySystem):
         pipeline is unchanged: spreading -> score -> MMR -> pack by score."""
         paras = self._split_paragraphs(query)
         q_mat = self.provider.encode_query(paras, dim=self.glob.dim_full)
+        pool: Dict[str, Dict] = {}
         gated: Dict[str, Dict] = {}
-        fallback: Dict[str, Dict] = {}
         for q in q_mat:
             for mid, cos, row in self.store.cosine_search(
                 "memories", "v_full", q, k=self.memory.k_retrieve
             ):
                 if cos < self.glob.sim_floor:
                     continue
-                existing = fallback.get(mid)
+                existing = pool.get(mid)
                 if existing is not None and cos <= existing["cos"]:
                     continue  # already kept this memory with an equal/stronger paragraph cue
                 r = self.retrievability(row, now_unix)
@@ -422,10 +479,10 @@ class LongTermMemory(MemorySystem):
                     "cluster_id": row["cluster_id"],
                     "v": self._coarse(unpack_vec(row["v_full"])),
                 }
-                fallback[mid] = cand
+                pool[mid] = cand
                 if self._recall_gate(cos, r):
                     gated[mid] = cand
-        candidates = gated if gated else fallback
+        candidates = gated or pool
         self._recall_from_archive(q_mat, candidates, now_unix)
         return candidates
 
@@ -441,10 +498,12 @@ class LongTermMemory(MemorySystem):
         if self.store.count("archive") == 0:
             return
         best: Dict[str, tuple] = {}  # archived id -> (best coarse cos, row)
+        # Cap the scan at 2000 rows so a full archive (5000) doesn't linearly dominate per-turn cost.
+        max_scan = max(self.memory.k_retrieve * 10, 2000)
         for q in q_mat:
             qc = self._coarse(q)
             for aid, cos, arow in self.store.cosine_search(
-                "archive", "v_coarse", qc, k=self.memory.k_retrieve
+                "archive", "v_coarse", qc, k=self.memory.k_retrieve, max_scan=max_scan
             ):
                 if cos < self.memory.tau_recall:
                     continue
@@ -460,7 +519,7 @@ class LongTermMemory(MemorySystem):
             mid = self._restore_from_archive(
                 arow, text, float(arow["w"]), v, vc, arow["timezone"], now_unix
             )
-            row = self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
+            row = self._get_memory(mid)
             if row is None:
                 continue
             cos_full = max(float(cosine(q, v)) for q in q_mat)  # full-dim cos, consistent with live cands
@@ -479,11 +538,25 @@ class LongTermMemory(MemorySystem):
         """Split a turn into paragraphs (blank-line separated blocks).
 
         Falls back to individual non-empty lines when there are no blank lines,
-        and to the whole text when there are no newlines at all. Always returns
-        at least one chunk."""
+        and to sentence-level splitting (on ``。！？…`` plus newlines) when the
+        text has very few newlines — this ensures long Japanese monologue text
+        yields diverse query embeddings instead of a single averaged vector.
+
+        Always returns at least one chunk."""
         blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
         if len(blocks) <= 1:
             blocks = [ln.strip() for ln in text.splitlines() if ln.strip()]
+        # When even per-line splitting yields <= 2 chunks and the text is long
+        # (typical for Japanese input without explicit line breaks), split on
+        # sentence-ending punctuation so each semantic unit gets its own vector.
+        if len(blocks) <= 2 and len(text) > 80:
+            sentence_blocks = [
+                s.strip()
+                for s in re.split(r"(?<=[。！？…\n])", text)
+                if s.strip()
+            ]
+            if len(sentence_blocks) > len(blocks):
+                blocks = sentence_blocks
         return blocks or [text.strip() or text]
 
     def _recall_gate(self, cos: float, r: float) -> bool:
@@ -540,15 +613,8 @@ class LongTermMemory(MemorySystem):
                     extra={
                         "cos": round(item["cos"], 3),
                         "w": row["w"],
-                        "confidence": round(float(row["confidence"] or 0.0), 3),
-                        "r": round(item["r"], 3),
-                        "S_days": round(self._stability(row) / 86400.0, 2),
-                        "freq": int(float(row["freq"])),
                         "spread": round(item.get("spread", 0.0), 3),
-                        "cluster_id": row["cluster_id"],
-                        "updated_at_unix": updated,
-                        "accessed_at_unix": int(row["accessed_at_unix"]),
-                        "timezone": row["timezone"],
+                        **_row_extra(row, item["r"]),
                     },
                 )
             )
@@ -559,7 +625,7 @@ class LongTermMemory(MemorySystem):
     def _reinforce_ids(self, ids: List[str], now_unix: float) -> None:
         """Apply successful-recall reinforcement to every packed memory ID."""
         for mid in ids:
-            r = self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
+            r = self._get_memory(mid)
             if r:
                 self._reinforce(r, now_unix)
 
@@ -570,11 +636,19 @@ class LongTermMemory(MemorySystem):
             return
         packed_clusters = {candidates[i]["cluster_id"] for i in packed if i in candidates}
         packed_clusters.discard(None)
+        # Floor so stability cannot decay to effectively zero; preserves recoverability over very long use.
+        min_S = self.memory.stab_base_seconds * self.memory.labile_frac
+        updates = []
         for c in candidates.values():
             if c["id"] in packed or c["cluster_id"] not in packed_clusters:
                 continue
-            new_S = self._stability(c["row"]) * (1.0 - self.memory.interference_decay)
-            self.store.exec("UPDATE memories SET stability=? WHERE id=?", (new_S, c["id"]))
+            new_S = max(min_S, self._stability(c["row"]) * (1.0 - self.memory.interference_decay))
+            updates.append((new_S, c["id"]))
+        if updates:
+            self.store.conn.execute("BEGIN;")
+            for new_S, mid in updates:
+                self.store.conn.execute("UPDATE memories SET stability=? WHERE id=?", (new_S, mid))
+            self.store.conn.commit()
 
     def _mmr(self, items: List[Dict]) -> List[Dict]:
         """Maximal Marginal Relevance re-ranking: trade off relevance against diversity (coarse-vector cosine)."""
@@ -620,7 +694,7 @@ class LongTermMemory(MemorySystem):
             ups = [float(m["updated_at_unix"]) for m in members]
             spread = max(ups) - min(ups)
             coarse = [self._coarse(unpack_vec(m["v_full"])) for m in members]
-            cen = _normalize(np.mean(np.stack(coarse), axis=0))
+            cen = l2_normalize(np.mean(np.stack(coarse), axis=0))
             dispersion = 1.0 - float(np.mean([np.dot(vc, cen) for vc in coarse]))
             priority = (
                 self.memory.dream_w_size * math.log(1 + size)
@@ -658,7 +732,8 @@ class LongTermMemory(MemorySystem):
         action = decision.get("action", "none")
         new_mems = decision.get("memories") or []
 
-        if action == "none" or not new_mems:
+        valid_new_mems = [nm for nm in (new_mems or []) if str(nm.get("text", "")).strip()]
+        if action == "none" or not valid_new_mems:
             self.store.exec("UPDATE clusters SET last_dreaming_unix=? WHERE id=?", (now_unix, cid))
             return {"cluster_id": cid, "action": "none", "priority": round(priority, 3),
                     "before": before, "after": [], "deleted_ids": []}
@@ -666,7 +741,7 @@ class LongTermMemory(MemorySystem):
         # Dreaming no longer raises stability; cap at the best source.
         member_S = [self._stability(m) for m in members]
         seed_S = max(member_S) if member_S else self.memory.stab_base_seconds
-        seed_conf = max((float(m["confidence"] or 0.0) for m in members), default=self.memory.confidence_inferred)
+        seed_conf = max((_fval(m, "confidence") for m in members), default=self.memory.confidence_inferred)
         source_ids = [m["id"] for m in members]
         summary_of = _shorten(" / ".join(m["text"] for m in members), self.memory.mem_max_chars)
         dream_id = uuid7()
@@ -674,10 +749,11 @@ class LongTermMemory(MemorySystem):
         deleted = [m["id"] for m in members]
         for m in members:
             self.store.exec("DELETE FROM memories WHERE id=?", (m["id"],))
+        self._invalidate_centroids()
 
         affected = {cid}
         after = []
-        for nm in new_mems:
+        for nm in valid_new_mems[:self.memory.dream_max_members]:
             row = self._insert_dreamed(nm, seed_S, seed_conf, source_ids, summary_of, action, dream_id, now_unix)
             if row is None:
                 continue
@@ -700,7 +776,7 @@ class LongTermMemory(MemorySystem):
             return None
         if len(text) > self.memory.mem_max_chars:
             text = _shorten(text, self.memory.mem_max_chars)
-        w = _clamp01(float(nm.get("w", 0.6)))
+        w = _clamp01(nm.get("w", 0.6))
         provenance = nm.get("provenance", "inferred")
         confidence = max(seed_conf, self._confidence(provenance)) if provenance == "user" else seed_conf
         timezone = nm.get("timezone") or self.glob.default_timezone
@@ -718,6 +794,7 @@ class LongTermMemory(MemorySystem):
     def maintain(self, turn: int) -> None:
         """Periodic housekeeping: purge empty clusters, enforce capacity limits, checkpoint WAL."""
         now_unix = self.now_unix()
+        self._sanitize_timestamps(now_unix)
         for c in self.store.query("SELECT id FROM clusters"):
             if self.store.count("memories", "cluster_id=?", (c["id"],)) == 0:
                 self.store.exec("DELETE FROM clusters WHERE id=?", (c["id"],))
@@ -725,8 +802,16 @@ class LongTermMemory(MemorySystem):
         # Truncate WAL to prevent unbounded -wal file growth during long operation.
         try:
             self.store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        except Exception:
-            pass
+        except Exception as exc:
+            import logging
+            logging.warning("WAL checkpoint failed: %s", exc)
+        # Periodic VACUUM to reclaim space from fragmentation (every ~200 maintain calls).
+        self._maintain_count = getattr(self, "_maintain_count", 0) + 1
+        if self._maintain_count % 200 == 0:
+            try:
+                self.store.conn.execute("PRAGMA optimize;")
+            except Exception:
+                pass
 
     def stats(self) -> Dict[str, int]:
         return {
@@ -742,7 +827,7 @@ class LongTermMemory(MemorySystem):
         return {
             "memories": self.store.rows_as_dicts("memories"),
             "clusters": self.store.rows_as_dicts("clusters"),
-            "archive": self.store.rows_as_dicts("archive"),
+            "archive": self.store.rows_as_dicts("archive", limit=self.glob.archive_cap),
         }
 
     def vector_mb(self) -> float:
@@ -756,16 +841,12 @@ class LongTermMemory(MemorySystem):
         # Clear clusters first to avoid FK issues if added later, then memories, then archive.
         for table in ("clusters", "memories", "archive"):
             self.store.exec(f"DELETE FROM {table}")
+        self._invalidate_centroids()
 
 
 # -- module helpers ---------------------------------------------------- #
-def _clamp01(x: float) -> float:
-    return max(0.0, min(1.0, x))
-
-
-def _normalize(vec: np.ndarray) -> np.ndarray:
-    n = np.linalg.norm(vec)
-    return vec / n if n else vec
+def _clamp01(v) -> float:
+    return max(0.0, min(1.0, float(v)))
 
 
 def _text_hash(text: str) -> str:
@@ -775,13 +856,13 @@ def _text_hash(text: str) -> str:
 def _fmt_local(unix, tz) -> str:
     """Format a UNIX time in its stored timezone, e.g. '2026-06-06 14:56 Asia/Tokyo'."""
     try:
-        from zoneinfo import ZoneInfo
-
-        dt = datetime.fromtimestamp(float(unix), ZoneInfo(str(tz)))
-        return f"{dt:%Y-%m-%d %H:%M} {tz}"
+        if ZoneInfo is not None:
+            dt = datetime.fromtimestamp(float(unix), ZoneInfo(str(tz)))
+            return f"{dt:%Y-%m-%d %H:%M} {tz}"
     except Exception:
-        dt = datetime.utcfromtimestamp(float(unix))
-        return f"{dt:%Y-%m-%d %H:%M} UTC"
+        pass
+    dt = datetime.utcfromtimestamp(float(unix))
+    return f"{dt:%Y-%m-%d %H:%M} UTC"
 
 
 def _shorten(text: str, max_chars: int) -> str:
@@ -795,6 +876,24 @@ def _shorten(text: str, max_chars: int) -> str:
     return cut
 
 
+def _fval(row, key: str, default: float = 0.0) -> float:
+    return float(row[key] or default)
+
+
+def _row_extra(row, r: float) -> Dict:
+    """Common extra fields for memory events and recalled items."""
+    return {
+        "confidence": round(_fval(row, "confidence"), 3),
+        "r": round(r, 3),
+        "S_days": round(_fval(row, "stability") / 86400.0, 2),
+        "freq": int(_fval(row, "freq")),
+        "cluster_id": row["cluster_id"],
+        "updated_at_unix": int(row["updated_at_unix"]),
+        "accessed_at_unix": int(row["accessed_at_unix"]),
+        "timezone": row["timezone"],
+    }
+
+
 def _memory_event(action: str, row, r: float) -> Dict:
     return {
         "action": action,
@@ -802,20 +901,9 @@ def _memory_event(action: str, row, r: float) -> Dict:
         "text": row["text"],
         "w": row["w"],
         "provenance": row["provenance"],
-        "confidence": round(float(row["confidence"] or 0.0), 3),
-        "r": round(float(r), 3),
-        "S_days": round(float(row["stability"] or 0.0) / 86400.0, 2),
-        "freq": int(float(row["freq"])),
-        "accessed_at_unix": int(row["accessed_at_unix"]),
-        "updated_at_unix": int(row["updated_at_unix"]),
-        "timezone": row["timezone"],
-        "cluster_id": row["cluster_id"],
-        "v_full": _vec_label(row["v_full"]),
+        **_row_extra(row, r),
+        "v_full": vec_label(row["v_full"]),
     }
-
-
-def _vec_label(blob) -> str:
-    return "" if blob is None else f"<{len(blob)}B vec>"
 
 
 def uuid7() -> str:

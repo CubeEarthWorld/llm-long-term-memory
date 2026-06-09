@@ -3,11 +3,14 @@ from __future__ import annotations
 
 import csv
 import json
+import logging
 import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Dict, List, Optional
+from typing import Callable, Dict, List, Optional
+
+logger = logging.getLogger(__name__)
 
 _DEFAULT_SYSTEM_PROMPT = (
     "あなたは長期記憶を持つ日本語アシスタントです。"
@@ -72,17 +75,16 @@ def _load_prompts(path: Optional[str] = None) -> Dict[str, str]:
         path = os.path.join(os.path.dirname(os.path.dirname(__file__)), "data", "prompts.csv")
     if not os.path.exists(path):
         return {}
-    prompts: Dict[str, str] = {}
     try:
         with open(path, encoding="utf-8-sig", newline="") as f:
-            for row in csv.DictReader(f):
-                key = (row.get("key") or "").strip()
-                prompt = (row.get("prompt") or "").strip()
-                if key:
-                    prompts[key] = prompt
+            return {
+                key: prompt
+                for row in csv.DictReader(f)
+                if (key := (row.get("key") or "").strip())
+                and (prompt := (row.get("prompt") or "").strip())
+            }
     except Exception:
-        pass
-    return prompts
+        return {}
 
 
 @dataclass
@@ -92,6 +94,32 @@ class LLMResult:
     ok: bool
     error: Optional[str] = None
     prompt: str = ""
+
+
+# Retry configuration — exponential backoff for transient API failures.
+_MAX_RETRIES = 3
+_RETRY_BASE_SECONDS = 0.5
+_RETRY_MAX_SECONDS = 8.0
+_RETRIABLE_PATTERNS = (
+    "rate_limit",
+    "rate limit",
+    "too many requests",
+    "server_error",
+    "internal server error",
+    "service_unavailable",
+    "service unavailable",
+    "overloaded",
+    "timeout",
+    "connection",
+    "reset by peer",
+    "broken pipe",
+)
+
+
+def _is_retriable(exc: Exception) -> bool:
+    """Return True when the exception is likely transient (rate-limit, server error, network)."""
+    msg = str(exc).lower()
+    return any(p in msg for p in _RETRIABLE_PATTERNS)
 
 
 class LLMClient:
@@ -156,6 +184,30 @@ class LLMClient:
         template = self._get_prompt("user_prompt_template", _DEFAULT_USER_TEMPLATE)
         return template.replace("{memory_pack}", pack).replace("{user_text}", user_text)
 
+    def _chat(self, system: str, user: str, *, json_mode: bool = False,
+              temperature: Optional[float] = None, label: str = "chat") -> str:
+        """Route a chat request to the active provider with retry logic."""
+        if self.provider == "deepseek":
+            fn = lambda: self._deepseek_chat(system, user, json_mode, temperature)
+        else:
+            fn = lambda: self._gemini_chat(system, user, json_mode, temperature)
+        return self._retry(fn, label)
+
+    def _retry(self, fn: Callable[[], str], label: str) -> str:
+        """Call *fn* with exponential backoff (max 3 retries) for transient failures."""
+        for attempt in range(_MAX_RETRIES + 1):
+            try:
+                return fn()
+            except Exception as e:
+                if attempt == _MAX_RETRIES or not _is_retriable(e):
+                    raise
+                wait = min(_RETRY_BASE_SECONDS * (2 ** attempt), _RETRY_MAX_SECONDS)
+                logger.warning(
+                    "%s attempt %d/%d failed (retriable: %s), retrying in %.1fs",
+                    label, attempt + 1, _MAX_RETRIES, type(e).__name__, wait,
+                )
+                time.sleep(wait)
+
     def respond(self, memory_pack: str, user_text: str) -> LLMResult:
         """Generate an assistant response given recalled memories and the current user utterance."""
         prompt = self._build_prompt(memory_pack, user_text)
@@ -164,14 +216,12 @@ class LLMClient:
         system_prompt = self._get_prompt("system_prompt", _DEFAULT_SYSTEM_PROMPT)
         t0 = time.perf_counter()
         try:
-            if self.provider == "deepseek":
-                text = self._deepseek_chat(system_prompt, prompt, json_mode=False)
-            else:
-                text = self._gemini_chat(system_prompt, prompt)
+            text = self._chat(system_prompt, prompt, label="respond")
             dt = (time.perf_counter() - t0) * 1000.0
             return LLMResult(text.strip(), dt, True, None, prompt)
         except Exception as e:  # noqa: BLE001
             dt = (time.perf_counter() - t0) * 1000.0
+            logger.error("respond failed after retries: %s: %s", type(e).__name__, e)
             return LLMResult(f"[LLM error] {type(e).__name__}: {e}", dt, False, str(e), prompt)
 
     def extract_memory(self, user_text: str, assistant_text: str) -> List[Dict]:
@@ -188,22 +238,10 @@ class LLMClient:
         )
         sys_prompt = self._get_prompt("extract_system_prompt", _DEFAULT_EXTRACT_SYSTEM_PROMPT)
         try:
-            if self.provider == "deepseek":
-                raw = self._deepseek_chat(
-                    sys_prompt,
-                    instruction,
-                    json_mode=True,
-                    temperature=0.0,
-                )
-            else:
-                raw = self._gemini_chat(
-                    sys_prompt,
-                    instruction,
-                    json_mode=True,
-                    temperature=0.0,
-                )
+            raw = self._chat(sys_prompt, instruction, json_mode=True, temperature=0.0, label="extract_memory")
             return _parse_memories(raw)
         except Exception:
+            logger.warning("extract_memory failed after retries", exc_info=True)
             return []
 
     def dream_cluster(self, members: List[Dict]) -> Dict:
@@ -222,12 +260,10 @@ class LLMClient:
         instruction = instruction_template.replace("{listing}", listing)
         sys_prompt = self._get_prompt("dream_system_prompt", _DEFAULT_DREAM_SYSTEM_PROMPT)
         try:
-            if self.provider == "deepseek":
-                raw = self._deepseek_chat(sys_prompt, instruction, json_mode=True, temperature=0.2)
-            else:
-                raw = self._gemini_chat(sys_prompt, instruction, json_mode=True, temperature=0.2)
+            raw = self._chat(sys_prompt, instruction, json_mode=True, temperature=0.2, label="dream_cluster")
             return _parse_dream(raw)
         except Exception:
+            logger.warning("dream_cluster failed after retries", exc_info=True)
             return {"action": "none", "memories": []}
 
     def _deepseek_chat(self, system: str, user: str, json_mode: bool, temperature=None) -> str:
@@ -297,25 +333,11 @@ def _loads_relaxed(text: Optional[str]):
 
 def _parse_memories(text: Optional[str]) -> List[Dict]:
     """Best-effort parse of memory-extraction JSON into a list of validated memory dicts."""
-    if not text:
-        return []
-    text = text.strip()
-    text = re.sub(r"^```(?:json)?|```$", "", text, flags=re.MULTILINE).strip()
-    data = None
-    try:
-        data = json.loads(text)
-    except Exception:
-        m = re.search(r"\{.*\}|\[.*\]", text, flags=re.DOTALL)
-        if m:
-            try:
-                data = json.loads(m.group(0))
-            except Exception:
-                return []
+    data = _loads_relaxed(text)
     if data is None:
         return []
     if isinstance(data, dict):
-        if "memories" in data and isinstance(data["memories"], list):
-            data = data["memories"]
-        else:
-            data = [data]
+        data = data.get("memories") or [data]
+    if not isinstance(data, list):
+        return []
     return [d for d in data if isinstance(d, dict) and d.get("text")]

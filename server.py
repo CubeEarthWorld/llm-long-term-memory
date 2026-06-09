@@ -29,11 +29,15 @@ from config import Config, default_config
 from core.engine import (
     BASE_DIR,
     DATA_DIR,
+    SEED_CSV_PATH,
     SYSTEM_ID,
     SYSTEM_TITLE,
+    Engine,
     build_engine,
+    clean_seed_items,
     default_seed,
     dispose_engine,
+    parse_seed_csv,
     reset_state,
     run_dream,
     run_seed,
@@ -45,9 +49,8 @@ app = FastAPI(title=SYSTEM_TITLE)
 # Shared mutable state — accessed only while LOCK is held by run_job(),
 # or read-only in GET handlers after the engine is ready.
 STATE = {"ready": False, "running": False, "progress": "", "error": None, "init_error": None}
-ENGINE = {"e": None, "cfg": None}   # "e" holds the engine dict from core.engine
+ENGINE: dict = {"e": None, "cfg": None}   # "e" holds the Engine from core.engine
 LOCK = threading.Lock()
-SEED_CSV = os.path.join(DATA_DIR, "seed_utterances.csv")  # persisted seed utterances
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -98,52 +101,17 @@ class CsvBody(BaseModel):
 # Seed CSV persistence helpers
 # --------------------------------------------------------------------------- #
 
-def _load_seed() -> List[dict]:
-    """Load seed utterances from CSV, or fall back to the built-in scenario."""
-    if not os.path.exists(SEED_CSV):
-        return default_seed()
-    try:
-        with open(SEED_CSV, encoding="utf-8-sig", newline="") as f:
-            rows = [
-                {
-                    "text": (r.get("text") or "").strip(),
-                    "note": (r.get("note") or "").strip(),
-                    "advance": ((r.get("advance") or "0").strip() or "0"),
-                }
-                for r in csv.DictReader(f)
-            ]
-        rows = [r for r in rows if r["text"]]
-        return rows or default_seed()
-    except Exception:
-        traceback.print_exc()
-        return default_seed()
-
-
 def _save_seed(items: List[dict]) -> None:
     """Persist seed utterances to CSV so edits survive server restarts."""
     os.makedirs(DATA_DIR, exist_ok=True)
-    with open(SEED_CSV, "w", encoding="utf-8-sig", newline="") as f:
+    with open(SEED_CSV_PATH, "w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
         writer.writerow(["text", "note", "advance"])
         for item in items:
-            writer.writerow([item["text"], item.get("note", ""), (item.get("advance", "0") or "0")])
+            writer.writerow([item["text"], item.get("note", ""), item["advance"]])
 
 
-def _clean_seed_items(raw) -> List[dict]:
-    """Normalise a list of raw dicts into valid seed items (text/note/advance)."""
-    items = []
-    for item in raw or []:
-        text = str((item or {}).get("text", "")).strip()
-        if text:
-            items.append({
-                "text": text,
-                "note": str((item or {}).get("note", "")).strip(),
-                "advance": (str((item or {}).get("advance", "0")).strip() or "0"),
-            })
-    return items
-
-
-SEED = {"items": _load_seed()}
+SEED: dict = {"items": default_seed()}
 
 
 # --------------------------------------------------------------------------- #
@@ -165,10 +133,19 @@ def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
         ENGINE["e"] = build_engine(cfg, wipe=wipe, seed=SEED["items"])
         ENGINE["cfg"] = cfg
         # After a long downtime, gradually clean up stale memories instead of
-        # archiving everything at the first write().
+        # archiving everything at the first write(). Run maintain in a bounded
+        # recovery loop so that not just 5 (max_decay_per_turn) but up to
+        # ~250 decayed memories are cleaned up on startup.
         if not wipe and ENGINE["e"]:
             try:
-                ENGINE["e"]["system"].maintain(ENGINE["e"]["turn"])
+                system = ENGINE["e"]["system"]
+                max_recovery_passes = 20  # 20 passes × 5 = max 100 memories archived
+                for _ in range(max_recovery_passes):
+                    before = system.total_records()
+                    system.maintain(ENGINE["e"]["turn"])
+                    after = system.total_records()
+                    if before == after:
+                        break  # no more work to do
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
         STATE["init_error"] = None
@@ -202,44 +179,23 @@ def run_job(fn) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
-def _active_engine() -> dict:
+def _active_engine() -> Engine:
     """Return the current engine, or raise HTTPException(503/409) if unavailable/busy."""
-    engine = ENGINE["e"]
-    if not engine or not STATE["ready"]:
-        raise HTTPException(503, "Engine is still starting.")
-    if STATE["running"]:
-        raise HTTPException(409, "A job is already running.")
-    return engine
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            raise HTTPException(503, "Engine is still starting.")
+        if STATE["running"]:
+            raise HTTPException(409, "A job is already running.")
+        return engine
 
 
-def _system_detail(engine: dict, turn: int) -> dict:
+def _system_detail(engine: Engine, turn: int) -> dict:
     """Build the per-turn detail object returned by /api/turns-detail."""
     metrics = engine["recorder"].for_turn(turn, SYSTEM_ID)
     if not metrics:
         return {}
-    return {
-        "title": SYSTEM_TITLE,
-        "response": metrics.response,
-        "write_note": metrics.write_note,
-        "records": metrics.total_records,
-        "pack_chars": metrics.pack_chars,
-        "pack_n": metrics.pack_n,
-        "pack_text": metrics.pack_text,
-        "prompt": metrics.prompt,
-        "written": metrics.written_rows,
-        "times": {
-            "total": round(metrics.total_ms, 1),
-            "llm": round(metrics.llm_ms, 1),
-            "retrieve": round(metrics.retrieve_ms, 1),
-            "write": round(metrics.write_ms, 1),
-            "maintain": round(metrics.maintain_ms, 1),
-            "embed": round(metrics.embed_ms, 1),
-        },
-        "recalled": [
-            {"id": item.mem_id, "text": item.text, "score": round(item.score, 3), **item.extra}
-            for item in metrics.recalled
-        ],
-    }
+    return metrics.to_detail_dict(SYSTEM_TITLE)
 
 
 @app.on_event("startup")
@@ -251,13 +207,19 @@ def _startup() -> None:
 @app.get("/api/state")
 def get_state():
     """Polling endpoint used by the frontend to show loading / error / ready state."""
-    engine = ENGINE["e"]
+    with LOCK:
+        engine = ENGINE["e"]
+        state_snapshot = {k: STATE[k] for k in ("ready", "running", "progress", "error", "init_error")}
+        turn = engine["turn"] if engine else 0
+        seeded = engine["seeded"] if engine else False
+        embedding_status = engine["provider"].status if engine else ""
+        llm_status = engine["llm"].status if engine else ""
     return {
-        **{k: STATE[k] for k in ("ready", "running", "progress", "error", "init_error")},
-        "turn": engine["turn"] if engine else 0,
-        "seeded": engine["seeded"] if engine else False,
-        "embedding": engine["provider"].status if engine else "",
-        "llm": engine["llm"].status if engine else "",
+        **state_snapshot,
+        "turn": turn,
+        "seeded": seeded,
+        "embedding": embedding_status,
+        "llm": llm_status,
         "n_seed": len(SEED["items"]),
         "system_title": SYSTEM_TITLE,
     }
@@ -266,8 +228,9 @@ def get_state():
 @app.get("/api/config")
 def get_config():
     """Return the currently active configuration as a serialisable dict."""
-    cfg = ENGINE["cfg"] or default_config()
-    return cfg.to_dict()
+    with LOCK:
+        cfg = ENGINE["cfg"] or default_config()
+        return cfg.to_dict()
 
 
 @app.post("/api/reset")
@@ -338,59 +301,66 @@ def dream(body: DreamBody):
 @app.get("/api/dream-log")
 def dream_log():
     """Return the results of the most recent dreaming pass."""
-    engine = ENGINE["e"]
-    return {"results": engine.get("last_dream", []) if engine else []}
+    with LOCK:
+        engine = ENGINE["e"]
+        return {"results": list(engine.get("last_dream", [])) if engine else []}
 
 
 @app.get("/api/turns-detail")
 def turns_detail():
     """Return the full turn log enriched with per-turn metrics and recalled memories."""
-    engine = ENGINE["e"]
-    if not engine:
-        return {"turns": [], "start_time": None}
-    return {
-        "start_time": engine.get("start_time"),
-        "turns": [
-            {
-                "turn": row["turn"],
-                "utterance": row["utterance"],
-                "note": row.get("note", ""),
-                "timestamp": row.get("timestamp"),
-                "system": _system_detail(engine, row["turn"]),
-            }
-            for row in engine["log"]
-        ]
-    }
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine:
+            return {"turns": [], "start_time": None}
+        log_snapshot = list(engine["log"])
+        start_time = engine.get("start_time")
+        return {
+            "start_time": start_time,
+            "turns": [
+                {
+                    "turn": row["turn"],
+                    "utterance": row["utterance"],
+                    "note": row.get("note", ""),
+                    "timestamp": row.get("timestamp"),
+                    "system": _system_detail(engine, row["turn"]),
+                }
+                for row in log_snapshot
+            ]
+        }
 
 
 @app.get("/api/db")
 def db():
     """Introspection endpoint: DB stats plus raw table snapshots (for the UI DB tab)."""
-    engine = ENGINE["e"]
-    if not engine:
-        return {"stats": {}, "tables": {}}
-    system = engine["system"]
-    return {
-        "stats": {
-            "total_records": system.total_records(),
-            **system.stats(),
-            "vector_mb": round(system.vector_mb(), 3),
-            "db_kb": round(system.db_size_bytes() / 1024, 1),
-        },
-        "tables": system.snapshot(),
-    }
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine:
+            return {"stats": {}, "tables": {}}
+        system = engine["system"]
+        return {
+            "stats": {
+                "total_records": system.total_records(),
+                **system.stats(),
+                "vector_mb": round(system.vector_mb(), 3),
+                "db_kb": round(system.db_size_bytes() / 1024, 1),
+            },
+            "tables": system.snapshot(),
+        }
 
 
 @app.get("/api/metrics")
 def metrics():
     """Return all recorded turn metrics as rows, plus invariant checks."""
-    engine = ENGINE["e"]
-    if not engine:
-        return {"rows": [], "invariants": {}}
-    rows = [metrics.row() for metrics in engine["recorder"].history]
-    cfg = ENGINE["cfg"]
-    budget = cfg.glob.budget_chars
-    cap = cfg.glob.total_cap
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine:
+            return {"rows": [], "invariants": {}}
+        history_snapshot = list(engine["recorder"].history)
+        cfg = ENGINE["cfg"]
+        budget = cfg.glob.budget_chars
+        cap = cfg.glob.total_cap
+    rows = [m.row() for m in history_snapshot]
     return {
         "budget": budget,
         "cap": cap,
@@ -405,15 +375,17 @@ def metrics():
 @app.get("/api/seed-utterances")
 def seed_utts():
     """Return the currently configured seed utterances."""
+    with LOCK:
+        items_snapshot = list(SEED["items"])
     return {
         "utterances": [
             {
                 "i": index + 1,
                 "text": item["text"],
                 "note": item.get("note", ""),
-                "advance": (item.get("advance", "0") or "0"),
+                "advance": item["advance"],
             }
-            for index, item in enumerate(SEED["items"])
+            for index, item in enumerate(items_snapshot)
         ]
     }
 
@@ -421,7 +393,7 @@ def seed_utts():
 @app.post("/api/seed-utterances")
 def save_seed_utts(body: SeedBody):
     """Replace the seed utterances list and persist it to CSV."""
-    items = _clean_seed_items(body.items)
+    items = clean_seed_items(body.items)
     if not items:
         raise HTTPException(400, "少なくとも1件の発話が必要です。")
     SEED["items"] = items
@@ -448,7 +420,7 @@ def export_seed_utts():
     writer = csv.writer(buf)
     writer.writerow(["text", "note", "advance"])
     for item in SEED["items"]:
-        writer.writerow([item["text"], item.get("note", ""), (item.get("advance", "0") or "0")])
+        writer.writerow([item["text"], item.get("note", ""), item["advance"]])
     return Response(
         content="\ufeff" + buf.getvalue(),
         media_type="text/csv; charset=utf-8",
@@ -459,32 +431,14 @@ def export_seed_utts():
 @app.post("/api/seed-utterances/import")
 def import_seed_utts(body: CsvBody):
     """Parse raw CSV text and return cleaned seed items (preview before save)."""
-    items = _parse_seed_csv(body.csv or "")
+    items = parse_seed_csv(body.csv or "")
     if not items:
         raise HTTPException(400, "CSVから有効な発話を読み取れませんでした（text列が必要です）。")
     return {"items": items, "n": len(items)}
 
 
 def _parse_seed_csv(text: str) -> List[dict]:
-    """Tolerant CSV parser that accepts both header and header-less CSV for seeds."""
-    reader = csv.DictReader(io.StringIO(text))
-    items: List[dict] = []
-    if reader.fieldnames and any((h or "").strip().lower() == "text" for h in reader.fieldnames):
-        for row in reader:
-            items.append({
-                "text": (row.get("text") or "").strip(),
-                "note": (row.get("note") or row.get("memo") or "").strip(),
-                "advance": ((row.get("advance") or "0").strip() or "0"),
-            })
-    else:
-        for row in csv.reader(io.StringIO(text)):
-            if row:
-                items.append({
-                    "text": (row[0] or "").strip(),
-                    "note": (row[1].strip() if len(row) > 1 else ""),
-                    "advance": ((row[2].strip() if len(row) > 2 else "0") or "0"),
-                })
-    return _clean_seed_items(items)
+    return parse_seed_csv(text)
 
 
 app.mount("/", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "frontend"), html=True), name="frontend")

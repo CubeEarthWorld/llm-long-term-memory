@@ -90,8 +90,8 @@ def _summary(engine: dict) -> None:
     df = engine["recorder"].dataframe()
     cfg = engine["cfg"]
     if not df.empty:
-        print(f"  全 pack <= {cfg.glob.budget_chars}字 : {bool((df['pack_chars'] <= cfg.glob.budget_chars).all())}")
-        print(f"  全 records <= {cfg.glob.total_cap}件 : {bool((df['records'] <= cfg.glob.total_cap).all())}")
+        print(f"  全 pack <= {cfg.glob.budget_chars}字 : {(df['pack_chars'] <= cfg.glob.budget_chars).all()}")
+        print(f"  全 records <= {cfg.glob.total_cap}件 : {(df['records'] <= cfg.glob.total_cap).all()}")
     system = engine["system"]
     print(f"  {SYSTEM_TITLE}: records={system.total_records()}  {system.stats()}  vec={system.vector_mb():.3f}MB")
 
@@ -105,21 +105,8 @@ def _dump_json(engine: dict, path: str) -> None:
         entry = {"turn": t, "utterance": r["utterance"], "note": r.get("note", ""), "system": {}}
         m = rec.for_turn(t, SYSTEM_ID)
         if m:
-            entry["system"] = {
-                "response": m.response,
-                "write_note": m.write_note,
-                "records": m.total_records,
-                "pack_chars": m.pack_chars,
-                "times_ms": {
-                    "total": m.total_ms,
-                    "llm": m.llm_ms,
-                    "retrieve": m.retrieve_ms,
-                    "write": m.write_ms,
-                    "maintain": m.maintain_ms,
-                    "embed": m.embed_ms,
-                },
-                "recalled": [{"id": x.mem_id, "text": x.text, "score": x.score, **x.extra} for x in m.recalled],
-            }
+            d = m.to_detail_dict()
+            entry["system"] = {k: d[k] for k in ("response", "write_note", "records", "pack_chars", "times", "recalled")}
         out["turns"].append(entry)
     system = engine["system"]
     out["final"] = {

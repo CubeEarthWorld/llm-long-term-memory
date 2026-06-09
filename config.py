@@ -71,7 +71,10 @@ class LongTermMemoryConfig:
     freq_seed: float = 1.0             # initial access count on insert
     reinforce_inc: float = 1.0         # added to freq (access count) on each access
     # Upper bounds to prevent unbounded numeric growth over very long use.
-    max_freq: float = 1_000_000.0      # cap cumulative access count
+    # max_freq is kept low enough that eta*log1p(freq) does not dominate the retrieval
+    # score over cosine similarity (alpha*cos). At 10k accesses, log1p ≈ 9.21, eta*9.21 ≈ 0.18
+    # which is well below alpha*cos (max 0.55).
+    max_freq: float = 10_000.0        # cap cumulative access count
     max_stability_seconds: float = 10 * 365 * 24 * 60 * 60  # cap stability (~10 years)
     min_residency_seconds: float = 24 * 60 * 60
 
@@ -83,7 +86,7 @@ class LongTermMemoryConfig:
     alpha: float = 0.55
     beta: float = 0.2
     delta: float = 0.2
-    eta: float = 0.05
+    eta: float = 0.02              # reduced from 0.05 so freq does not dominate long-term ranking
     zeta: float = 0.05
     lambda_div: float = 0.5
     k_retrieve: int = 80
@@ -101,6 +104,9 @@ class LongTermMemoryConfig:
     archive_grace_seconds: float = 7 * 24 * 60 * 60
     # Max memories to archive in a single maintenance pass (prevents mass-forgetting after long downtime).
     max_decay_per_turn: int = 5
+    # Max memories to evict (archive) in a single capacity-enforcement pass.
+    # Prevents a single turn from stalling when the DB is far over total_cap after a very long downtime.
+    max_evict_per_turn: int = 10
     tau_savings: float = 0.85          # coarse-cosine threshold to recognize a reappearance
     savings_gain: float = 1.6          # stability head-start when restoring from archive (relearning saving)
     # 思い出し (recall): retrieve also searches the archive; an archived memory whose coarse-cosine
