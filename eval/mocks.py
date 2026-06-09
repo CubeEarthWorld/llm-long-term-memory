@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import hashlib
 import re
-from typing import Dict, List
 
 import numpy as np
 
@@ -36,7 +35,7 @@ class FakeEmbeddingProvider:
     def __init__(self, dim_full: int = 768):
         self.dim_full = dim_full
         self.total_ms = 0.0
-        self._cache: Dict[str, np.ndarray] = {}
+        self._cache: dict[str, np.ndarray] = {}
 
     def _tok_vec(self, tok: str) -> np.ndarray:
         v = self._cache.get(tok)
@@ -81,10 +80,10 @@ class FakeLLM:
         self.default_w = 0.6
         self.default_provenance = "user"
 
-    def extract_memory(self, user_text: str, assistant_text: str) -> List[Dict]:
+    def extract_memory(self, user_text: str, assistant_text: str) -> list[dict]:
         return [{"text": user_text, "w": self.default_w, "provenance": self.default_provenance}]
 
-    def dream_cluster(self, members: List[Dict]) -> Dict:
+    def dream_cluster(self, members: list[dict]) -> dict:
         if not members:
             return {"action": "none", "memories": []}
         gist = " / ".join(m["text"] for m in members)[:200]

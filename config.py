@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import os
 from dataclasses import asdict, dataclass, field, fields
-from typing import Dict
 
 from dotenv import load_dotenv
 
@@ -142,14 +141,14 @@ class Config:
     glob: GlobalConfig = field(default_factory=GlobalConfig)
     memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)
 
-    def to_dict(self) -> Dict:
+    def to_dict(self) -> dict:
         return {
             "glob": asdict(self.glob),
             "memory": asdict(self.memory),
         }
 
     @staticmethod
-    def from_dict(d: Dict) -> "Config":
+    def from_dict(d: dict) -> "Config":
         cfg = Config()
         for section, dc in (("glob", cfg.glob), ("memory", cfg.memory)):
             sub = d.get(section, {})

@@ -48,17 +48,14 @@ def _print_turn(engine: dict, turn: int) -> None:
     print(f"\n-- {SYSTEM_TITLE} --")
     print(f"  応答: {m.response.strip()[:400]}")
     print(f"  書込: {m.write_note}")
-    print(
-        f"  records={m.total_records}  pack={m.pack_chars}字/{m.pack_n}件  "
-        f"time={m.total_ms:.0f}ms (llm {m.llm_ms:.0f})"
-    )
-    if m.recalled:
-        print(f"  LLMが呼び出した記憶 ({len(m.recalled)}):")
-        for r in m.recalled:
-            extra = " ".join(f"{k}={v}" for k, v in list(r.extra.items())[:5])
-            print(f"     - [{r.score:.2f}] {r.text[:80]}  ({extra})")
-    else:
+    print(f"  records={m.total_records}  pack={m.pack_chars}字/{m.pack_n}件  time={m.total_ms:.0f}ms (llm {m.llm_ms:.0f})")
+    if not m.recalled:
         print("  想起なし")
+        return
+    print(f"  LLMが呼び出した記憶 ({len(m.recalled)}):")
+    for r in m.recalled:
+        extra = " ".join(f"{k}={v}" for k, v in list(r.extra.items())[:5])
+        print(f"     - [{r.score:.2f}] {r.text[:80]}  ({extra})")
 
 
 def _print_dream(results: list) -> None:
@@ -84,16 +81,14 @@ def _print_dream(results: list) -> None:
 
 def _summary(engine: dict) -> None:
     """Print high-level invariants and final DB statistics."""
-    print("\n" + "#" * 78)
-    print("# サマリ")
-    print("#" * 78)
+    print("\n" + "#" * 78 + "\n# サマリ\n" + "#" * 78)
     df = engine["recorder"].dataframe()
     cfg = engine["cfg"]
     if not df.empty:
         print(f"  全 pack <= {cfg.glob.budget_chars}字 : {(df['pack_chars'] <= cfg.glob.budget_chars).all()}")
         print(f"  全 records <= {cfg.glob.total_cap}件 : {(df['records'] <= cfg.glob.total_cap).all()}")
-    system = engine["system"]
-    print(f"  {SYSTEM_TITLE}: records={system.total_records()}  {system.stats()}  vec={system.vector_mb():.3f}MB")
+    s = engine["system"]
+    print(f"  {SYSTEM_TITLE}: records={s.total_records()}  {s.stats()}  vec={s.vector_mb():.3f}MB")
 
 
 def _dump_json(engine: dict, path: str) -> None:
@@ -102,18 +97,14 @@ def _dump_json(engine: dict, path: str) -> None:
     out = {"turns": [], "final": {}}
     for r in engine["log"]:
         t = r["turn"]
-        entry = {"turn": t, "utterance": r["utterance"], "note": r.get("note", ""), "system": {}}
         m = rec.for_turn(t, SYSTEM_ID)
-        if m:
-            d = m.to_detail_dict()
-            entry["system"] = {k: d[k] for k in ("response", "write_note", "records", "pack_chars", "times", "recalled")}
-        out["turns"].append(entry)
+        d = m.to_detail_dict() if m else {}
+        out["turns"].append({
+            "turn": t, "utterance": r["utterance"], "note": r.get("note", ""),
+            "system": {k: d[k] for k in ("response", "write_note", "records", "pack_chars", "times", "recalled") if k in d},
+        })
     system = engine["system"]
-    out["final"] = {
-        "records": system.total_records(),
-        "stats": system.stats(),
-        "vector_mb": system.vector_mb(),
-    }
+    out["final"] = {"records": system.total_records(), "stats": system.stats(), "vector_mb": system.vector_mb()}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
@@ -139,10 +130,8 @@ def main() -> int:
     if args.provider:
         cfg.glob.llm_provider = args.provider
 
-    print(
-        f"[init] provider={cfg.glob.llm_provider} model="
-        f"{cfg.glob.deepseek_model if cfg.glob.llm_provider == 'deepseek' else cfg.glob.gemini_model}"
-    )
+    model = cfg.glob.deepseek_model if cfg.glob.llm_provider == "deepseek" else cfg.glob.gemini_model
+    print(f"[init] provider={cfg.glob.llm_provider} model={model}")
     print(f"[init] embedding={cfg.glob.embedding_model} -> ./model")
     try:
         engine = build_engine(cfg, wipe=args.reset)

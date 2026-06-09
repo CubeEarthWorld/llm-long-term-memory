@@ -17,7 +17,6 @@ import threading
 import time
 import traceback
 import webbrowser
-from typing import List
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
@@ -101,7 +100,7 @@ class CsvBody(BaseModel):
 # Seed CSV persistence helpers
 # --------------------------------------------------------------------------- #
 
-def _save_seed(items: List[dict]) -> None:
+def _save_seed(items: list[dict]) -> None:
     """Persist seed utterances to CSV so edits survive server restarts."""
     os.makedirs(DATA_DIR, exist_ok=True)
     with open(SEED_CSV_PATH, "w", encoding="utf-8-sig", newline="") as f:
@@ -128,24 +127,21 @@ def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
     STATE["ready"] = False
     cfg = cfg or default_config()
     try:
-        if ENGINE["e"]:
-            dispose_engine(ENGINE["e"])
+        dispose_engine(ENGINE["e"])
         ENGINE["e"] = build_engine(cfg, wipe=wipe, seed=SEED["items"])
         ENGINE["cfg"] = cfg
         # After a long downtime, gradually clean up stale memories instead of
         # archiving everything at the first write(). Run maintain in a bounded
         # recovery loop so that not just 5 (max_decay_per_turn) but up to
         # ~250 decayed memories are cleaned up on startup.
-        if not wipe and ENGINE["e"]:
+        if not wipe:
             try:
                 system = ENGINE["e"]["system"]
-                max_recovery_passes = 20  # 20 passes × 5 = max 100 memories archived
-                for _ in range(max_recovery_passes):
+                for _ in range(20):  # 20 passes × 5 = max 100 memories archived
                     before = system.total_records()
                     system.maintain(ENGINE["e"]["turn"])
-                    after = system.total_records()
-                    if before == after:
-                        break  # no more work to do
+                    if before == system.total_records():
+                        break
             except Exception:  # noqa: BLE001
                 traceback.print_exc()
         STATE["init_error"] = None
@@ -208,21 +204,12 @@ def _startup() -> None:
 def get_state():
     """Polling endpoint used by the frontend to show loading / error / ready state."""
     with LOCK:
-        engine = ENGINE["e"]
-        state_snapshot = {k: STATE[k] for k in ("ready", "running", "progress", "error", "init_error")}
-        turn = engine["turn"] if engine else 0
-        seeded = engine["seeded"] if engine else False
-        embedding_status = engine["provider"].status if engine else ""
-        llm_status = engine["llm"].status if engine else ""
-    return {
-        **state_snapshot,
-        "turn": turn,
-        "seeded": seeded,
-        "embedding": embedding_status,
-        "llm": llm_status,
-        "n_seed": len(SEED["items"]),
-        "system_title": SYSTEM_TITLE,
-    }
+        e = ENGINE["e"]
+        state = {k: STATE[k] for k in ("ready", "running", "progress", "error", "init_error")}
+        turn, seeded = (e["turn"], e["seeded"]) if e else (0, False)
+        emb = e["provider"].status if e else ""
+        llm = e["llm"].status if e else ""
+    return {**state, "turn": turn, "seeded": seeded, "embedding": emb, "llm": llm, "n_seed": len(SEED["items"]), "system_title": SYSTEM_TITLE}
 
 
 @app.get("/api/config")
@@ -313,21 +300,12 @@ def turns_detail():
         engine = ENGINE["e"]
         if not engine:
             return {"turns": [], "start_time": None}
-        log_snapshot = list(engine["log"])
-        start_time = engine.get("start_time")
-        return {
-            "start_time": start_time,
-            "turns": [
-                {
-                    "turn": row["turn"],
-                    "utterance": row["utterance"],
-                    "note": row.get("note", ""),
-                    "timestamp": row.get("timestamp"),
-                    "system": _system_detail(engine, row["turn"]),
-                }
-                for row in log_snapshot
-            ]
-        }
+        log = list(engine["log"])
+        st = engine.get("start_time")
+    return {
+        "start_time": st,
+        "turns": [{"turn": r["turn"], "utterance": r["utterance"], "note": r.get("note", ""), "timestamp": r.get("timestamp"), "system": _system_detail(engine, r["turn"])} for r in log],
+    }
 
 
 @app.get("/api/db")
@@ -356,17 +334,16 @@ def metrics():
         engine = ENGINE["e"]
         if not engine:
             return {"rows": [], "invariants": {}}
-        history_snapshot = list(engine["recorder"].history)
-        cfg = ENGINE["cfg"]
-        budget = cfg.glob.budget_chars
-        cap = cfg.glob.total_cap
-    rows = [m.row() for m in history_snapshot]
+        hist = list(engine["recorder"].history)
+        budget = ENGINE["cfg"].glob.budget_chars
+        cap = ENGINE["cfg"].glob.total_cap
+    rows = [m.row() for m in hist]
     return {
         "budget": budget,
         "cap": cap,
         "invariants": {
-            f"全 pack <= {budget}字": all(row["pack_chars"] <= budget for row in rows) if rows else True,
-            f"全 records <= {cap}件": all(row["records"] <= cap for row in rows) if rows else True,
+            f"全 pack <= {budget}字": all(r["pack_chars"] <= budget for r in rows),
+            f"全 records <= {cap}件": all(r["records"] <= cap for r in rows),
         },
         "rows": rows,
     }
@@ -376,18 +353,8 @@ def metrics():
 def seed_utts():
     """Return the currently configured seed utterances."""
     with LOCK:
-        items_snapshot = list(SEED["items"])
-    return {
-        "utterances": [
-            {
-                "i": index + 1,
-                "text": item["text"],
-                "note": item.get("note", ""),
-                "advance": item["advance"],
-            }
-            for index, item in enumerate(items_snapshot)
-        ]
-    }
+        items = list(SEED["items"])
+    return {"utterances": [{"i": i + 1, **item} for i, item in enumerate(items)]}
 
 
 @app.post("/api/seed-utterances")
@@ -435,10 +402,6 @@ def import_seed_utts(body: CsvBody):
     if not items:
         raise HTTPException(400, "CSVから有効な発話を読み取れませんでした（text列が必要です）。")
     return {"items": items, "n": len(items)}
-
-
-def _parse_seed_csv(text: str) -> List[dict]:
-    return parse_seed_csv(text)
 
 
 app.mount("/", NoCacheStaticFiles(directory=os.path.join(BASE_DIR, "frontend"), html=True), name="frontend")

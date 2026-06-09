@@ -8,7 +8,7 @@ import os
 import re
 import time
 from dataclasses import dataclass
-from typing import Callable, Dict, List, Optional
+from typing import Callable
 
 logger = logging.getLogger(__name__)
 
@@ -92,7 +92,7 @@ class LLMResult:
     text: str
     latency_ms: float
     ok: bool
-    error: Optional[str] = None
+    error: str | None = None
     prompt: str = ""
 
 
@@ -131,7 +131,7 @@ class LLMClient:
         gemini_model: str = "gemini-3.5-flash",
         temperature: float = 0.7,
         max_output_tokens: int = 1024,
-        prompts: Optional[Dict[str, str]] = None,
+        prompts: dict[str, str] | None = None,
     ):
         self.provider = provider.lower()
         self.deepseek_model = deepseek_model
@@ -139,7 +139,7 @@ class LLMClient:
         self.gemini_model = gemini_model
         self.temperature = temperature
         self.max_output_tokens = max_output_tokens
-        self.init_error: Optional[str] = None
+        self.init_error: str | None = None
         self._client = None
         self._prompts = prompts if prompts is not None else _load_prompts()
         self._init()
@@ -184,13 +184,14 @@ class LLMClient:
         template = self._get_prompt("user_prompt_template", _DEFAULT_USER_TEMPLATE)
         return template.replace("{memory_pack}", pack).replace("{user_text}", user_text)
 
+    def _resolve_temperature(self, override: float | None) -> float:
+        return self.temperature if override is None else override
+
     def _chat(self, system: str, user: str, *, json_mode: bool = False,
-              temperature: Optional[float] = None, label: str = "chat") -> str:
+              temperature: float | None = None, label: str = "chat") -> str:
         """Route a chat request to the active provider with retry logic."""
-        if self.provider == "deepseek":
-            fn = lambda: self._deepseek_chat(system, user, json_mode, temperature)
-        else:
-            fn = lambda: self._gemini_chat(system, user, json_mode, temperature)
+        t = self._resolve_temperature(temperature)
+        fn = lambda: self._deepseek_chat(system, user, json_mode, t) if self.provider == "deepseek" else self._gemini_chat(system, user, json_mode, t)
         return self._retry(fn, label)
 
     def _retry(self, fn: Callable[[], str], label: str) -> str:
@@ -266,12 +267,12 @@ class LLMClient:
             logger.warning("dream_cluster failed after retries", exc_info=True)
             return {"action": "none", "memories": []}
 
-    def _deepseek_chat(self, system: str, user: str, json_mode: bool, temperature=None) -> str:
+    def _deepseek_chat(self, system: str, user: str, json_mode: bool, temperature: float) -> str:
         """Provider-specific chat completion for DeepSeek (OpenAI-compatible endpoint)."""
         kwargs = dict(
             model=self.deepseek_model,
             messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-            temperature=self.temperature if temperature is None else temperature,
+            temperature=temperature,
             max_tokens=self.max_output_tokens,
         )
         if json_mode:
@@ -279,13 +280,13 @@ class LLMClient:
         resp = self._client.chat.completions.create(**kwargs)
         return resp.choices[0].message.content or ""
 
-    def _gemini_chat(self, system: str, user: str, json_mode: bool = False, temperature=None) -> str:
+    def _gemini_chat(self, system: str, user: str, json_mode: bool, temperature: float) -> str:
         """Provider-specific chat completion for Google Gemini."""
         from google.genai import types
 
         cfg = dict(
             system_instruction=system,
-            temperature=self.temperature if temperature is None else temperature,
+            temperature=temperature,
             max_output_tokens=self.max_output_tokens,
         )
         if json_mode:
@@ -301,7 +302,7 @@ class LLMClient:
 
 
 
-def _parse_dream(text: Optional[str]) -> Dict:
+def _parse_dream(text: str | None) -> dict:
     """Parse a dreaming decision: {"action": ..., "memories": [...]}."""
     obj = _loads_relaxed(text)
     if not isinstance(obj, dict):
@@ -310,11 +311,12 @@ def _parse_dream(text: Optional[str]) -> Dict:
     if action not in ("merge", "split", "none"):
         action = "merge" if obj.get("memories") else "none"
     mems = obj.get("memories")
-    mems = [m for m in mems if isinstance(m, dict) and m.get("text")] if isinstance(mems, list) else []
-    return {"action": action, "memories": mems}
+    if not isinstance(mems, list):
+        return {"action": action, "memories": []}
+    return {"action": action, "memories": [m for m in mems if isinstance(m, dict) and m.get("text")]}
 
 
-def _loads_relaxed(text: Optional[str]):
+def _loads_relaxed(text: str | None):
     """Best-effort JSON parse tolerant of code fences and surrounding prose."""
     if not text:
         return None
@@ -331,7 +333,7 @@ def _loads_relaxed(text: Optional[str]):
     return None
 
 
-def _parse_memories(text: Optional[str]) -> List[Dict]:
+def _parse_memories(text: str | None) -> list[dict]:
     """Best-effort parse of memory-extraction JSON into a list of validated memory dicts."""
     data = _loads_relaxed(text)
     if data is None:

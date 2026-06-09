@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import os
 import time
-from typing import List, Optional
 
 import numpy as np
 
@@ -94,16 +93,19 @@ class EmbeddingProvider:
         return np.asarray(arr, dtype=np.float32)
 
     # ------------------------------------------------------------------ #
-    def encode_plain(self, texts, dim: Optional[int] = None) -> np.ndarray:
-        return self._maybe_truncate(self._encode(_as_list(texts), "plain"), dim)
+    def encode_plain(self, texts, dim: int | None = None) -> np.ndarray:
+        return self._encode_typed(texts, "plain", dim)
 
-    def encode_query(self, texts, dim: Optional[int] = None) -> np.ndarray:
-        return self._maybe_truncate(self._encode(_as_list(texts), "query"), dim)
+    def encode_query(self, texts, dim: int | None = None) -> np.ndarray:
+        return self._encode_typed(texts, "query", dim)
 
-    def encode_document(self, texts, dim: Optional[int] = None) -> np.ndarray:
-        return self._maybe_truncate(self._encode(_as_list(texts), "document"), dim)
+    def encode_document(self, texts, dim: int | None = None) -> np.ndarray:
+        return self._encode_typed(texts, "document", dim)
 
-    def _maybe_truncate(self, mat: np.ndarray, dim: Optional[int]) -> np.ndarray:
+    def _encode_typed(self, texts, kind: str, dim: int | None = None) -> np.ndarray:
+        return self._maybe_truncate(self._encode(_as_list(texts), kind), dim)
+
+    def _maybe_truncate(self, mat: np.ndarray, dim: int | None) -> np.ndarray:
         if dim is not None and dim < mat.shape[1]:
             return truncate_normalize(mat, dim)
         return mat
@@ -113,15 +115,15 @@ class EmbeddingProvider:
         return f"OK — {self.model_name} (dim={self.dim_full}) @ ./model"
 
 
-def _as_list(texts) -> List[str]:
+def _as_list(texts) -> list[str]:
     if isinstance(texts, str):
         return [texts]
     return list(texts)
 
 
 # Module-level singleton cache (one heavy model per process) -------------------
-_PROVIDER: Optional[EmbeddingProvider] = None
-_PROVIDER_KEY = None
+_PROVIDER: EmbeddingProvider | None = None
+_PROVIDER_KEY: str | None = None
 
 
 def get_provider(model_name: str, dim_full: int) -> EmbeddingProvider:

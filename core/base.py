@@ -4,7 +4,6 @@ from __future__ import annotations
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List
 
 from .embedding import EmbeddingProvider
 from .llm_client import LLMClient
@@ -14,13 +13,13 @@ from .metrics import MetricsRecorder, RecalledItem, TurnMetrics
 @dataclass
 class RetrieveResult:
     pack_text: str
-    recalled: List[RecalledItem] = field(default_factory=list)
+    recalled: list[RecalledItem] = field(default_factory=list)
 
 
 @dataclass
 class WriteResult:
-    written_ids: List = field(default_factory=list)
-    written_rows: List[Dict] = field(default_factory=list)
+    written_ids: list = field(default_factory=list)
+    written_rows: list[dict] = field(default_factory=list)
     note: str = ""
     extract_ms: float = 0.0
 
@@ -33,28 +32,20 @@ class MemorySystem(ABC):
 
     @abstractmethod
     def retrieve(self, query: str, turn: int) -> RetrieveResult: ...
-
     @abstractmethod
     def write(self, turn: int, user_text: str, assistant_text: str) -> WriteResult: ...
-
     @abstractmethod
     def maintain(self, turn: int) -> None: ...
-
     @abstractmethod
-    def stats(self) -> Dict[str, int]: ...
-
+    def stats(self) -> dict[str, int]: ...
     @abstractmethod
     def total_records(self) -> int: ...
-
     @abstractmethod
-    def snapshot(self) -> Dict[str, List[Dict]]: ...
-
+    def snapshot(self) -> dict[str, list[dict]]: ...
     @abstractmethod
     def vector_mb(self) -> float: ...
-
     @abstractmethod
     def db_size_bytes(self) -> int: ...
-
     @abstractmethod
     def reset(self) -> None: ...
 

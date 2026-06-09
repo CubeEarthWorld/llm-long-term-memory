@@ -22,9 +22,8 @@ What the scenario tests:
 """
 from __future__ import annotations
 
-from typing import Dict, List
 
-_SEED_ENTRIES: List[Dict[str, str]] = [
+_SEED_ENTRIES: list[dict[str, str]] = [
     # 1  real "now" at seed start
     {"text": "こんにちは。今日は何をしようかな。", "note": "ノイズ（挨拶＋独り言）", "advance": "0"},
     # 2  same moment
@@ -61,6 +60,6 @@ _SEED_ENTRIES: List[Dict[str, str]] = [
     {"text": "私の好きな食べ物は何か覚えてる？", "note": "嗜好の想起テスト", "advance": "0"},
 ]
 
-SEED_UTTERANCES: List[str] = [e["text"] for e in _SEED_ENTRIES]
-SEED_NOTES: List[str] = [e["note"] for e in _SEED_ENTRIES]
-SEED_ADVANCE: List[str] = [e["advance"] for e in _SEED_ENTRIES]
+SEED_UTTERANCES: list[str] = [e["text"] for e in _SEED_ENTRIES]
+SEED_NOTES: list[str] = [e["note"] for e in _SEED_ENTRIES]
+SEED_ADVANCE: list[str] = [e["advance"] for e in _SEED_ENTRIES]

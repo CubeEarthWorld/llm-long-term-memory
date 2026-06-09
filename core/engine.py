@@ -11,7 +11,7 @@ import csv
 import io
 import os
 import time
-from typing import Any, Callable, Dict, List, Optional, TypedDict
+from typing import Any, Callable, TypedDict
 
 from config import Config
 from core.base import TurnRunner
@@ -60,15 +60,15 @@ class Engine(TypedDict, total=False):
     recorder: MetricsRecorder
     runner: TurnRunner
     turn: int
-    log: List[Dict[str, Any]]
-    start_time: Optional[float]
+    log: list[dict[str, Any]]
+    start_time: float | None
     seeded: bool
-    last_dream: List[Dict[str, Any]]
+    last_dream: list[dict[str, Any]]
     cfg: Config
-    seed: List[Dict[str, str]]
+    seed: list[dict[str, str]]
 
 
-def load_seed_csv(path: str) -> List[Dict[str, str]]:
+def load_seed_csv(path: str) -> list[dict[str, str]]:
     """Load seed items from a CSV file. Returns empty list on missing/unparseable file."""
     if not os.path.exists(path):
         return []
@@ -87,22 +87,18 @@ def load_seed_csv(path: str) -> List[Dict[str, str]]:
         return []
 
 
-def default_seed() -> List[Dict[str, str]]:
+def default_seed() -> list[dict[str, str]]:
     """Return seed utterances: CSV if available, otherwise built-in scenario."""
     rows = load_seed_csv(SEED_CSV_PATH)
     if rows:
         return rows
     return [
-        {
-            "text": text,
-            "note": (SEED_NOTES[i] if i < len(SEED_NOTES) else ""),
-            "advance": (SEED_ADVANCE[i] if i < len(SEED_ADVANCE) else "0"),
-        }
-        for i, text in enumerate(SEED_UTTERANCES)
+        {"text": t, "note": SEED_NOTES[i] if i < len(SEED_NOTES) else "", "advance": SEED_ADVANCE[i] if i < len(SEED_ADVANCE) else "0"}
+        for i, t in enumerate(SEED_UTTERANCES)
     ]
 
 
-def clean_seed_items(raw) -> List[Dict[str, str]]:
+def clean_seed_items(raw) -> list[dict[str, str]]:
     """Normalise a list of raw dicts into valid seed items (text/note/advance)."""
     items = []
     for item in raw or []:
@@ -116,7 +112,7 @@ def clean_seed_items(raw) -> List[Dict[str, str]]:
     return items
 
 
-def parse_seed_csv(text: str) -> List[Dict[str, str]]:
+def parse_seed_csv(text: str) -> list[dict[str, str]]:
     """Tolerant CSV parser that accepts both header and header-less CSV for seeds."""
     reader = csv.DictReader(io.StringIO(text))
     items: List[Dict[str, str]] = []
@@ -138,7 +134,7 @@ def parse_seed_csv(text: str) -> List[Dict[str, str]]:
     return clean_seed_items(items)
 
 
-def build_engine(cfg: Config, wipe: bool = False, seed: Optional[List[Dict[str, str]]] = None) -> Engine:
+def build_engine(cfg: Config, wipe: bool = False, seed: list[dict[str, str]] | None = None) -> Engine:
     """Assemble a full engine dict from configuration.
 
     Args:
@@ -180,10 +176,8 @@ def build_engine(cfg: Config, wipe: bool = False, seed: Optional[List[Dict[str, 
 
 def _open_store(wipe: bool) -> Store:
     path = os.path.join(DATA_DIR, DB_FILENAME)
-    store = Store(path)
-    if not wipe:
-        return store
-    store.wipe_file()
+    if wipe:
+        Store(path).wipe_file()
     return Store(path)
 
 
@@ -230,14 +224,14 @@ def run_turn(engine: Engine, utterance: str, note: str = "") -> int:
     return turn
 
 
-def run_dream(engine: Engine, max_clusters: int = 1, force: bool = False) -> List[Dict[str, Any]]:
+def run_dream(engine: Engine, max_clusters: int = 1, force: bool = False) -> list[dict[str, Any]]:
     """Trigger memory consolidation (dreaming) on the engine's memory system."""
     results = engine["system"].dream(max_clusters=max_clusters, force=force)
     engine["last_dream"] = results
     return results
 
 
-def run_seed(engine: Engine, on_progress: Optional[Callable[[int, str], None]] = None) -> None:
+def run_seed(engine: Engine, on_progress: Callable[[int, str], None] | None = None) -> None:
     """Replay seed utterances along a virtual timeline to exercise forgetting.
 
     The first utterance is anchored at the current wall-clock time.  Each item's

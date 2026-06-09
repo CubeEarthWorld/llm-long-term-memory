@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any
 
 import pandas as pd
 
@@ -12,7 +12,7 @@ class RecalledItem:
     mem_id: Any
     text: str
     score: float
-    extra: Dict[str, Any] = field(default_factory=dict)
+    extra: dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -28,26 +28,26 @@ class TurnMetrics:
     maintain_ms: float = 0.0
 
     total_records: int = 0
-    counts: Dict[str, int] = field(default_factory=dict)
+    counts: dict[str, int] = field(default_factory=dict)
     db_size_bytes: int = 0
     vector_mb: float = 0.0
 
     pack_chars: int = 0
     pack_n: int = 0
-    recalled: List[RecalledItem] = field(default_factory=list)
+    recalled: list[RecalledItem] = field(default_factory=list)
     pack_text: str = ""
     prompt: str = ""
     response: str = ""
 
-    written_ids: List[Any] = field(default_factory=list)
-    written_rows: List[Dict[str, Any]] = field(default_factory=list)
+    written_ids: list[Any] = field(default_factory=list)
+    written_rows: list[dict[str, Any]] = field(default_factory=list)
     write_note: str = ""
 
     @property
     def total_ms(self) -> float:
         return self.embed_ms + self.retrieve_ms + self.llm_ms + self.write_ms + self.maintain_ms
 
-    def to_detail_dict(self, title: str = "") -> Dict[str, Any]:
+    def to_detail_dict(self, title: str = "") -> dict[str, Any]:
         """Return a rich detail dict suitable for API responses and JSON export."""
         return {
             "title": title,
@@ -73,7 +73,7 @@ class TurnMetrics:
             ],
         }
 
-    def row(self) -> Dict[str, Any]:
+    def row(self) -> dict[str, Any]:
         return {
             "turn": self.turn,
             "system": self.system_id,
@@ -95,7 +95,7 @@ class TurnMetrics:
 class MetricsRecorder:
     def __init__(self, max_history: int = 1000):
         self.max_history: int = max_history
-        self.history: List[TurnMetrics] = []
+        self.history: list[TurnMetrics] = []
 
     def add(self, metrics: TurnMetrics) -> None:
         self.history.append(metrics)
@@ -106,11 +106,11 @@ class MetricsRecorder:
     def reset(self) -> None:
         self.history.clear()
 
-    def dataframe(self, system_id: Optional[str] = None) -> pd.DataFrame:
+    def dataframe(self, system_id: str | None = None) -> pd.DataFrame:
         rows = [m.row() for m in self.history if system_id is None or m.system_id == system_id]
         return pd.DataFrame(rows)
 
-    def for_turn(self, turn: int, system_id: str) -> Optional[TurnMetrics]:
+    def for_turn(self, turn: int, system_id: str) -> TurnMetrics | None:
         return next((m for m in self.history if m.turn == turn and m.system_id == system_id), None)
 
     def latest_turn(self) -> int:

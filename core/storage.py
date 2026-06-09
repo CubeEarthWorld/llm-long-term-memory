@@ -9,18 +9,18 @@ from __future__ import annotations
 
 import os
 import sqlite3
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Sequence
 
 import numpy as np
 
 
-def pack_vec(vec: Optional[np.ndarray]) -> Optional[bytes]:
+def pack_vec(vec: np.ndarray | None) -> bytes | None:
     if vec is None:
         return None
     return np.asarray(vec, dtype=np.float32).tobytes()
 
 
-def unpack_vec(blob: Optional[bytes]) -> Optional[np.ndarray]:
+def unpack_vec(blob: bytes | None) -> np.ndarray | None:
     if blob is None:
         return None
     return np.frombuffer(blob, dtype=np.float32)
@@ -34,7 +34,7 @@ def cosine(a: np.ndarray, b: np.ndarray) -> float:
     return float(np.dot(a, b) / (na * nb))
 
 
-def vec_label(blob: Optional[bytes]) -> str:
+def vec_label(blob: bytes | None) -> str:
     """Human-readable label for a stored vector blob."""
     return "" if blob is None else f"<{len(blob)}B vec>"
 
@@ -57,10 +57,10 @@ class Store:
         self.conn.executescript(sql)
         self.conn.commit()
 
-    def query(self, sql: str, params: Sequence = ()) -> List[sqlite3.Row]:
+    def query(self, sql: str, params: Sequence = ()) -> list[sqlite3.Row]:
         return list(self.conn.execute(sql, params).fetchall())
 
-    def one(self, sql: str, params: Sequence = ()) -> Optional[sqlite3.Row]:
+    def one(self, sql: str, params: Sequence = ()) -> sqlite3.Row | None:
         row = self.conn.execute(sql, params).fetchone()
         return row
 
@@ -79,7 +79,7 @@ class Store:
         params: Sequence = (),
         id_col: str = "id",
         max_scan: int = 0,
-    ) -> List[Tuple]:
+    ) -> list[tuple]:
         """Return [(id, score, row), ...] top-k by cosine over rows matching `where`.
 
         Vectors are assumed L2-normalized, so cosine == dot product.
@@ -127,14 +127,14 @@ class Store:
                 total += os.path.getsize(p)
         return total
 
-    def vector_storage_mb(self, tables_cols: Sequence[Tuple[str, str]]) -> float:
+    def vector_storage_mb(self, tables_cols: Sequence[tuple[str, str]]) -> float:
         total = 0
         for table, col in tables_cols:
             for r in self.query(f"SELECT {col} AS v FROM {table} WHERE {col} IS NOT NULL"):
                 total += len(r["v"])
         return total / (1024 * 1024)
 
-    def rows_as_dicts(self, table: str, drop_blobs: bool = True, limit: int = 5000) -> List[Dict]:
+    def rows_as_dicts(self, table: str, drop_blobs: bool = True, limit: int = 5000) -> list[dict]:
         def _clean(row: sqlite3.Row) -> Dict:
             d = dict(row)
             if drop_blobs:

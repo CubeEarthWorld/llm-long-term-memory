@@ -37,7 +37,6 @@ import secrets
 import time
 import uuid
 from datetime import datetime
-from typing import Dict, List, Optional
 
 import numpy as np
 
@@ -347,15 +346,13 @@ class LongTermMemory(MemorySystem):
     def _enforce_capacity(self, now_unix: float) -> None:
         """Ensure active store stays within total_cap by archiving decayed and then evicting lowest-r memories."""
         self._archive_decayed(now_unix)
-        evicted = 0
-        while self.store.count("memories") > self.glob.total_cap:
-            if evicted >= self.memory.max_evict_per_turn:
+        for _ in range(self.memory.max_evict_per_turn):
+            if self.store.count("memories") <= self.glob.total_cap:
                 break
             victim = self._evict_target(now_unix)
             if victim is None:
                 break
             self._archive_memory(victim, now_unix)
-            evicted += 1
         self._enforce_archive_cap()
 
     def _archive_decayed(self, now_unix: float) -> None:
@@ -380,28 +377,25 @@ class LongTermMemory(MemorySystem):
             if self.store.one("SELECT 1 FROM memories WHERE id=?", (mid,)):
                 self._archive_memory(mid, now_unix)
 
-    def _evict_target(self, now_unix: float) -> Optional[str]:
+    def _evict_target(self, now_unix: float) -> str | None:
         """Lowest-retrievability unprotected memory (with cluster-medoid protection)."""
-        # Query rewritten so an index on updated_at_unix can be used.
         rows = self.store.query(
             "SELECT * FROM memories WHERE updated_at_unix < ?",
             (now_unix - self.memory.min_residency_seconds,),
-        )
-        if not rows:
-            rows = self.store.query("SELECT * FROM memories")
+        ) or self.store.query("SELECT * FROM memories")
         if not rows:
             return None
         rmap = {r["id"]: self.retrievability(r, now_unix) for r in rows}
         pool = [r for r in rows if not self._is_protected(r, rmap[r["id"]], now_unix)] or rows
         victim = min(pool, key=lambda r: rmap[r["id"]])
-        victim_id = victim["id"]
+        vid = victim["id"]
         cid = victim["cluster_id"]
-        if cid is not None:
-            members = self.store.query("SELECT * FROM memories WHERE cluster_id=?", (cid,))
-            if len(members) >= 2 and victim_id == self._cluster_medoid(cid, members):
-                others = [m for m in members if m["id"] != victim_id]
-                victim_id = min(others, key=lambda m: self.retrievability(m, now_unix))["id"]
-        return victim_id
+        if cid is None:
+            return vid
+        members = self.store.query("SELECT * FROM memories WHERE cluster_id=?", (cid,))
+        if len(members) >= 2 and vid == self._cluster_medoid(cid, members):
+            vid = min((m for m in members if m["id"] != vid), key=lambda m: self.retrievability(m, now_unix))["id"]
+        return vid
 
     def _archive_memory(self, mid: str, now_unix: float) -> None:
         """Move a single live memory into the archive (coarse vector only) and delete it from active."""
@@ -414,7 +408,7 @@ class LongTermMemory(MemorySystem):
             "id,text,v_coarse,w,provenance,confidence,last_r,archived_at_unix,text_hash,timezone"
             ") VALUES(?,?,?,?,?,?,?,?,?,?)",
             (row["id"], row["text"], pack_vec(vc), row["w"], row["provenance"],
-             float(row["confidence"] or self.memory.confidence_inferred),
+             _fval(row, "confidence", self.memory.confidence_inferred),
              self.retrievability(row, now_unix), now_unix, _text_hash(row["text"]), row["timezone"]),
         )
         cid = row["cluster_id"]
@@ -441,44 +435,30 @@ class LongTermMemory(MemorySystem):
         self._apply_spreading(candidates)
         for c in candidates.values():
             c["score"] = self._retrieval_score(c["row"], c["cos"], c["r"]) + c.get("spread", 0.0)
-
-        ranked = self._mmr(list(candidates.values()))
-        result, packed_ids = self._pack_retrieved(ranked, now_unix)
+        result, packed_ids = self._pack_retrieved(self._mmr(list(candidates.values())), now_unix)
         self._reinforce_ids(packed_ids, now_unix)
         self._apply_interference(candidates, set(packed_ids), now_unix)
         return result
 
-    def _gather_candidates(self, query: str, now_unix: float) -> Dict[str, Dict]:
+    def _gather_candidates(self, query: str, now_unix: float) -> dict[str, dict]:
         """Recall per paragraph and union the results.
 
         The turn text is split into paragraphs; each is embedded and searched
         independently so a memory relevant to *any* paragraph can surface (a
         single whole-text embedding averages distinct topics together and dilutes
         them). A memory found by several paragraphs keeps its best (max) cosine,
-        so the gate and downstream score reflect its strongest cue. From here the
-        pipeline is unchanged: spreading -> score -> MMR -> pack by score."""
-        paras = self._split_paragraphs(query)
-        q_mat = self.provider.encode_query(paras, dim=self.glob.dim_full)
-        pool: Dict[str, Dict] = {}
-        gated: Dict[str, Dict] = {}
+        so the gate and downstream score reflect its strongest cue."""
+        q_mat = self.provider.encode_query(self._split_paragraphs(query), dim=self.glob.dim_full)
+        pool: dict[str, dict] = {}
+        gated: dict[str, dict] = {}
         for q in q_mat:
-            for mid, cos, row in self.store.cosine_search(
-                "memories", "v_full", q, k=self.memory.k_retrieve
-            ):
+            for mid, cos, row in self.store.cosine_search("memories", "v_full", q, k=self.memory.k_retrieve):
                 if cos < self.glob.sim_floor:
                     continue
-                existing = pool.get(mid)
-                if existing is not None and cos <= existing["cos"]:
-                    continue  # already kept this memory with an equal/stronger paragraph cue
+                if mid in pool and cos <= pool[mid]["cos"]:
+                    continue
                 r = self.retrievability(row, now_unix)
-                cand = {
-                    "id": mid,
-                    "cos": cos,
-                    "r": r,
-                    "row": row,
-                    "cluster_id": row["cluster_id"],
-                    "v": self._coarse(unpack_vec(row["v_full"])),
-                }
+                cand = {"id": mid, "cos": cos, "r": r, "row": row, "cluster_id": row["cluster_id"], "v": self._coarse(unpack_vec(row["v_full"]))}
                 pool[mid] = cand
                 if self._recall_gate(cos, r):
                     gated[mid] = cand
@@ -673,7 +653,7 @@ class LongTermMemory(MemorySystem):
         return selected
 
     # -- dreaming (LLM-driven consolidation) --------------------------- #
-    def dream(self, now_unix: Optional[float] = None, max_clusters: Optional[int] = None, force: bool = False) -> List[Dict]:
+    def dream(self, now_unix: float | None = None, max_clusters: int | None = None, force: bool = False) -> list[dict]:
         now_unix = self.now_unix() if now_unix is None else now_unix
         limit = self.memory.dream_max_clusters if max_clusters is None else max_clusters
         ranked = self._dream_candidates(now_unix, force=force)
@@ -681,7 +661,7 @@ class LongTermMemory(MemorySystem):
         self._enforce_capacity(now_unix)
         return results
 
-    def _dream_candidates(self, now_unix: float, force: bool = False) -> List[tuple]:
+    def _dream_candidates(self, now_unix: float, force: bool = False) -> list[tuple]:
         out: List[tuple] = []
         for c in self.store.query("SELECT id, last_dreaming_unix FROM clusters"):
             members = self.store.query("SELECT updated_at_unix, v_full FROM memories WHERE cluster_id=?", (c["id"],))
@@ -708,26 +688,21 @@ class LongTermMemory(MemorySystem):
         out.sort(key=lambda x: x[1], reverse=True)
         return out
 
-    def _dream_cluster(self, cid: str, priority: float, now_unix: float) -> Dict:
-        members = self.store.query("SELECT * FROM memories WHERE cluster_id=?", (cid,))
-        members = sorted(members, key=lambda r: float(r["updated_at_unix"]))[: self.memory.dream_max_members]
+    def _dream_cluster(self, cid: str, priority: float, now_unix: float) -> dict:
+        members = sorted(
+            self.store.query("SELECT * FROM memories WHERE cluster_id=?", (cid,)),
+            key=lambda r: float(r["updated_at_unix"]),
+        )[: self.memory.dream_max_members]
         payload = [
             {
-                "id": m["id"],
-                "text": m["text"],
-                "w": round(float(m["w"]), 2),
-                "provenance": m["provenance"],
-                "updated_at_unix": int(m["updated_at_unix"]),
+                "id": m["id"], "text": m["text"], "w": round(float(m["w"]), 2),
+                "provenance": m["provenance"], "updated_at_unix": int(m["updated_at_unix"]),
                 "updated_at_local": _fmt_local(m["updated_at_unix"], m["timezone"]),
-                "timezone": m["timezone"],
-                "r": round(self.retrievability(m, now_unix), 2),
+                "timezone": m["timezone"], "r": round(self.retrievability(m, now_unix), 2),
             }
             for m in members
         ]
-        before = [
-            {k: p[k] for k in ("id", "text", "w", "provenance", "updated_at_unix", "timezone")}
-            for p in payload
-        ]
+        before = [{k: p[k] for k in ("id", "text", "w", "provenance", "updated_at_unix", "timezone")} for p in payload]
         decision = self.llm.dream_cluster(payload) or {}
         action = decision.get("action", "none")
         new_mems = decision.get("memories") or []
@@ -825,9 +800,8 @@ class LongTermMemory(MemorySystem):
 
     def snapshot(self) -> Dict[str, List[Dict]]:
         return {
-            "memories": self.store.rows_as_dicts("memories"),
-            "clusters": self.store.rows_as_dicts("clusters"),
-            "archive": self.store.rows_as_dicts("archive", limit=self.glob.archive_cap),
+            k: self.store.rows_as_dicts(k, limit=(self.glob.archive_cap if k == "archive" else 5000))
+            for k in ("memories", "clusters", "archive")
         }
 
     def vector_mb(self) -> float:
@@ -856,13 +830,11 @@ def _text_hash(text: str) -> str:
 def _fmt_local(unix, tz) -> str:
     """Format a UNIX time in its stored timezone, e.g. '2026-06-06 14:56 Asia/Tokyo'."""
     try:
-        if ZoneInfo is not None:
-            dt = datetime.fromtimestamp(float(unix), ZoneInfo(str(tz)))
-            return f"{dt:%Y-%m-%d %H:%M} {tz}"
+        dt = datetime.fromtimestamp(float(unix), ZoneInfo(str(tz)))
+        return f"{dt:%Y-%m-%d %H:%M} {tz}"
     except Exception:
-        pass
-    dt = datetime.utcfromtimestamp(float(unix))
-    return f"{dt:%Y-%m-%d %H:%M} UTC"
+        dt = datetime.utcfromtimestamp(float(unix))
+        return f"{dt:%Y-%m-%d %H:%M} UTC"
 
 
 def _shorten(text: str, max_chars: int) -> str:
@@ -894,16 +866,8 @@ def _row_extra(row, r: float) -> Dict:
     }
 
 
-def _memory_event(action: str, row, r: float) -> Dict:
-    return {
-        "action": action,
-        "id": row["id"],
-        "text": row["text"],
-        "w": row["w"],
-        "provenance": row["provenance"],
-        **_row_extra(row, r),
-        "v_full": vec_label(row["v_full"]),
-    }
+def _memory_event(action: str, row, r: float) -> dict:
+    return {"action": action, "id": row["id"], "text": row["text"], "w": row["w"], "provenance": row["provenance"], **_row_extra(row, r), "v_full": vec_label(row["v_full"])}
 
 
 def uuid7() -> str:
