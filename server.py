@@ -391,7 +391,7 @@ def export_seed_utts():
     return Response(
         content="\ufeff" + buf.getvalue(),
         media_type="text/csv; charset=utf-8",
-        headers={"Content-Disposition": 'attachment; filename="seed_utterances.csv"'},
+        headers={"Content-Disposition": 'attachment; filename="seed.csv"'},
     )
 
 

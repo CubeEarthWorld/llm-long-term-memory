@@ -25,41 +25,40 @@ from __future__ import annotations
 
 _SEED_ENTRIES: list[dict[str, str]] = [
     # 1  real "now" at seed start
-    {"text": "こんにちは。今日は何をしようかな。", "note": "ノイズ（挨拶＋独り言）", "advance": "0"},
+    {"text": "こんにちは。今日は何をしようかな。", "advance": "0"},
     # 2  same moment
-    {"text": "私はアイスクリームが好きです。特に抹茶味が好物です。", "note": "嗜好（やや重要・抹茶）", "advance": "0"},
+    {"text": "私はアイスクリームが好きです。特に抹茶味が好物です。", "advance": "0"},
     # 3  introduce the forgettable fact F1
-    {"text": "学生時代はずっとバスケットボール部に所属していました。", "note": "経歴（後で思い出すF1・中重要）", "advance": "30m"},
+    {"text": "学生時代はずっとバスケットボール部に所属していました。", "advance": "30m"},
     # 4
-    {"text": "今日はいい天気ですね。", "note": "ノイズ（天気）", "advance": "2h"},
+    {"text": "今日はいい天気ですね。", "advance": "2h"},
     # 5  meeting (Thu)
-    {"text": "来週の木曜日に重大な新商品の開発会議が入っています。", "note": "重要（会議・来週木）", "advance": "6h"},
+    {"text": "来週の木曜日に重大な新商品の開発会議が入っています。", "advance": "6h"},
     # 6  codename
-    {"text": "新商品のコードネームは「あおぞら」です。", "note": "重要（固有名・後で長期保持/思い出し）", "advance": "1d"},
+    {"text": "新商品のコードネームは「あおぞら」です。", "advance": "1d"},
     # 7
-    {"text": "明日は晴れみたいです。", "note": "ノイズ（天気予報）", "advance": "1d"},
+    {"text": "明日は晴れみたいです。", "advance": "1d"},
     # 8  meeting moved (next-week Wed) — newer should win
-    {"text": "新商品の開発会議は再来週の水曜日に移動しました。", "note": "重要更新（会議・再来週水）", "advance": "2d"},
+    {"text": "新商品の開発会議は再来週の水曜日に移動しました。", "advance": "2d"},
     # 9
-    {"text": "うーん、何をしようかな。", "note": "ノイズ（独り言）", "advance": "1d"},
+    {"text": "うーん、何をしようかな。", "advance": "1d"},
     # 10
-    {"text": "マインクラフトで松明ってどうやって作るんだっけ。", "note": "質問（保存優先度低）", "advance": "0"},
+    {"text": "マインクラフトで松明ってどうやって作るんだっけ。", "advance": "0"},
     # 11 confirmation question (still within ~a week of the meeting)
-    {"text": "再来週に会議って入っていましたっけ？", "note": "確認質問（更新後の会議日を想起できるか）", "advance": "0"},
+    {"text": "再来週に会議って入っていましたっけ？", "advance": "0"},
     # 12 long absence begins
-    {"text": "おひさしぶり、最近どうしてる？しばらく話してなかったね。", "note": "ノイズ（長期経過の起点・+5年）", "advance": "5y"},
+    {"text": "おひさしぶり、最近どうしてる？しばらく話してなかったね。", "advance": "5y"},
     # 13 ~10y total elapsed -> F1 / codename decay into the archive
-    {"text": "今日もいい天気だなあ。特に予定はないかな。", "note": "ノイズ（さらに+5年＝累計約10年経過）", "advance": "5y"},
+    {"text": "今日もいい天気だなあ。特に予定はないかな。", "advance": "5y"},
     # 14 cue F1 back from the archive (思い出し)
-    {"text": "ところで、私が学生時代にやっていた部活って何だっけ？", "note": "思い出しテスト（部活F1をアーカイブから復元できるか）", "advance": "0"},
+    {"text": "ところで、私が学生時代にやっていた部活って何だっけ？", "advance": "0"},
     # 15 cue codename back from the archive (思い出し)
-    {"text": "新商品「あおぞら」のことって、まだ覚えてる？", "note": "思い出しテスト（固有名の長期保持/復元）", "advance": "0"},
+    {"text": "新商品「あおぞら」のことって、まだ覚えてる？", "advance": "0"},
     # 16 restate preference -> reinforce / savings
-    {"text": "私はアイスクリームが好きです。", "note": "重複再出現（near-dup補強 or savings復元）", "advance": "30d"},
+    {"text": "私はアイスクリームが好きです。", "advance": "30d"},
     # 17 ask the preference back
-    {"text": "私の好きな食べ物は何か覚えてる？", "note": "嗜好の想起テスト", "advance": "0"},
+    {"text": "私の好きな食べ物は何か覚えてる？", "advance": "0"},
 ]
 
 SEED_UTTERANCES: list[str] = [e["text"] for e in _SEED_ENTRIES]
-SEED_NOTES: list[str] = [e["note"] for e in _SEED_ENTRIES]
 SEED_ADVANCE: list[str] = [e["advance"] for e in _SEED_ENTRIES]

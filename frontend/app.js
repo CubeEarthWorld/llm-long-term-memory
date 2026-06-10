@@ -468,7 +468,7 @@ function SeedEditor({ busy, onChanged }) {
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
-    a.href = url; a.download = "seed_utterances.csv"; document.body.appendChild(a); a.click();
+    a.href = url; a.download = "seed.csv"; document.body.appendChild(a); a.click();
     a.remove(); URL.revokeObjectURL(url);
   };
   const importCsv = async (e) => {

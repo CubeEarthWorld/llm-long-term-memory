@@ -20,7 +20,7 @@ from core.llm_client import LLMClient
 from core.metrics import MetricsRecorder
 from core.storage import Store
 from memory.long_term_memory import LongTermMemory
-from seed_utterances import SEED_ADVANCE, SEED_NOTES, SEED_UTTERANCES
+from seed_utterances import SEED_ADVANCE, SEED_UTTERANCES
 
 # Virtual-clock advance units used by seed utterances (e.g. "5y", "8d", "12h").
 # The "y" unit is treated as exactly 365 days; there is no "month" unit to avoid
@@ -48,7 +48,7 @@ SYSTEM_ID = "llm_long_term_memory"
 SYSTEM_TITLE = "LLM Long-Term Memory"
 DB_FILENAME = os.environ.get("MEMORY_DB_NAME", "llm_long_term_memory.db")
 
-SEED_CSV_PATH = os.path.join(DATA_DIR, "seed_utterances.csv")
+SEED_CSV_PATH = os.path.join(DATA_DIR, "seed.csv")
 
 
 class Engine(TypedDict, total=False):
@@ -77,7 +77,6 @@ def load_seed_csv(path: str) -> list[dict[str, str]]:
             return [
                 {
                     "text": (r.get("text") or "").strip(),
-                    "note": (r.get("note") or "").strip(),
                     "advance": ((r.get("advance") or "0").strip() or "0"),
                 }
                 for r in csv.DictReader(f)
@@ -93,20 +92,19 @@ def default_seed() -> list[dict[str, str]]:
     if rows:
         return rows
     return [
-        {"text": t, "note": SEED_NOTES[i] if i < len(SEED_NOTES) else "", "advance": SEED_ADVANCE[i] if i < len(SEED_ADVANCE) else "0"}
+        {"text": t, "advance": SEED_ADVANCE[i] if i < len(SEED_ADVANCE) else "0"}
         for i, t in enumerate(SEED_UTTERANCES)
     ]
 
 
 def clean_seed_items(raw) -> list[dict[str, str]]:
-    """Normalise a list of raw dicts into valid seed items (text/note/advance)."""
+    """Normalise a list of raw dicts into valid seed items (text/advance)."""
     items = []
     for item in raw or []:
         text = str((item or {}).get("text", "")).strip()
         if text:
             items.append({
                 "text": text,
-                "note": str((item or {}).get("note", "")).strip(),
                 "advance": (str((item or {}).get("advance", "0")).strip() or "0"),
             })
     return items
@@ -120,7 +118,6 @@ def parse_seed_csv(text: str) -> list[dict[str, str]]:
         for row in reader:
             items.append({
                 "text": (row.get("text") or "").strip(),
-                "note": (row.get("note") or row.get("memo") or "").strip(),
                 "advance": ((row.get("advance") or "0").strip() or "0"),
             })
     else:
@@ -128,8 +125,7 @@ def parse_seed_csv(text: str) -> list[dict[str, str]]:
             if row:
                 items.append({
                     "text": (row[0] or "").strip(),
-                    "note": (row[1].strip() if len(row) > 1 else ""),
-                    "advance": ((row[2].strip() if len(row) > 2 else "0") or "0"),
+                    "advance": ((row[1].strip() if len(row) > 1 else "0") or "0"),
                 })
     return clean_seed_items(items)
 
@@ -244,7 +240,7 @@ def run_seed(engine: Engine, on_progress: Callable[[int, str], None] | None = No
     try:
         for item in engine.get("seed") or default_seed():
             state["offset"] += _parse_duration(item.get("advance", "0"))
-            turn = run_turn(engine, item["text"], item.get("note", ""))
+            turn = run_turn(engine, item["text"])
             if on_progress:
                 on_progress(turn, item["text"])
     finally:
