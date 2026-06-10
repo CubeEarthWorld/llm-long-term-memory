@@ -133,7 +133,7 @@ def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
         # After a long downtime, gradually clean up stale memories instead of
         # archiving everything at the first write(). Run maintain in a bounded
         # recovery loop so that not just 5 (max_decay_per_turn) but up to
-        # ~250 decayed memories are cleaned up on startup.
+        # ~100 decayed memories are cleaned up on startup.
         if not wipe:
             try:
                 system = ENGINE["e"]["system"]

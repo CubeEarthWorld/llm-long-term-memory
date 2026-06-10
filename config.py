@@ -90,6 +90,13 @@ class LongTermMemoryConfig:
     lambda_div: float = 0.5
     k_retrieve: int = 80
     spread_gamma: float = 0.15         # spreading activation weight (within candidate set)
+    # Per-turn cost bounds: very long input would otherwise embed+scan once per
+    # sentence, and the O(n^2) MMR loop would re-rank an unbounded candidate set.
+    max_query_chunks: int = 16         # cap paragraph/sentence chunks embedded per retrieve
+    mmr_pool_max: int = 50             # cap candidates entering MMR re-ranking (top by score)
+    # Cap memories written per turn so LLM extraction cannot outpace eviction
+    # (max_evict_per_turn + max_decay_per_turn) and push the store past total_cap.
+    max_writes_per_turn: int = 10
 
     # -- Forgetting model: recall gate + two-stage archive + interference -- #
     # Recall gate (functional forgetting): retrievable iff gate_w_cos*cos + gate_w_r*r (+noise) >= gate_theta.

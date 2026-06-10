@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+from contextlib import contextmanager
 from typing import Sequence
 
 import numpy as np
@@ -46,12 +47,33 @@ class Store:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL;")
+        self._in_txn = False
 
     # -- basic helpers -------------------------------------------------- #
     def exec(self, sql: str, params: Sequence = ()) -> sqlite3.Cursor:
         cur = self.conn.execute(sql, params)
-        self.conn.commit()
+        if not self._in_txn:
+            self.conn.commit()
         return cur
+
+    @contextmanager
+    def transaction(self):
+        """Group several exec() calls into one atomic commit (rollback on error).
+
+        Nested use is a no-op: the outermost transaction() owns the commit.
+        """
+        if self._in_txn:
+            yield
+            return
+        self._in_txn = True
+        try:
+            yield
+            self.conn.commit()
+        except Exception:
+            self.conn.rollback()
+            raise
+        finally:
+            self._in_txn = False
 
     def execscript(self, sql: str) -> None:
         self.conn.executescript(sql)
@@ -79,6 +101,7 @@ class Store:
         params: Sequence = (),
         id_col: str = "id",
         max_scan: int = 0,
+        order_by: str = "",
     ) -> list[tuple]:
         """Return [(id, score, row), ...] top-k by cosine over rows matching `where`.
 
@@ -86,10 +109,15 @@ class Store:
 
         ``max_scan`` (default 0 = no limit) caps the number of rows loaded from the
         table. Use for large tables (e.g. archive) to bound per-query cost.
+        ``order_by`` controls which rows survive the ``max_scan`` cut; without it
+        SQLite returns rows in insertion order, so rows beyond the limit would
+        silently never be scanned.
         """
         sql = f"SELECT * FROM {table}"
         if where:
             sql += f" WHERE {where}"
+        if order_by:
+            sql += f" ORDER BY {order_by}"
         if max_scan > 0:
             sql += f" LIMIT {int(max_scan)}"
         rows = self.query(sql, params)

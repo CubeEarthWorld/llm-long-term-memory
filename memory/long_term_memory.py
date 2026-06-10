@@ -136,6 +136,17 @@ class LongTermMemory(MemorySystem):
             "WHERE accessed_at_unix > ? OR updated_at_unix > ? OR created_at_unix > ?",
             (now_unix, now_unix, now_unix, now_unix, now_unix, now_unix),
         )
+        # Also clamp clusters/archive: a virtual clock (seed replay) left in the
+        # future would otherwise block the dream cooldown for years of real time
+        # and skew archive eviction order.
+        self.store.exec(
+            "UPDATE clusters SET last_dreaming_unix = ? WHERE last_dreaming_unix > ?",
+            (now_unix, now_unix),
+        )
+        self.store.exec(
+            "UPDATE archive SET archived_at_unix = ? WHERE archived_at_unix > ?",
+            (now_unix, now_unix),
+        )
 
     # -- stability / retrievability ------------------------------------ #
     def _confidence(self, provenance: str) -> float:
@@ -170,7 +181,7 @@ class LongTermMemory(MemorySystem):
         self._sanitize_timestamps(now_unix)
         tz = self.glob.default_timezone
         written, written_rows = [], []
-        for cand in cands:
+        for cand in cands[: self.memory.max_writes_per_turn]:
             mid, events = self._write_one(
                 cand.get("text", user_text),
                 _clamp01(float(cand.get("w", 0.6))),
@@ -194,10 +205,14 @@ class LongTermMemory(MemorySystem):
         nn = self._nearest(v)
         if nn and nn[1] > self.memory.tau_dup:
             self._reinforce(nn[2], now_unix)
+            # Update the vector together with the text: keeping the old embedding
+            # would let repeated near-dup merges drift the text away from the
+            # stored vector until retrieval no longer finds it.
             self.store.exec(
-                "UPDATE memories SET text=?, w=?, updated_at_unix=?, timezone=? WHERE id=?",
-                (text, max(w, float(nn[2]["w"])), now_unix, timezone, nn[0]),
+                "UPDATE memories SET text=?, v_full=?, w=?, updated_at_unix=?, timezone=? WHERE id=?",
+                (text, pack_vec(v), max(w, float(nn[2]["w"])), now_unix, timezone, nn[0]),
             )
+            self._invalidate_centroids()
             row = self._get_memory(nn[0])
             return nn[0], [_memory_event("updated", row, self.retrievability(row, now_unix))]
 
@@ -266,7 +281,9 @@ class LongTermMemory(MemorySystem):
         exact = self.store.one("SELECT * FROM archive WHERE text_hash=?", (_text_hash(text),))
         if exact is not None:
             return exact
-        hits = self.store.cosine_search("archive", "v_coarse", vc, k=1, max_scan=2000)
+        hits = self.store.cosine_search(
+            "archive", "v_coarse", vc, k=1, max_scan=2000, order_by="archived_at_unix DESC"
+        )
         if hits and hits[0][1] >= self.memory.tau_savings:
             return hits[0][2]
         return None
@@ -448,7 +465,8 @@ class LongTermMemory(MemorySystem):
         single whole-text embedding averages distinct topics together and dilutes
         them). A memory found by several paragraphs keeps its best (max) cosine,
         so the gate and downstream score reflect its strongest cue."""
-        q_mat = self.provider.encode_query(self._split_paragraphs(query), dim=self.glob.dim_full)
+        chunks = self._split_paragraphs(query)[: self.memory.max_query_chunks]
+        q_mat = self.provider.encode_query(chunks, dim=self.glob.dim_full)
         pool: dict[str, dict] = {}
         gated: dict[str, dict] = {}
         for q in q_mat:
@@ -483,7 +501,8 @@ class LongTermMemory(MemorySystem):
         for q in q_mat:
             qc = self._coarse(q)
             for aid, cos, arow in self.store.cosine_search(
-                "archive", "v_coarse", qc, k=self.memory.k_retrieve, max_scan=max_scan
+                "archive", "v_coarse", qc, k=self.memory.k_retrieve, max_scan=max_scan,
+                order_by="archived_at_unix DESC",
             ):
                 if cos < self.memory.tau_recall:
                     continue
@@ -625,17 +644,18 @@ class LongTermMemory(MemorySystem):
             new_S = max(min_S, self._stability(c["row"]) * (1.0 - self.memory.interference_decay))
             updates.append((new_S, c["id"]))
         if updates:
-            self.store.conn.execute("BEGIN;")
-            for new_S, mid in updates:
-                self.store.conn.execute("UPDATE memories SET stability=? WHERE id=?", (new_S, mid))
-            self.store.conn.commit()
+            with self.store.transaction():
+                for new_S, mid in updates:
+                    self.store.exec("UPDATE memories SET stability=? WHERE id=?", (new_S, mid))
 
     def _mmr(self, items: List[Dict]) -> List[Dict]:
         """Maximal Marginal Relevance re-ranking: trade off relevance against diversity (coarse-vector cosine)."""
         if not items:
             return []
         lam = self.memory.lambda_div
-        items = sorted(items, key=lambda x: x["score"], reverse=True)
+        # The selection loop is O(n^2); cap the pool (top by score) so a broad
+        # query that gates nothing cannot hand the entire store to MMR.
+        items = sorted(items, key=lambda x: x["score"], reverse=True)[: self.memory.mmr_pool_max]
         selected: List[Dict] = []
         pool = items[:]
         while pool:
@@ -722,24 +742,27 @@ class LongTermMemory(MemorySystem):
         dream_id = uuid7()
 
         deleted = [m["id"] for m in members]
-        for m in members:
-            self.store.exec("DELETE FROM memories WHERE id=?", (m["id"],))
-        self._invalidate_centroids()
+        # Delete + re-insert atomically: a crash or embedding failure between the
+        # two would otherwise permanently lose the whole cluster.
+        with self.store.transaction():
+            for m in members:
+                self.store.exec("DELETE FROM memories WHERE id=?", (m["id"],))
+            self._invalidate_centroids()
 
-        affected = {cid}
-        after = []
-        for nm in valid_new_mems[:self.memory.dream_max_members]:
-            row = self._insert_dreamed(nm, seed_S, seed_conf, source_ids, summary_of, action, dream_id, now_unix)
-            if row is None:
-                continue
-            affected.add(row["cluster_id"])
-            after.append({k: row[k] for k in ("id", "text", "w", "provenance", "timezone")})
+            affected = {cid}
+            after = []
+            for nm in valid_new_mems[:self.memory.dream_max_members]:
+                row = self._insert_dreamed(nm, seed_S, seed_conf, source_ids, summary_of, action, dream_id, now_unix)
+                if row is None:
+                    continue
+                affected.add(row["cluster_id"])
+                after.append({k: row[k] for k in ("id", "text", "w", "provenance", "timezone")})
 
-        for acid in affected:
-            if self.store.count("memories", "cluster_id=?", (acid,)) == 0:
-                self.store.exec("DELETE FROM clusters WHERE id=?", (acid,))
-            else:
-                self.store.exec("UPDATE clusters SET last_dreaming_unix=? WHERE id=?", (now_unix, acid))
+            for acid in affected:
+                if self.store.count("memories", "cluster_id=?", (acid,)) == 0:
+                    self.store.exec("DELETE FROM clusters WHERE id=?", (acid,))
+                else:
+                    self.store.exec("UPDATE clusters SET last_dreaming_unix=? WHERE id=?", (now_unix, acid))
 
         return {"cluster_id": cid, "action": action if action in ("merge", "split") else "merge",
                 "priority": round(priority, 3), "before": before, "after": after, "deleted_ids": deleted}
@@ -780,7 +803,9 @@ class LongTermMemory(MemorySystem):
         except Exception as exc:
             import logging
             logging.warning("WAL checkpoint failed: %s", exc)
-        # Periodic VACUUM to reclaim space from fragmentation (every ~200 maintain calls).
+        # Periodic PRAGMA optimize (every ~200 maintain calls). This refreshes query-planner
+        # stats but does NOT shrink the file; freed pages are reused, and record counts are
+        # capped, so the file size stays bounded anyway.
         self._maintain_count = getattr(self, "_maintain_count", 0) + 1
         if self._maintain_count % 200 == 0:
             try:
