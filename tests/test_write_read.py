@@ -157,6 +157,11 @@ def test_filter_by_score_relaxes_strict_first(system):
     kept2 = system._filter_by_score(items2)
     assert {round(it["score"], 2) for it in kept2} == {0.15}
 
+    # if even the loosest bar is missed, inject nothing — unrelated memories
+    # must not be recalled (and thereby reinforced) just because they exist
+    items3 = [{"score": 0.05}, {"score": 0.01}]
+    assert system._filter_by_score(items3) == []
+
 
 def test_injected_pack_includes_id_for_delete(system):
     system.save_memory("user owns a vintage motorcycle")
