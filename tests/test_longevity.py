@@ -50,7 +50,7 @@ class _GreedyLLM(ScriptableLLM):
         super().__init__(save_on_converse=False)
         self.texts = list(texts)
 
-    def converse(self, memory_pack, user_text, tools):
+    def converse(self, memory_pack, user_text, tools, current_time=""):
         self.converse_calls += 1
         for t in self.texts:
             tools["save_memory"](text=t)

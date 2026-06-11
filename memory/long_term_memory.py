@@ -132,6 +132,11 @@ class LongTermMemory(MemorySystem):
     def now_unix(self) -> float:
         return float(self._clock()) if self._clock else time.time()
 
+    def now_local(self, now: float | None = None) -> str:
+        """Current local datetime string ('2026-06-11 21:30 +09:00') for LLM prompts."""
+        now = self.now_unix() if now is None else now
+        return _fmt_local(now, self._tz_for(now))
+
     def set_clock(self, fn) -> None:
         self._clock = fn
 
@@ -712,7 +717,7 @@ class LongTermMemory(MemorySystem):
             "local_time": _fmt_local(r["created_at"], r["tz"]), "timezone": r["tz"],
         } for r in member_rows[: self.memory.dream_max_members]]
 
-        decision = self.llm.dream_cluster(payload) or {}
+        decision = self.llm.dream_cluster(payload, current_time=self.now_local(now)) or {}
         action = decision.get("action", "none")
         new_mems = [nm for nm in (decision.get("memories") or []) if str(nm.get("text", "")).strip()]
 

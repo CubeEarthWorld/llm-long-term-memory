@@ -76,17 +76,17 @@ class FakeLLM:
     """Merge-to-gist dreaming for ENGRAM eval. save_memory is called directly,
     so converse/extract are not exercised here."""
 
-    def dream_cluster(self, members: list[dict]) -> dict:
+    def dream_cluster(self, members: list[dict], current_time: str = "") -> dict:
         if not members:
             return {"action": "none", "memories": []}
         gist = " / ".join(m["text"] for m in members)[:160]
         return {"action": "merge",
                 "memories": [{"text": gist, "timezone": members[0].get("timezone", "Asia/Tokyo")}]}
 
-    def converse(self, memory_pack, user_text, tools):  # not used in eval
+    def converse(self, memory_pack, user_text, tools, current_time=""):  # not used in eval
         raise NotImplementedError
 
-    def extract_save_candidates(self, user_text, assistant_text):  # not used in eval
+    def extract_save_candidates(self, user_text, assistant_text, current_time=""):  # not used in eval
         return []
 
 
