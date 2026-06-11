@@ -96,6 +96,9 @@ CREATE INDEX IF NOT EXISTS idx_memory_text ON memory(text);
 CREATE INDEX IF NOT EXISTS idx_vec_memory ON vec(memory_id);
 """
 
+# Max entries in the per-id 768d re-embed cache used by _identity_scan (§5.1).
+_DOC_VEC_CACHE_MAX = 4096
+
 
 class LongTermMemory(MemorySystem):
     system_id = "llm_long_term_memory"
@@ -117,6 +120,7 @@ class LongTermMemory(MemorySystem):
         self._clock = None                       # optional virtual clock (experiments)
         self.model_id = glob.embedding_model
         self._write_times: list[float] = []       # soft write-rate window
+        self._doc_vec_cache: dict[str, np.ndarray] = {}  # id → 768d doc vector (text is immutable)
         self._maint_count = 0
         self._snap_dir = os.path.join(os.path.dirname(store.path), "snapshots")
         self.store.execscript(SCHEMA)
@@ -237,22 +241,28 @@ class LongTermMemory(MemorySystem):
             v = dequantize_int8(vrow["v"], vrow["scale"])
         return l2_normalize(np.asarray(v, dtype=np.float32))
 
-    def _tier_candidates(self, tier: int) -> list[tuple]:
-        """Return [(row, unit-norm vec), ...] for live memories in ``tier`` (joins vec)."""
+    def _tier_candidates(self, tier: int) -> tuple[list, np.ndarray | None]:
+        """Return (rows, unit-norm vector matrix) for live memories in ``tier`` (joins vec).
+
+        The matrix form lets callers score a whole tier with one ``M @ q``
+        instead of a per-row Python loop of ``np.dot`` calls.
+        """
         rows = self.store.query(
             "SELECT m.*, v.dim AS _dim, v.dtype AS _dtype, v.scale AS _scale, v.v AS _v "
             "FROM memory m JOIN vec v ON v.memory_id=m.id AND v.model_id=? "
             "WHERE m.tier=? AND m.superseded_by IS NULL",
             (self.model_id, tier),
         )
-        out = []
+        if not rows:
+            return [], None
+        vecs = []
         for r in rows:
             if r["_dtype"] == "f32":
                 v = unpack_vec(r["_v"])
             else:
                 v = dequantize_int8(r["_v"], r["_scale"])
-            out.append((r, l2_normalize(np.asarray(v, dtype=np.float32))))
-        return out
+            vecs.append(l2_normalize(np.asarray(v, dtype=np.float32)))
+        return list(rows), np.stack(vecs)
 
     @staticmethod
     def _coarse128(vec: np.ndarray) -> np.ndarray:
@@ -314,9 +324,13 @@ class LongTermMemory(MemorySystem):
         """Best (id, precise_cos, row) across all tiers; in-band L2/L3 refined at 768d (§5.1)."""
         cands: dict = {}
         for tier in (1, 2, 3):
+            rows, M = self._tier_candidates(tier)
+            if not rows:
+                continue
             qt = truncate_normalize(v_full, self._dim(tier))
-            for row, vec in self._tier_candidates(tier):
-                c = float(np.dot(qt, vec))
+            sims = M @ qt
+            for row, c in zip(rows, sims):
+                c = float(c)
                 prev = cands.get(row["id"])
                 if prev is None or c > prev[0]:
                     cands[row["id"]] = (c, row, tier)
@@ -325,11 +339,27 @@ class LongTermMemory(MemorySystem):
         for mid, (c, row, tier) in cands.items():
             cos = c
             if tier != 1 and c >= band:
-                vs = self._embed_doc(row["text"])          # text is canonical → re-embed at 768d
+                vs = self._doc_vec_cached(row)             # text is canonical → re-embed at 768d
                 cos = float(np.dot(v_full, vs))
             if best is None or cos > best[1]:
                 best = (mid, cos, row)
         return best
+
+    def _doc_vec_cached(self, row) -> np.ndarray:
+        """768d document vector for precision refinement, cached per memory id.
+
+        Safe because text is immutable for a given id (edits create a new row);
+        without this, every write re-embeds the same L2/L3 neighbours. Cleared
+        wholesale at the size cap so the cache itself stays bounded.
+        """
+        mid = row["id"]
+        v = self._doc_vec_cache.get(mid)
+        if v is None:
+            if len(self._doc_vec_cache) >= _DOC_VEC_CACHE_MAX:
+                self._doc_vec_cache.clear()
+            v = self._embed_doc(row["text"])
+            self._doc_vec_cache[mid] = v
+        return v
 
     def _insert(self, text: str, v_full: np.ndarray, mass: float, now: float,
                 gen: int = 0, tier: int = 1):
@@ -384,12 +414,14 @@ class LongTermMemory(MemorySystem):
 
         cands: dict = {}
         for tier in (1, 2, 3):
-            cand_rows = self._tier_candidates(tier)
-            if not cand_rows:
+            rows, M = self._tier_candidates(tier)
+            if not rows:
                 continue
-            qts = [truncate_normalize(np.asarray(q, dtype=np.float32), self._dim(tier)) for q in q_mat]
-            for row, vec in cand_rows:
-                c = max(float(np.dot(qt, vec)) for qt in qts)
+            qts = np.stack([truncate_normalize(np.asarray(q, dtype=np.float32), self._dim(tier))
+                            for q in q_mat])
+            sims = (M @ qts.T).max(axis=1)        # best cosine over query chunks, per row
+            for row, vec, c in zip(rows, M, sims):
+                c = float(c)
                 prev = cands.get(row["id"])
                 if prev is None or c > prev["cos"]:
                     cands[row["id"]] = {"id": row["id"], "cos": c, "row": row,
@@ -414,13 +446,15 @@ class LongTermMemory(MemorySystem):
 
         Thresholds are applied strictest-first (descending) so the relaxation is
         monotone regardless of the order they are declared in config; otherwise a
-        looser threshold listed first would mask every stricter one.
+        looser threshold listed first would mask every stricter one. If even the
+        loosest threshold matches nothing, inject nothing: returning unrelated
+        memories would mark them recalled and spuriously reinforce their mass.
         """
         for threshold in sorted(self.memory.score_thresholds, reverse=True):
             filtered = [it for it in items if it["score"] >= threshold]
             if filtered:
                 return filtered
-        return items
+        return []
 
     def _mmr(self, items: list[dict]) -> list[dict]:
         """MMR selection (§4.2): next = argmax[score − λ·max cos(m, selected)]."""
@@ -480,7 +514,7 @@ class LongTermMemory(MemorySystem):
             "SELECT * FROM memory WHERE tier IN (2,3) AND superseded_by IS NULL")
         for row in rows:
             if self.activation(row, now) >= self.memory.theta_up:
-                v = self._embed_doc(row["text"])
+                v = self._doc_vec_cached(row)
                 self.store.exec("UPDATE memory SET tier=1 WHERE id=?", (row["id"],))
                 self._store_vec(row["id"], v, 1)
 
@@ -611,7 +645,10 @@ class LongTermMemory(MemorySystem):
     def _live_rows_coarse(self, tiers) -> list[tuple]:
         out = []
         for tier in tiers:
-            out.extend((row, self._coarse128(vec)) for row, vec in self._tier_candidates(tier))
+            rows, M = self._tier_candidates(tier)
+            if not rows:
+                continue
+            out.extend((row, self._coarse128(vec)) for row, vec in zip(rows, M))
         return out
 
     def _dream_candidates(self, now: float, force: bool = False) -> list[tuple]:
@@ -773,21 +810,36 @@ class LongTermMemory(MemorySystem):
         return self.store.db_size_bytes()
 
     def save_turn_log(self, turn: int, utterance: str, note: str, timestamp: float, system_json: str) -> None:
-        """Persist a turn log entry with its system detail to the DB."""
-        self.store.exec(
-            "INSERT OR REPLACE INTO turn_log(turn,utterance,note,timestamp,system_json) VALUES(?,?,?,?,?)",
-            (turn, utterance, note, timestamp, system_json),
-        )
+        """Persist a turn log entry with its system detail to the DB.
+
+        The table is kept to the newest ``max_turn_log`` rows so the DB cannot
+        grow without bound over months of conversation.
+        """
+        with self.store.transaction():
+            self.store.exec(
+                "INSERT OR REPLACE INTO turn_log(turn,utterance,note,timestamp,system_json) VALUES(?,?,?,?,?)",
+                (turn, utterance, note, timestamp, system_json),
+            )
+            self.store.exec(
+                "DELETE FROM turn_log WHERE turn NOT IN "
+                "(SELECT turn FROM turn_log ORDER BY turn DESC LIMIT ?)",
+                (self.glob.max_turn_log,),
+            )
 
     def load_turn_log(self) -> list[dict]:
-        """Load persisted turn log entries from the DB, ordered by turn."""
-        rows = self.store.query("SELECT turn, utterance, note, timestamp, system_json FROM turn_log ORDER BY turn")
-        return [dict(r) for r in rows]
+        """Load the newest ``max_turn_log`` turn log entries, ordered by turn."""
+        rows = self.store.query(
+            "SELECT turn, utterance, note, timestamp, system_json FROM turn_log "
+            "ORDER BY turn DESC LIMIT ?",
+            (self.glob.max_turn_log,),
+        )
+        return [dict(r) for r in reversed(rows)]
 
     def reset(self) -> None:
         for table in ("vec", "memory", "conflict", "dream_log", "turn_log", "spec"):
             self.store.exec(f"DELETE FROM {table}")
         self._write_times = []
+        self._doc_vec_cache.clear()
         self._install_spec()
 
 

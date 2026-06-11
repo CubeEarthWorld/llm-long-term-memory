@@ -117,9 +117,17 @@ class TurnRunner:
         """Run the tool-calling exchange; fall back to extraction if nothing was saved."""
         events: list[dict] = []
         write_ms = 0.0
+        max_writes = getattr(system.memory, "max_writes_per_turn", 8)
+
+        def _saved_count() -> int:
+            return sum(1 for e in events if e.get("action") in _SAVE_ACTIONS)
 
         def _save(text: str = "", **_ignore):
             nonlocal write_ms
+            if _saved_count() >= max_writes:
+                ev = {"action": "rate_limited", "error": "ターン内保存上限", "text": text}
+                events.append(ev)
+                return {"ok": False, "action": "rate_limited"}
             t0 = time.perf_counter()
             ev = system.save_memory(text)
             write_ms += (time.perf_counter() - t0) * 1000.0
@@ -141,7 +149,7 @@ class TurnRunner:
         saved = any(e.get("action") in _SAVE_ACTIONS for e in events)
         if not saved and getattr(system.memory, "tool_fallback", True):
             cands = self.llm.extract_save_candidates(utterance, conv.text)
-            for text in cands[: getattr(system.memory, "max_writes_per_turn", 8)]:
+            for text in cands[:max_writes]:
                 t0 = time.perf_counter()
                 events.append(system.save_memory(text))
                 write_ms += (time.perf_counter() - t0) * 1000.0

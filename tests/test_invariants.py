@@ -44,7 +44,8 @@ def _assert_invariants(s, c):
     for r in rows:
         assert r["n"] <= 2, "I6: more than 2 vectors for one memory"
     for tier in (1, 2, 3):
-        for _row, vec in s._tier_candidates(tier):
+        tier_rows, M = s._tier_candidates(tier)
+        for vec in (M if tier_rows else []):
             n = float(np.linalg.norm(vec))
             assert abs(n - 1.0) < 1e-3, f"I3: vector not unit-norm (||v||={n})"
 
