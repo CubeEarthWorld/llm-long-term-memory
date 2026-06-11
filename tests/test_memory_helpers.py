@@ -1,4 +1,4 @@
-"""memory.long_term_memory module-level helpers (pure functions)."""
+"""memory.helpers pure functions (no engine state)."""
 from __future__ import annotations
 
 import datetime
@@ -6,7 +6,7 @@ import datetime
 import numpy as np
 import pytest
 
-from memory.long_term_memory import (
+from memory.helpers import (
     _CROCKFORD32,
     _cohesion,
     _fmt_local,

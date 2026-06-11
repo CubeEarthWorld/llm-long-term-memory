@@ -37,32 +37,11 @@ from core.embedding import EmbeddingProvider
 from core.llm_client import LLMClient
 from core.storage import Store
 from memory.dream_ops import DreamOpsMixin
-from memory.helpers import (
-    _CROCKFORD32,
-    _cohesion,
-    _fmt_local,
-    _fp,
-    _kmeans,
-    _shorten,
-    _split_paragraphs,
-    _ulid_fallback,
-    _utc_datetime,
-    _ymd_from_ordinal,
-    lam_mmr,
-    ulid,
-)
+from memory.helpers import _fmt_local, _utc_datetime
 from memory.maintenance_ops import MaintenanceOpsMixin
 from memory.read_ops import ReadOpsMixin
 from memory.vector_ops import VectorOpsMixin
 from memory.write_ops import WriteOpsMixin
-
-__all__ = [
-    "LongTermMemory", "SCHEMA",
-    # re-exported helpers (canonical home: memory.helpers)
-    "ulid", "lam_mmr", "_fp", "_cohesion", "_kmeans", "_split_paragraphs",
-    "_fmt_local", "_utc_datetime", "_ymd_from_ordinal", "_shorten",
-    "_CROCKFORD32", "_ulid_fallback",
-]
 
 _REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 _SPEC_PATH = os.path.join(_REPO_ROOT, "ENGRAM_spec_v1_1.md")
