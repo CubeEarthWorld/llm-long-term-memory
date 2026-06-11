@@ -415,6 +415,11 @@ def _loads_relaxed(text: str | None):
     return None
 
 
+def _text_of(item) -> str:
+    """Stripped text of a parsed list item — a dict with "text" or a bare value."""
+    return str((item.get("text", "") if isinstance(item, dict) else item) or "").strip()
+
+
 def _parse_texts(text: str | None) -> list[str]:
     """Parse {"memories": ["...", ...]} (or a bare list / dicts with text) into strings."""
     data = _loads_relaxed(text)
@@ -422,13 +427,7 @@ def _parse_texts(text: str | None) -> list[str]:
         data = data.get("memories") or []
     if not isinstance(data, list):
         return []
-    out = []
-    for item in data:
-        s = item.get("text", "") if isinstance(item, dict) else item
-        s = str(s or "").strip()
-        if s:
-            out.append(s)
-    return out
+    return [s for s in (_text_of(item) for item in data) if s]
 
 
 def _parse_dream(text: str | None) -> dict:
@@ -442,5 +441,5 @@ def _parse_dream(text: str | None) -> dict:
     mems = obj.get("memories")
     if not isinstance(mems, list):
         return {"action": action, "memories": []}
-    clean = [m for m in mems if isinstance(m, dict) and str(m.get("text", "")).strip()]
+    clean = [m for m in mems if isinstance(m, dict) and _text_of(m)]
     return {"action": action, "memories": clean}

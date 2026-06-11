@@ -7,9 +7,7 @@ from __future__ import annotations
 
 import os
 import sys
-import tempfile
 
-import numpy as np
 import pytest
 
 # Make the repository root importable regardless of where pytest is invoked.

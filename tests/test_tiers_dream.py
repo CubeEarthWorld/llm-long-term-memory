@@ -1,8 +1,6 @@
 """Tier movement (§5.4) and dream consolidation (§6) — including extreme caps."""
 from __future__ import annotations
 
-import pytest
-
 from conftest import ScriptableLLM, tokens
 
 

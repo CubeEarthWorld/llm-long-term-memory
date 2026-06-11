@@ -6,7 +6,6 @@ across a fast-forwarding virtual clock, with the invariants checked at the end.
 from __future__ import annotations
 
 import numpy as np
-import pytest
 
 from conftest import ScriptableLLM
 
