@@ -6,7 +6,6 @@ import datetime
 import numpy as np
 import pytest
 
-import memory.long_term_memory as ltm
 from memory.long_term_memory import (
     _CROCKFORD32,
     _cohesion,

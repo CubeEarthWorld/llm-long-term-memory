@@ -1,8 +1,6 @@
 """save_memory (§5.1) and retrieve (§5.2) — normal, edge and extreme inputs."""
 from __future__ import annotations
 
-import pytest
-
 from conftest import by_text, tokens
 
 

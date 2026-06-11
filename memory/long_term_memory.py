@@ -22,12 +22,10 @@ algorithm/schema/parameters are ENGRAM (the previous FSRS model is fully removed
 from __future__ import annotations
 
 import hashlib
-import json
 import math
 import os
 import secrets
 import time
-import uuid
 from datetime import datetime, timedelta, timezone as dt_timezone
 
 import numpy as np

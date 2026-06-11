@@ -188,17 +188,6 @@ def run_job(fn) -> None:
     threading.Thread(target=worker, daemon=True).start()
 
 
-def _active_engine() -> Engine:
-    """Return the current engine, or raise HTTPException(503/409) if unavailable/busy."""
-    with LOCK:
-        engine = ENGINE["e"]
-        if not engine or not STATE["ready"]:
-            raise HTTPException(503, "Engine is still starting.")
-        if STATE["running"]:
-            raise HTTPException(409, "A job is already running.")
-        return engine
-
-
 def _system_detail(engine: Engine, turn: int) -> dict:
     """Build the per-turn detail object returned by /api/turns-detail."""
     metrics = engine["recorder"].for_turn(turn, SYSTEM_ID)
