@@ -68,24 +68,28 @@ class ReadOpsMixin:
         return []
 
     def _mmr(self, items: list[dict]) -> list[dict]:
-        """MMR selection (§4.2): next = argmax[score − λ·max cos(m, selected)]."""
+        """MMR selection (§4.2): next = argmax[score − λ·max cos(m, selected)].
+
+        Vectorised: instead of re-scanning selected items per candidate
+        (O(pool²·dim) python-level dots), the running max-similarity vector is
+        updated with one matrix product per pick. The first pick reduces to
+        plain argmax(score) since max_sim starts at 0.
+        """
         if not items:
             return []
         lam = self.memory.mmr_lambda
         pool = sorted(items, key=lambda x: x["score"], reverse=True)[:50]
+        P = np.stack([it["mmr"] for it in pool])
+        scores = np.array([it["score"] for it in pool], dtype=np.float64)
+        max_sim = np.zeros(len(pool), dtype=np.float64)
+        alive = np.ones(len(pool), dtype=bool)
         selected: list[dict] = []
-        while pool and len(selected) < self.memory.inject_n:
-            best, best_val = None, -1e9
-            for it in pool:
-                if not selected:
-                    val = it["score"]
-                else:
-                    max_sim = max(float(np.dot(it["mmr"], s["mmr"])) for s in selected)
-                    val = lam_mmr(it["score"], lam, max_sim)
-                if val > best_val:
-                    best, best_val = it, val
-            selected.append(best)
-            pool.remove(best)
+        while alive.any() and len(selected) < self.memory.inject_n:
+            vals = np.where(alive, lam_mmr(scores, lam, max_sim), -np.inf)
+            i = int(vals.argmax())              # ties → first in pool order, like the old loop
+            selected.append(pool[i])
+            alive[i] = False
+            max_sim = np.maximum(max_sim, (P @ P[i]).astype(np.float64))
         return selected
 
     def _pack(self, ranked: list[dict], now: float):
