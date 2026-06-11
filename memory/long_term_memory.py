@@ -267,7 +267,14 @@ class LongTermMemory(MemorySystem):
         text = (text or "").strip()
         if not text:
             return {"action": "rejected", "error": "空のテキスト", "text": ""}
-        if len(text.encode("utf-8")) > self.memory.text_hard_max:
+        try:
+            nbytes = len(text.encode("utf-8"))
+        except UnicodeEncodeError:
+            # Lone surrogates / un-encodable input is corrupt; reject gracefully (I14)
+            # instead of crashing the turn. Echo a sanitized snippet for the log.
+            safe = text.encode("utf-8", "replace").decode("utf-8")
+            return {"action": "rejected", "error": "不正な文字コード(UTF-8エンコード不可)", "text": safe[:60]}
+        if nbytes > self.memory.text_hard_max:
             return {"action": "rejected", "error": "テキストが長すぎます(>1024B)", "text": text[:60]}
         if len(text) > self.memory.text_max:
             text = _shorten(text, self.memory.text_max)
@@ -403,8 +410,13 @@ class LongTermMemory(MemorySystem):
         return result
 
     def _filter_by_score(self, items: list[dict]) -> list[dict]:
-        """Drop low-score memories; relax threshold if nothing remains."""
-        for threshold in self.memory.score_thresholds:
+        """Drop low-score memories, relaxing the threshold only if nothing remains.
+
+        Thresholds are applied strictest-first (descending) so the relaxation is
+        monotone regardless of the order they are declared in config; otherwise a
+        looser threshold listed first would mask every stricter one.
+        """
+        for threshold in sorted(self.memory.score_thresholds, reverse=True):
             filtered = [it for it in items if it["score"] >= threshold]
             if filtered:
                 return filtered
@@ -432,12 +444,16 @@ class LongTermMemory(MemorySystem):
         return selected
 
     def _pack(self, ranked: list[dict], now: float):
-        """Format injected memories ≤ budget_chars with TZ header + id (for delete_memory)."""
+        """Format injected memories ≤ budget_chars with a unix+TZ header + id.
+
+        Header is the raw 64-bit Unix seconds and the stored 'IANA;+offset'
+        timezone (e.g. ``[1749641400 Asia/Tokyo;+09:00]``) rather than a
+        human-formatted local datetime, per project preference.
+        """
         used, lines, recalled, ids = 0, [], [], []
         for it in ranked:
             row = it["row"]
-            local = _fmt_local(row["created_at"], row["tz"])
-            line = f"[{local}] {row['text']}　《id:{row['id']}》\n"
+            line = f"[{int(row['created_at'])} {row['tz']}] {row['text']}　《id:{row['id']}》\n"
             if used + len(line) > self.glob.budget_chars:
                 continue
             lines.append(line)
@@ -857,7 +873,7 @@ def _fmt_local(unix, tzfield) -> str:
             hrs, min_ = divmod(mins, 60)
             days, hr = divmod(hrs, 24)
             # Gregorian calendar: days since 1970-01-01
-            year, month, day = _ymd_from_ordinal(719528 + days)  # 719528 = ordinal(1970-01-01)
+            year, month, day = _ymd_from_ordinal(719163 + days)  # 719163 = date(1970,1,1).toordinal()
             return f"{year:04d}-{month:02d}-{day:02d} {hr:02d}:{min_:02d} {off}"
 
 
@@ -909,7 +925,34 @@ def _shorten(text: str, max_chars: int) -> str:
     return cut
 
 
+# Crockford base32 alphabet (RFC 9562 / ULID): excludes I, L, O, U.
+_CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+
+def _ulid_fallback() -> str:
+    """Self-contained ULID: 48-bit ms timestamp + 80 random bits, 26 Crockford chars.
+
+    Keeps the engine running even if the optional ``python-ulid`` package is not
+    installed (it lives only here, in a hot path). Sort order still equals time
+    order because the timestamp occupies the high bits (§3.2).
+    """
+    ts = int(time.time() * 1000) & ((1 << 48) - 1)
+    val = (ts << 80) | secrets.randbits(80)          # 128-bit ULID value
+    chars = []
+    for _ in range(26):                               # 26 × 5 bits = 130 bits (top 2 are 0)
+        chars.append(_CROCKFORD32[val & 0x1F])
+        val >>= 5
+    return "".join(reversed(chars))
+
+
 def ulid() -> str:
-    """ULID as string: first 48 bits = ms Unix time → sort order = time order (§3.2)."""
-    from ulid import ULID
-    return str(ULID())
+    """ULID as string: first 48 bits = ms Unix time → sort order = time order (§3.2).
+
+    Uses ``python-ulid`` when available, otherwise the self-contained fallback so a
+    missing/optional dependency never hard-crashes the write/dream path.
+    """
+    try:
+        from ulid import ULID
+        return str(ULID())
+    except Exception:
+        return _ulid_fallback()

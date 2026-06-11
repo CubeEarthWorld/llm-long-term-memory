@@ -16,7 +16,7 @@ from typing import Sequence
 
 import numpy as np
 
-_VALID_TABLES = {"memory", "vec", "conflict", "dream_log", "spec"}
+_VALID_TABLES = {"memory", "vec", "conflict", "dream_log", "spec", "turn_log"}
 
 
 def pack_vec(vec: np.ndarray | None) -> bytes | None:

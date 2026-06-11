@@ -215,13 +215,20 @@ def _startup() -> None:
 
 @app.get("/api/state")
 def get_state():
-    """Polling endpoint used by the frontend to show loading / error / ready state."""
-    with LOCK:
-        e = ENGINE["e"]
-        state = {k: STATE[k] for k in ("ready", "running", "progress", "error", "init_error")}
-        turn, seeded = (e["turn"], e["seeded"]) if e else (0, False)
-        emb = e["provider"].status if e else ""
-        llm = e["llm"].status if e else ""
+    """Polling endpoint used by the frontend to show loading / error / ready state.
+
+    Deliberately LOCK-free: this is the liveness poll the UI hits continuously,
+    and it must stay responsive while a long-held LOCK (model load on startup, a
+    seed replay, or a dream pass) is in flight. It only reads atomic flag/ref
+    values and never touches the SQLite connection, so no lock is required.
+    Acquiring LOCK here was the cause of the 'no response during load/seed/dream'
+    hang: the poll blocked behind the very job whose progress it was meant to show.
+    """
+    e = ENGINE["e"]
+    state = {k: STATE.get(k) for k in ("ready", "running", "progress", "error", "init_error")}
+    turn, seeded = (e["turn"], e["seeded"]) if e else (0, False)
+    emb = e["provider"].status if e else ""
+    llm = e["llm"].status if e else ""
     return {**state, "turn": turn, "seeded": seeded, "embedding": emb, "llm": llm, "n_seed": len(SEED["items"]), "system_title": SYSTEM_TITLE}
 
 
@@ -531,4 +538,14 @@ def _open_browser():
 
 if __name__ == "__main__":
     threading.Thread(target=_open_browser, daemon=True).start()
-    uvicorn.run(app, host="127.0.0.1", port=8501)
+    try:
+        uvicorn.run(app, host="127.0.0.1", port=8501)
+    except OSError as exc:
+        # Most common cause: a previous (possibly hung) instance still holds 8501.
+        print(
+            "\n[error] could not start the web server on http://localhost:8501\n"
+            f"        {type(exc).__name__}: {exc}\n"
+            "        Port 8501 is likely held by a previous instance. Close the other\n"
+            "        server window, or run start.bat again (it now frees a stale port).\n"
+        )
+        raise SystemExit(1)
