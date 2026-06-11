@@ -9,9 +9,10 @@ from __future__ import annotations
 
 import csv
 import io
+import json
 import os
 import time
-from typing import Any, Callable, TypedDict
+from typing import Any, Callable, Dict, List, TypedDict
 
 from config import Config
 from core.base import TurnRunner
@@ -46,7 +47,7 @@ BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))  # reposi
 DATA_DIR = os.environ.get("MEMORY_DATA_DIR", os.path.join(BASE_DIR, "data"))  # runtime SQLite + JSON output
 SYSTEM_ID = "llm_long_term_memory"
 SYSTEM_TITLE = "LLM Long-Term Memory"
-DB_FILENAME = os.environ.get("MEMORY_DB_NAME", "llm_long_term_memory.db")
+DB_FILENAME = os.path.basename(os.environ.get("MEMORY_DB_NAME", "llm_long_term_memory.db"))
 
 SEED_CSV_PATH = os.path.join(DATA_DIR, "seed.csv")
 
@@ -153,6 +154,38 @@ def build_engine(cfg: Config, wipe: bool = False, seed: list[dict[str, str]] | N
         system.reset()
 
     recorder = MetricsRecorder(max_history=cfg.glob.max_metrics_history)
+
+    # Load persisted turn log from DB (if not wiping).
+    log: list[dict[str, Any]] = []
+    start_time: float | None = None
+    max_turn = 0
+    if not wipe:
+        persisted = system.load_turn_log()
+        for row in persisted:
+            system_detail = {}
+            try:
+                system_detail = json.loads(row["system_json"])
+            except (json.JSONDecodeError, TypeError):
+                pass
+            entry = {
+                "turn": int(row["turn"]),
+                "utterance": str(row["utterance"]),
+                "note": str(row.get("note", "")),
+                "timestamp": float(row["timestamp"]),
+                "system": system_detail,
+            }
+            log.append(entry)
+            if entry["turn"] > max_turn:
+                max_turn = entry["turn"]
+            ts = entry["timestamp"]
+            if start_time is None or ts < start_time:
+                start_time = ts
+
+    # Respect max_turn_log sliding window.
+    max_log = cfg.glob.max_turn_log
+    if len(log) > max_log:
+        log = log[-max_log:]
+
     return {
         "provider": provider,
         "llm": llm,
@@ -160,9 +193,9 @@ def build_engine(cfg: Config, wipe: bool = False, seed: list[dict[str, str]] | N
         "system": system,
         "recorder": recorder,
         "runner": TurnRunner(provider, llm, recorder, system),
-        "turn": 0,
-        "log": [],
-        "start_time": None,
+        "turn": max_turn,
+        "log": log,
+        "start_time": start_time,
         "seeded": False,
         "last_dream": [],
         "cfg": cfg,
@@ -210,12 +243,25 @@ def run_turn(engine: Engine, utterance: str, note: str = "") -> int:
     turn = engine["turn"] + 1
     engine["runner"].run_turn(turn, utterance)
     engine["turn"] = turn
-    now = time.time()
+    now = engine["system"].now_unix()
     if engine.get("start_time") is None:
         engine["start_time"] = now
-    engine["log"].append({"turn": turn, "utterance": utterance, "note": note, "timestamp": now})
-    # Sliding window to prevent unbounded in-memory growth during very long sessions.
+
+    # Build system detail for this turn (from recorder) and persist to DB.
     cfg = engine.get("cfg") or Config()
+    system_detail = {}
+    metrics = engine["recorder"].for_turn(turn, SYSTEM_ID)
+    if metrics:
+        system_detail = metrics.to_detail_dict(SYSTEM_TITLE)
+
+    entry = {"turn": turn, "utterance": utterance, "note": note, "timestamp": now, "system": system_detail}
+    engine["log"].append(entry)
+
+    # Persist to DB so turn log survives restarts.
+    system = engine["system"]
+    system.save_turn_log(turn, utterance, note, now, json.dumps(system_detail, ensure_ascii=False))
+
+    # Sliding window to prevent unbounded in-memory growth during very long sessions.
     max_log = cfg.glob.max_turn_log
     if len(engine["log"]) > max_log:
         engine["log"] = engine["log"][-max_log:]

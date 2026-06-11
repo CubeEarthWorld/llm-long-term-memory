@@ -133,32 +133,33 @@ def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
     maintain() is called once to gracefully catch up on decayed memories.
     State flags (ready / init_error) are updated for the UI polling loop.
     """
-    STATE["ready"] = False
-    cfg = cfg or default_config()
-    try:
-        dispose_engine(ENGINE["e"])
-        ENGINE["e"] = build_engine(cfg, wipe=wipe, seed=SEED["items"])
-        ENGINE["cfg"] = cfg
-        # After a long downtime, let maintenance catch up on capacity (tombstone
-        # sweep + demotion/eviction) over a few bounded passes instead of doing it
-        # all at the first turn.
-        if not wipe:
-            try:
-                system = ENGINE["e"]["system"]
-                for _ in range(20):
-                    before = system.total_records()
-                    system.maintain(ENGINE["e"]["turn"])
-                    if before == system.total_records():
-                        break
-            except Exception:  # noqa: BLE001
-                traceback.print_exc()
-        STATE["init_error"] = None
-        STATE["ready"] = True
-    except Exception as exc:  # noqa: BLE001
-        STATE["init_error"] = f"{type(exc).__name__}: {exc}"
-        traceback.print_exc()
-    finally:
-        STATE["progress"] = ""
+    with LOCK:
+        STATE["ready"] = False
+        cfg = cfg or default_config()
+        try:
+            dispose_engine(ENGINE["e"])
+            ENGINE["e"] = build_engine(cfg, wipe=wipe, seed=SEED["items"])
+            ENGINE["cfg"] = cfg
+            # After a long downtime, let maintenance catch up on capacity (tombstone
+            # sweep + demotion/eviction) over a few bounded passes instead of doing it
+            # all at the first turn.
+            if not wipe:
+                try:
+                    system = ENGINE["e"]["system"]
+                    for _ in range(20):
+                        before = system.total_records()
+                        system.maintain(ENGINE["e"]["turn"])
+                        if before == system.total_records():
+                            break
+                except Exception:  # noqa: BLE001
+                    traceback.print_exc()
+            STATE["init_error"] = None
+            STATE["ready"] = True
+        except Exception as exc:  # noqa: BLE001
+            STATE["init_error"] = f"{type(exc).__name__}: {exc}"
+            traceback.print_exc()
+        finally:
+            STATE["progress"] = ""
 
 
 def run_job(fn) -> None:
@@ -166,6 +167,10 @@ def run_job(fn) -> None:
 
     This serialises all mutating operations (turn, seed, dream, reset) so that
     the SQLite store and the in-memory engine are never touched concurrently.
+
+    NOTE: STATE["progress"] is managed by each job function, NOT cleared here,
+    so that dream results (e.g. "dreamed 3 cluster(s), 2 consolidated") can
+    persist and be visible to the frontend after the job completes.
     """
     def worker():
         with LOCK:
@@ -178,7 +183,7 @@ def run_job(fn) -> None:
                 traceback.print_exc()
             finally:
                 STATE["running"] = False
-                STATE["progress"] = ""
+                # Do NOT clear STATE["progress"] — let each job manage its own.
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -231,17 +236,26 @@ def get_config():
 @app.post("/api/reset")
 def reset(body: ConfigBody):
     """Wipe the DB and rebuild the engine with the supplied configuration."""
-    if STATE["running"]:
-        raise HTTPException(409, "A job is already running.")
+    with LOCK:
+        if STATE["running"]:
+            raise HTTPException(409, "A job is already running.")
     cfg = Config.from_dict(body.config)
-    threading.Thread(target=lambda: init_engine(cfg, wipe=True), daemon=True).start()
+    def job():
+        init_engine(cfg, wipe=True)
+    run_job(job)
     return {"ok": True}
 
 
 @app.post("/api/reset-db")
 def reset_db():
     """Soft-reset: clear in-memory state (turn log, metrics) without deleting the DB."""
-    reset_state(_active_engine())
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            raise HTTPException(503, "Engine is still starting.")
+        if STATE["running"]:
+            raise HTTPException(409, "A job is already running.")
+        reset_state(engine)
     return {"ok": True}
 
 
@@ -275,7 +289,6 @@ def _start_seed_run(engine: Engine, do_reset: bool, seed_items: list[dict[str, s
             finally:
                 with LOCK:
                     engine["system"].set_clock(None)
-                    engine["seed"] = True
                     engine["seeded"] = True
         except Exception as exc:  # noqa: BLE001
             with LOCK:
@@ -296,18 +309,15 @@ def seed(body: SeedRunBody | None = None):
     By default the memory store is wiped first (body.reset); pass reset=False to
     append the seed onto whatever memories already exist.
     """
-    engine = _active_engine()
-    engine["seed"] = SEED["items"]
-    do_reset = True if body is None else bool(body.reset)
-
-    seed_items = engine.get("seed")
-    if not isinstance(seed_items, list):
-        seed_items = default_seed()
-
-    # Mark running immediately while we still hold LOCK so no other mutating
-    # endpoint can slip in before the worker thread starts.
-    STATE["running"] = True
-    STATE["error"] = None
+    with LOCK:
+        if STATE["running"]:
+            raise HTTPException(409, "A job is already running.")
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            raise HTTPException(503, "Engine is still starting.")
+        engine["seed"] = SEED["items"]
+        do_reset = True if body is None else bool(body.reset)
+        seed_items = list(engine["seed"]) if isinstance(engine["seed"], list) else default_seed()
     _start_seed_run(engine, do_reset, seed_items)
     return {"ok": True}
 
@@ -315,32 +325,40 @@ def seed(body: SeedRunBody | None = None):
 @app.post("/api/turn")
 def turn(body: TurnBody):
     """Run one user turn (retrieve → respond → write → maintain) asynchronously."""
-    engine = _active_engine()
     text = body.text.strip()
     if not text:
         raise HTTPException(400, "空の発話です。")
-    run_job(lambda: run_turn(engine, text))
+    def job():
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            raise HTTPException(503, "Engine is still starting.")
+        run_turn(engine, text)
+    run_job(job)
     return {"ok": True}
 
 
 @app.post("/api/dream")
 def dream(body: DreamBody):
     """Trigger memory consolidation (dreaming) on the top-N priority clusters."""
-    engine = _active_engine()
-    n = max(1, int(body.max_clusters))
-    force = bool(body.force)
-
-    # Immediate candidate check so the UI can show "nothing to dream" right away.
-    system = engine["system"]
-    candidates = system._dream_candidates(system.now_unix(), force=force)
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            raise HTTPException(503, "Engine is still starting.")
+        if STATE["running"]:
+            raise HTTPException(409, "A job is already running.")
+        system = engine["system"]
+        candidates = system._dream_candidates(system.now_unix(), force=bool(body.force))
     if not candidates:
         return {"ok": True, "n": 0, "message": "Dream 対象の適格クラスタがありません（メンバー3件未満、または「変更なし」指紋でスキップ）"}
-
+    n = max(1, int(body.max_clusters))
+    force = bool(body.force)
     def job():
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            return
         results = run_dream(engine, max_clusters=n, force=force)
         merged = sum(1 for r in results if r.get("action") != "none")
         STATE["progress"] = f"dreamed {len(results)} cluster(s), {merged} consolidated"
-
     run_job(job)
     return {"ok": True, "n": len(candidates)}
 
@@ -364,7 +382,7 @@ def turns_detail():
         st = engine.get("start_time")
     return {
         "start_time": st,
-        "turns": [{"turn": r["turn"], "utterance": r["utterance"], "note": r.get("note", ""), "timestamp": r.get("timestamp"), "system": _system_detail(engine, r["turn"])} for r in log],
+        "turns": [{"turn": r["turn"], "utterance": r["utterance"], "note": r.get("note", ""), "timestamp": r.get("timestamp"), "system": r.get("system") or _system_detail(engine, r["turn"])} for r in log],
     }
 
 
@@ -385,6 +403,37 @@ def db():
             },
             "tables": system.snapshot(),
         }
+
+
+@app.get("/api/clusters")
+def clusters():
+    """Return current dream cluster candidates with member details (preview, no execution)."""
+    with LOCK:
+        engine = ENGINE["e"]
+        if not engine or not STATE["ready"]:
+            return {"clusters": [], "message": "エンジン未起動"}
+        system = engine["system"]
+        now = system.now_unix()
+        candidates = system._dream_candidates(now, force=True)
+    result = []
+    for fp, members, prio in candidates:
+        member_list = []
+        for m in members:
+            member_list.append({
+                "id": m["id"],
+                "text": m["text"],
+                "tier": int(m["tier"]),
+                "gen": int(m["gen"]),
+                "A": round(system.activation(m, now), 2),
+            })
+        result.append({
+            "cluster_fp": fp[:12],
+            "priority": round(prio, 3),
+            "member_count": len(members),
+            "members": member_list,
+        })
+    # Also include any clusters that were already adjudicated (from dream_log)
+    return {"clusters": result, "total_clusters": len(result)}
 
 
 @app.get("/api/metrics")

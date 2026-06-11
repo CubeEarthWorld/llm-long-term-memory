@@ -39,7 +39,7 @@ The body text is lossless in every tier; only the search key (vector) degrades o
 
 ```sql
 CREATE TABLE memory (                  -- canonical
-  id TEXT PRIMARY KEY,                  -- UUIDv7 (sort order = time order)
+  id TEXT PRIMARY KEY,                  -- ULID (sort order = time order)
   text TEXT NOT NULL,                   -- ≤170 chars, one self-contained proposition
   tier INTEGER NOT NULL,                -- 1 / 2 / 3
   gen INTEGER NOT NULL DEFAULT 0,       -- consolidation generation 0..7
@@ -101,10 +101,10 @@ Offline, on-demand (default `budget = 5`); the **only** place destructive operat
 chores (always, no LLM): tombstone sweep / conflict overflow drops queue items only (memory bodies untouched)
                          / vec orphan GC / WAL checkpoint
 adjudication (budget×)  : cluster L1(+L2) → clusters with ≥3 members are eligible
-  fp = SHA-256(sorted member UUIDs)  →  skip if dream_log has (fp, 'unchanged')   # idle-spin guard
+  fp = SHA-256(sorted member ULIDs)  →  skip if dream_log has (fp, 'unchanged')   # idle-spin guard
   priority = count × cohesion × 2^(−max gen) × (1 + tier overflow) × (1 + intra-cluster conflict pairs)
   verdict ∈ { merge / split / none }
-    merge → new text (≤170) as a new UUIDv7, 768-d, gen=min(max+1,7), mass=min(Σ source A, 64); sources physically deleted
+    merge → new text (≤170) as a new ULID, 768-d, gen=min(max+1,7), mass=min(Σ source A, 64); sources physically deleted
 ```
 
 The fingerprint self-invalidates (member changes change `fp`), so "re-adjudicate if the situation changed, never touch it again if it didn't" holds without timers. Confabulation guards: the prompt contract forbids facts absent from the input, output is validated (≤170 chars, one retry → discard), and 8 generations of DB snapshots (~80 MB) are kept.

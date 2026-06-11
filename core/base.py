@@ -88,10 +88,11 @@ class TurnRunner:
         metrics.recalled = result.recalled
 
         # 2) CONVERSE (§5.1 write via tools) — generation + save_memory/delete_memory.
-        (response, events), logic_ms, embed_ms = self._timed_with_embedding(
+        (response, events, write_ms), logic_ms, embed_ms = self._timed_with_embedding(
             lambda: self._converse_and_write(system, result.pack_text, utterance)
         )
-        metrics.llm_ms += logic_ms
+        metrics.llm_ms += max(0.0, logic_ms - write_ms)
+        metrics.write_ms += write_ms
         metrics.embed_ms += embed_ms
         metrics.response = response.text
         metrics.prompt = response.prompt
@@ -115,15 +116,22 @@ class TurnRunner:
     def _converse_and_write(self, system: MemorySystem, pack_text: str, utterance: str):
         """Run the tool-calling exchange; fall back to extraction if nothing was saved."""
         events: list[dict] = []
+        write_ms = 0.0
 
         def _save(text: str = "", **_ignore):
+            nonlocal write_ms
+            t0 = time.perf_counter()
             ev = system.save_memory(text)
+            write_ms += (time.perf_counter() - t0) * 1000.0
             events.append(ev)
             return {"ok": ev.get("action") in _SAVE_ACTIONS, "action": ev.get("action"),
                     "id": ev.get("id"), "tier": ev.get("tier")}
 
         def _delete(id: str = "", **_ignore):  # noqa: A002 — tool param name is 'id'
+            nonlocal write_ms
+            t0 = time.perf_counter()
             ev = system.delete_memory(id)
+            write_ms += (time.perf_counter() - t0) * 1000.0
             events.append(ev)
             return {"ok": ev.get("action") in ("tombstoned", "deleted"), "action": ev.get("action")}
 
@@ -134,8 +142,10 @@ class TurnRunner:
         if not saved and getattr(system.memory, "tool_fallback", True):
             cands = self.llm.extract_save_candidates(utterance, conv.text)
             for text in cands[: getattr(system.memory, "max_writes_per_turn", 8)]:
+                t0 = time.perf_counter()
                 events.append(system.save_memory(text))
-        return conv, events
+                write_ms += (time.perf_counter() - t0) * 1000.0
+        return conv, events, write_ms
 
     def _timed_with_embedding(self, fn):
         self.provider.pop_ms()

@@ -86,10 +86,10 @@ score(m) = max(0, cos(query, m)) × (α + (1−α) × A_abs),   α = 0.35  # 床
   <p>任意のタイミング・任意の審理数（既定 budget=5）で呼べる。1審理 = 1独立トランザクション（電源断に強い）。</p>
   <pre>家事（常時・LLM不要）: 墓標掃除 / conflict溢れは項目破棄のみ・本体不可侵 / vec孤児GC / WALチェックポイント
 審理（budget回）     : L1(+L2)をクラスタリング → 件数≥3が適格
-  fp = SHA-256(整列メンバーUUID)  →  dream_log に「変更なし」記録があればスキップ（空転防止）
+  fp = SHA-256(整列メンバーULID)  →  dream_log に「変更なし」記録があればスキップ（空転防止）
   優先度 = 件数 × 凝集度 × 2^(−max gen) × (1+層溢れ圧) × (1+クラスタ内conflictペア数)
   裁定 ∈ {全統合 / 一部統合 / 分割再記述 / 変更なし}
-    統合 → 新text(≤170字)を 新UUIDv7・768d・gen=min(max+1,7)・mass=min(Σ元A,64) で挿入し統合元を物理削除</pre>
+    統合 → 新text(≤170字)を 新ULID・768d・gen=min(max+1,7)・mass=min(Σ元A,64) で挿入し統合元を物理削除</pre>
   <ul>
     <li><b>指紋スキップの自己無効化</b>: メンバーの変化は fp を変えるため「状況が変われば再審理、変わらなければ二度と触らない」がタイマーなしに成立。定常状態で夢のコストはゼロへ収束。</li>
     <li><b>作話対策</b>: プロンプト契約「入力に存在しない事実を書かない」＋出力検証（≤170字、失敗は1回再試行→不採用）＋スナップショット8世代（約80MB）。</li>
@@ -98,7 +98,7 @@ score(m) = max(0, cos(query, m)) × (α + (1−α) × A_abs),   α = 0.35  # 床
   <h2>スキーマ（§3）</h2>
   <table>
     <tr><th>テーブル</th><th>主な列</th></tr>
-    <tr><td><code>memory</code>（正本）</td><td><code>id(UUIDv7), text(≤170字), tier(1/2/3), gen(0..7), created_at, tz('名前;+offset'), last_access, last_bonus_at, mass(≤64), superseded_by(墓標)</code></td></tr>
+    <tr><td><code>memory</code>（正本）</td><td><code>id(ULID), text(≤170字), tier(1/2/3), gen(0..7), created_at, tz('名前;+offset'), last_access, last_bonus_at, mass(≤64), superseded_by(墓標)</code></td></tr>
     <tr><td><code>vec</code>（索引・導出物）</td><td><code>id, memory_id, model_id, dim(768/256/128), dtype(f32/int8), scale, v(単位ノルム)</code></td></tr>
     <tr><td><code>conflict</code></td><td><code>a, b, at</code>（≤256件リング）</td></tr>
     <tr><td><code>dream_log</code></td><td><code>fp, verdict, at</code>（≤512件リング、内容アドレス指紋）</td></tr>

@@ -123,21 +123,28 @@ function DreamPanel({ state, busy }) {
   const [err, setErr] = useState(null);
   const [msg, setMsg] = useState(null);
   const [open, setOpen] = useState(true);
+  const [dreaming, setDreaming] = useState(false);
   const load = useCallback(async () => {
     try { const d = await api("/dream-log"); setResults(d.results || []); } catch (e) {}
   }, []);
   useEffect(() => { load(); }, [state.turn, state.running, load]);
+  // Sync local dreaming latch with server running state.
+  // When the server finishes, clear the latch so the UI reflects real backend state.
+  useEffect(() => { if (!state.running) setDreaming(false); }, [state.running]);
   const dream = async () => {
     setErr(null);
     setMsg(null);
+    setDreaming(true);
     try {
       const res = await apiPost("/dream", { max_clusters: 5 });
       if (res.n === 0) {
         setMsg(res.message || "Dream 対象の適格クラスタがありません");
+        setDreaming(false);
       }
-    } catch (e) { setErr(e.message); }
+    } catch (e) { setErr(e.message); setDreaming(false); }
   };
   const DREAM_LABEL = { merge: "統合", split: "分割", none: "変更なし" };
+  const inProgress = dreaming || (busy && state.progress && state.progress.startsWith("dreamed"));
   return html`
     <div class="dream">
       <div class="dream-head">
@@ -150,6 +157,11 @@ function DreamPanel({ state, busy }) {
       <div class="dream-hint">クラスタ化 → 審理 → 統合/分割。LLM が要点(gist)へまとめ、統合元は物理削除されます（1審理=1トランザクション）。</div>
       ${err && html`<div class="err">${err}</div>`}
       ${msg && html`<div class="kpi ok block-msg">${msg}</div>`}
+      ${inProgress && html`
+        <div class="seedprogress">
+          <span class="spin"></span>
+          <span>💤 Dream 実行中...<span class="seedprogress-sub">　クラスタの審理（統合/分割）を行っています。完了までお待ちください。</span></span>
+        </div>`}
       ${open && (results.length === 0 ? html`<div class="note">まだ Dream のログがありません。</div>` :
         results.map((r, i) => html`
           <div class="dreamcard" key=${i}>
@@ -263,15 +275,43 @@ function ConversationView({ state, busy }) {
     </div>`;
 }
 
+function ClusterCard({ cluster }) {
+  return html`
+    <div class="dreamcard">
+      <div class="metarow">
+        <span class="metachip">cluster ${cluster.cluster_fp || ""}</span>
+        <span class="metachip strong">priority ${cluster.priority}</span>
+        <span class="metachip ghost">${cluster.member_count}件</span>
+      </div>
+      <ul class="mem-list">${cluster.members.map((m, j) => html`
+        <li key=${j}>
+          <span class="w">L${m.tier} g${m.gen} A${m.A}</span>
+          <span class="mem-id" title=${m.id}>${m.id.slice(0, 10)}…</span>
+          ${m.text}
+        </li>`)}
+      </ul>
+    </div>`;
+}
+
 function DBView() {
   const [data, setData] = useState(null);
+  const [clusters, setClusters] = useState(null);
   useEffect(() => { setData(null); api("/db").then(setData).catch(() => setData(null)); }, []);
+  useEffect(() => { setClusters(null); api("/clusters").then(setClusters).catch(() => setClusters(null)); }, []);
   return html`
     <div>
       ${!data && html`<div class="note">読み込み中...</div>`}
       ${data && html`
         <div class="statgrid">${Object.entries(data.stats).map(([k, v]) =>
           html`<div class="statcard" key=${k}><div class="stat-num">${v}</div><div class="stat-label">${k}</div></div>`)}</div>
+        ${clusters && html`
+          <div class="tblsection">
+            <h2 class="tbl-title">クラスター候補（Dream前プレビュー）<span class="pill">${clusters.total_clusters}</span></h2>
+            <div class="dream-hint">k-means で動的に形成されたクラスタです。Dream 実行時にこのグループが審理（統合/分割）されます。</div>
+            ${clusters.clusters.length === 0
+              ? html`<div class="note">クラスター候補がありません（メモリが ${"<"} 3件、または全クラスタが「変更なし」指紋でスキップされています）。</div>`
+              : clusters.clusters.map((c, i) => html`<${ClusterCard} key=${i} cluster=${c} />`)}
+          </div>`}
         ${Object.entries(data.tables).map(([tbl, rows]) => html`
           <div class="tblsection" key=${tbl}>
             <h2 class="tbl-title">${tbl}<span class="pill">${rows.length}</span></h2>
@@ -348,6 +388,7 @@ const LABELS = {
   write_rate_per_day: "書込みレート/日", max_writes_per_turn: "1ターン保存上限",
   tool_fallback: "保存フォールバック(抽出)",
   hard_memory_rows: "memory総行ハード上限", hard_vec_rows: "vec総行ハード上限", decay_exp_cap: "減衰指数上限(A=0)",
+  score_thresholds: "スコア閾値(カンマ区切り・段階的緩和)",
 };
 
 const GLOB_GROUPS = [
@@ -385,6 +426,13 @@ function SettingsView({ state, busy, onApplied }) {
         <div class="seg">${[["on", true], ["off", false]].map(([lbl, o]) => html`
           <button key=${lbl} class=${"segbtn " + (val === o ? "on" : "")} onClick=${() => setField(sec, key, o)}>${lbl}</button>`)}
         </div></div>`;
+    if (Array.isArray(val))
+      return html`<div class="field" key=${id}><label title=${id}>${label}</label>
+        <input type="text" value=${val.join(",")} placeholder="例: 0.1,0.2"
+          onChange=${(e) => {
+            const parts = e.target.value.split(",").map((s) => { const n = Number(s.trim()); return isNaN(n) ? s.trim() : n; });
+            setField(sec, key, parts);
+          }} /></div>`;
     if (typeof val === "number")
       return html`<div class="field" key=${id}><label title=${id}>${label}</label>
         <input type="number" step="any" value=${val} onChange=${(e) => setField(sec, key, e.target.value === "" ? 0 : Number(e.target.value))} /></div>`;

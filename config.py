@@ -81,6 +81,7 @@ class LongTermMemoryConfig:
     alpha: float = 0.35               # activation floor in score
     inject_n: int = 5                 # memories injected per READ
     mmr_lambda: float = 0.3           # MMR diversity penalty
+    score_thresholds: tuple[float, ...] = (0.1, 0.2)  # MMR前のスコア閾値（段階的緩和）
 
     # -- Identity thresholds (document–document, §4.3) -- #
     theta_same: float = 0.97          # ≥ → supersede (再固定化)
@@ -122,7 +123,7 @@ class LongTermMemoryConfig:
     # -- Safety hard bounds (§8.1) used by validation (I14) -- #
     hard_memory_rows: int = 16384
     hard_vec_rows: int = 32768
-    decay_exp_cap: float = 64.0           # max(0,Δt)/τ above this → A=0
+    decay_exp_cap: float = 65536.0        # max(0,Δt)/τ above this → A=0 (was 64→~192yr; now ~196kyr)
 
 
 @dataclass
@@ -158,6 +159,14 @@ def _coerce(value, default):
             return float(value)
         if isinstance(default, str):
             return str(value)
+        if isinstance(default, tuple):
+            # JSON arrays arrive as list; also accept comma-separated string.
+            if isinstance(value, (list, tuple)):
+                return tuple(_coerce(v, default[0]) if default else v for v in value)
+            if isinstance(value, str):
+                parts = [p.strip() for p in value.split(",") if p.strip()]
+                return tuple(_coerce(p, default[0]) if default else p for p in parts)
+            return default
     except (TypeError, ValueError):
         return default
     return value

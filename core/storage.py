@@ -16,6 +16,8 @@ from typing import Sequence
 
 import numpy as np
 
+_VALID_TABLES = {"memory", "vec", "conflict", "dream_log", "spec"}
+
 
 def pack_vec(vec: np.ndarray | None) -> bytes | None:
     if vec is None:
@@ -117,6 +119,8 @@ class Store:
 
     # -- maintenance ---------------------------------------------------- #
     def count(self, table: str, where: str = "", params: Sequence = ()) -> int:
+        if table not in _VALID_TABLES:
+            raise ValueError(f"Invalid table: {table}")
         sql = f"SELECT COUNT(*) FROM {table}"
         if where:
             sql += f" WHERE {where}"
@@ -133,12 +137,16 @@ class Store:
     def vector_storage_mb(self, tables_cols: Sequence[tuple[str, str]]) -> float:
         total = 0
         for table, col in tables_cols:
+            if table not in _VALID_TABLES:
+                raise ValueError(f"Invalid table: {table}")
             for r in self.query(f"SELECT {col} AS v FROM {table} WHERE {col} IS NOT NULL"):
                 total += len(r["v"])
         return total / (1024 * 1024)
 
     def rows_as_dicts(self, table: str, drop_blobs: bool = True, limit: int = 5000) -> list[dict]:
-        def _clean(row: sqlite3.Row) -> Dict:
+        if table not in _VALID_TABLES:
+            raise ValueError(f"Invalid table: {table}")
+        def _clean(row: sqlite3.Row) -> dict:
             d = dict(row)
             if drop_blobs:
                 for k, v in list(d.items()):

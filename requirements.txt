@@ -16,3 +16,4 @@ torch>=2.4
 numpy>=1.26
 pandas>=2.0
 python-dotenv>=1.0
+python-ulid>=3.0

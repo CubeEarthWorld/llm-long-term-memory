@@ -28,7 +28,7 @@ import os
 import secrets
 import time
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta, timezone as dt_timezone
 
 import numpy as np
 
@@ -82,6 +82,13 @@ CREATE TABLE IF NOT EXISTS vec (
 );
 CREATE TABLE IF NOT EXISTS conflict (a TEXT, b TEXT, at INTEGER);
 CREATE TABLE IF NOT EXISTS dream_log (fp TEXT PRIMARY KEY, verdict TEXT, at INTEGER);
+CREATE TABLE IF NOT EXISTS turn_log (
+  turn INTEGER PRIMARY KEY,
+  utterance TEXT NOT NULL,
+  note TEXT NOT NULL DEFAULT '',
+  timestamp REAL NOT NULL,
+  system_json TEXT NOT NULL DEFAULT '{}'
+);
 CREATE TABLE IF NOT EXISTS spec (k TEXT, v TEXT);
 CREATE INDEX IF NOT EXISTS idx_memory_tier ON memory(tier);
 CREATE INDEX IF NOT EXISTS idx_memory_super ON memory(superseded_by);
@@ -138,7 +145,10 @@ class LongTermMemory(MemorySystem):
         """Return 'IANA;+offset' for the configured timezone at ``now`` (§3.2)."""
         name = self.glob.default_timezone
         try:
-            dt = datetime.fromtimestamp(float(now), ZoneInfo(name))
+            utc_dt = datetime(1970, 1, 1, tzinfo=dt_timezone.utc) + timedelta(seconds=float(now))
+            if utc_dt.year > 9999:
+                raise OverflowError("year > 9999")
+            dt = utc_dt.astimezone(ZoneInfo(name))
             off = dt.strftime("%z") or "+0000"
             return f"{name};{off[:3]}:{off[3:]}"
         except Exception:
@@ -215,7 +225,7 @@ class LongTermMemory(MemorySystem):
             dtype = "int8"
         self.store.exec(
             "INSERT OR REPLACE INTO vec(id,memory_id,model_id,dim,dtype,scale,v) VALUES(?,?,?,?,?,?,?)",
-            (uuid7(), mid, self.model_id, dim, dtype, scale, blob),
+            (ulid(), mid, self.model_id, dim, dtype, scale, blob),
         )
 
     @staticmethod
@@ -316,7 +326,7 @@ class LongTermMemory(MemorySystem):
 
     def _insert(self, text: str, v_full: np.ndarray, mass: float, now: float,
                 gen: int = 0, tier: int = 1):
-        mid = uuid7()
+        mid = ulid()
         self.store.exec(
             "INSERT INTO memory(id,text,tier,gen,created_at,tz,last_access,last_bonus_at,mass,superseded_by) "
             "VALUES(?,?,?,?,?,?,?,?,?,NULL)",
@@ -361,6 +371,8 @@ class LongTermMemory(MemorySystem):
         now = self.now_unix()
         self._sanitize_timestamps(now)
         chunks = _split_paragraphs(query)[:16]
+        if not chunks:
+            return RetrieveResult(pack_text="", recalled=[])
         q_mat = self.provider.encode_query(chunks, dim=self.glob.dim_full)
 
         cands: dict = {}
@@ -392,7 +404,7 @@ class LongTermMemory(MemorySystem):
 
     def _filter_by_score(self, items: list[dict]) -> list[dict]:
         """Drop low-score memories; relax threshold if nothing remains."""
-        for threshold in (0.05, 0.01, 0.0):
+        for threshold in self.memory.score_thresholds:
             filtered = [it for it in items if it["score"] >= threshold]
             if filtered:
                 return filtered
@@ -744,8 +756,20 @@ class LongTermMemory(MemorySystem):
     def db_size_bytes(self) -> int:
         return self.store.db_size_bytes()
 
+    def save_turn_log(self, turn: int, utterance: str, note: str, timestamp: float, system_json: str) -> None:
+        """Persist a turn log entry with its system detail to the DB."""
+        self.store.exec(
+            "INSERT OR REPLACE INTO turn_log(turn,utterance,note,timestamp,system_json) VALUES(?,?,?,?,?)",
+            (turn, utterance, note, timestamp, system_json),
+        )
+
+    def load_turn_log(self) -> list[dict]:
+        """Load persisted turn log entries from the DB, ordered by turn."""
+        rows = self.store.query("SELECT turn, utterance, note, timestamp, system_json FROM turn_log ORDER BY turn")
+        return [dict(r) for r in rows]
+
     def reset(self) -> None:
-        for table in ("vec", "memory", "conflict", "dream_log", "spec"):
+        for table in ("vec", "memory", "conflict", "dream_log", "turn_log", "spec"):
             self.store.exec(f"DELETE FROM {table}")
         self._write_times = []
         self._install_spec()
@@ -755,7 +779,7 @@ class LongTermMemory(MemorySystem):
 # module helpers
 # ====================================================================== #
 def lam_mmr(score: float, lam: float, max_sim: float) -> float:
-    return lam * score - (1.0 - lam) * max_sim
+    return score - lam * max_sim
 
 
 def _fp(ids: list[str]) -> str:
@@ -803,21 +827,75 @@ def _split_paragraphs(text: str) -> list[str]:
         sents = [s.strip() for s in re.split(r"(?<=[。！？…\n])", text) if s.strip()]
         if len(sents) > len(blocks):
             blocks = sents
-    return blocks or [text.strip() or text]
+    return blocks or []
 
 
 def _fmt_local(unix, tzfield) -> str:
     """'2026-06-11 21:30 +09:00' from a UNIX time and a stored 'IANA;+offset' field (§5.2)."""
     name = str(tzfield).split(";")[0]
+    parts = str(tzfield).split(";")
+    off = parts[1] if len(parts) > 1 else "+00:00"
     try:
-        dt = datetime.fromtimestamp(float(unix), ZoneInfo(name))
+        utc_dt = datetime(1970, 1, 1, tzinfo=dt_timezone.utc) + timedelta(seconds=float(unix))
+        if utc_dt.year > 9999:
+            raise OverflowError("year > 9999")
+        dt = utc_dt.astimezone(ZoneInfo(name))
         off = dt.strftime("%z") or "+0000"
         return f"{dt:%Y-%m-%d %H:%M} {off[:3]}:{off[3:]}"
     except Exception:
-        parts = str(tzfield).split(";")
-        off = parts[1] if len(parts) > 1 else "+00:00"
-        dt = datetime.utcfromtimestamp(float(unix))
-        return f"{dt:%Y-%m-%d %H:%M} {off}"
+        try:
+            utc_dt = datetime(1970, 1, 1, tzinfo=dt_timezone.utc) + timedelta(seconds=float(unix))
+            if utc_dt.year > 9999:
+                raise OverflowError("year > 9999")
+            dt = utc_dt.astimezone(dt_timezone.utc)
+            return f"{dt:%Y-%m-%d %H:%M} {off}"
+        except Exception:
+            # Beyond datetime.MAXYEAR (9999) — format manually
+            ts = float(unix)
+            secs = int(ts)
+            mins, sec = divmod(secs, 60)
+            hrs, min_ = divmod(mins, 60)
+            days, hr = divmod(hrs, 24)
+            # Gregorian calendar: days since 1970-01-01
+            year, month, day = _ymd_from_ordinal(719528 + days)  # 719528 = ordinal(1970-01-01)
+            return f"{year:04d}-{month:02d}-{day:02d} {hr:02d}:{min_:02d} {off}"
+
+
+def _ymd_from_ordinal(n: int) -> tuple[int, int, int]:
+    """Convert proleptic Gregorian ordinal (1 = 0001-01-01) to (year, month, day).
+    Based on the algorithm from `datetime._ymd2ord` reversed. Works for any year."""
+    # Adjust for 0001-01-01 being ordinal 1
+    n -= 1
+    # 400-year cycles: 146097 days
+    n400, n = divmod(n, 146097)
+    y400 = n400 * 400
+    # 100-year cycles within 400: 36524 days (except every 400th)
+    n100, n = divmod(n, 36524)
+    if n100 > 3:
+        n100 = 3
+        n += 36524
+    y100 = n100 * 100
+    # 4-year cycles: 1461 days (except every 100th)
+    n4, n = divmod(n, 1461)
+    y4 = n4 * 4
+    # 1-year cycles: 365 days (except every 4th)
+    n1, n = divmod(n, 365)
+    if n1 > 3:
+        n1 = 3
+        n += 365
+    y1 = n1
+    year = y400 + y100 + y4 + y1 + 1
+    # Month/day within the year
+    is_leap = (year % 4 == 0 and year % 100 != 0) or (year % 400 == 0)
+    days_in_month = [31, 28 + is_leap, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31]
+    month = 1
+    for dim in days_in_month:
+        if n < dim:
+            break
+        n -= dim
+        month += 1
+    day = n + 1
+    return year, month, day
 
 
 def _shorten(text: str, max_chars: int) -> str:
@@ -831,14 +909,7 @@ def _shorten(text: str, max_chars: int) -> str:
     return cut
 
 
-def uuid7() -> str:
-    """RFC 9562 UUIDv7 as string: first 48 bits = ms Unix time → sort order = time order (§3.2)."""
-    unix_ms = int(time.time() * 1000)
-    rand_a = secrets.randbits(12)
-    rand_b = secrets.randbits(62)
-    value = (unix_ms & ((1 << 48) - 1)) << 80
-    value |= 0x7 << 76
-    value |= rand_a << 64
-    value |= 0b10 << 62
-    value |= rand_b
-    return str(uuid.UUID(int=value))
+def ulid() -> str:
+    """ULID as string: first 48 bits = ms Unix time → sort order = time order (§3.2)."""
+    from ulid import ULID
+    return str(ULID())

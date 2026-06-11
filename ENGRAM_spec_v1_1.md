@@ -72,7 +72,7 @@
 ```sql
 -- 正本
 CREATE TABLE memory (
-  id            BLOB PRIMARY KEY,            -- UUID v7 (16B)。整列順=時系列順
+  id            BLOB PRIMARY KEY,            -- ULID (16B)。整列順=時系列順
   text          TEXT NOT NULL,               -- ≤170字。自己完結した1命題。非空
   tier          INTEGER NOT NULL,            -- 1 / 2 / 3
   gen           INTEGER NOT NULL DEFAULT 0,  -- 統合世代 0..7
@@ -87,7 +87,7 @@ CREATE TABLE memory (
 
 -- 索引(導出物。モデルごとに保持)
 CREATE TABLE vec (
-  id        BLOB PRIMARY KEY,                -- UUID v7(ベクトル生成時刻が刻まれる)
+  id        BLOB PRIMARY KEY,                -- ULID(ベクトル生成時刻が刻まれる)
   memory_id BLOB NOT NULL REFERENCES memory(id),
   model_id  TEXT NOT NULL,
   dim       INTEGER NOT NULL,                -- 768 / 256 / 128
@@ -113,7 +113,7 @@ CREATE TABLE spec (k TEXT, v TEXT);          -- 'active_model' キーを必ず�
 
 ### 3.2 ID と時刻
 
-- **UUID v7** を採用(RFC 9562)。先頭 48bit がミリ秒 Unix 時刻のため、主キー整列 = 時系列となり「最近の記憶」走査に専用索引が不要。複数デバイス・復元バックアップの後日マージでも衝突しない。有効期間は西暦 10889 年まで。
+- **ULID** を採用(RFC 9562)。先頭 48bit がミリ秒 Unix 時刻のため、主キー整列 = 時系列となり「最近の記憶」走査に専用索引が不要。複数デバイス・復元バックアップの後日マージでも衝突しない。有効期間は西暦 10889 年まで。
 - 時刻は **64bit Unix 秒**(2038年問題の回避を仕様として明記)。
 - `tz` は IANA 名 + UTC オフセットの併記形式。tzdata が失われた未来でもオフセットは純粋な算術として解釈可能。
 
@@ -202,7 +202,7 @@ LLM のツール `save_memory(text)`:
    — テキストが正本なので常に可能)。最終判定は §4.3 を 768d 値で適用。
    v1.0 は L1 のみ比較しており、L2/L3 に降格済みの同一事実が再入力されると
    重複を素通りさせていた(v1.1 で修正。1万件の粗走査は <1ms で追加コストは実質ゼロ)
-4. 挿入時: id=UUIDv7, tier=1, gen=0, created_at=now(未来時刻は拒否),
+4. 挿入時: id=ULID, tier=1, gen=0, created_at=now(未来時刻は拒否),
    tz=ソフト側決定, mass=1, vec は active_model の 768d f32
 5. ソフト側で書込みレート上限を課す(値はソフト裁量。spec に記録)
 ```
@@ -270,7 +270,7 @@ DREAM(budget = 5):
   ── 審理(budget 回まで・1審理 = 1トランザクション) ──
   L1(必要なら L2 も)をクラスタリング(k-means 等。手法は自由)
   各クラスタ(件数 ≥ 3 が適格):
-    fp = SHA-256(メンバー全 UUID の整列連結)        # 内容アドレス指紋
+    fp = SHA-256(メンバー全 ULID の整列連結)        # 内容アドレス指紋
     dream_log に (fp, verdict='変更なし') が存在 → 適格外   # 空転防止(I12)
     優先度 = 件数 × 凝集度(平均ペアコサイン) × 2^(−max gen) × (1 + 層の溢れ圧)
              × (1 + クラスタ内の conflict ペア数)     # 矛盾を抱えるクラスタを先に裁く
@@ -282,7 +282,7 @@ DREAM(budget = 5):
     裁定 ∈ { 全統合 / 一部統合 / 分割再記述 / 変更なし }
       変更なし → dream_log に fp を記録して次へ(無変更は正当な結果)
       統合     → 新 text(≤170字。検証失敗は 1 回再試行 → 不採用)を
-                 新 UUIDv7・新 768d ベクトル・gen = min(max+1, 7)・
+                 新 ULID・新 768d ベクトル・gen = min(max+1, 7)・
                  mass = min(Σ 元 A, 64)・created_at = now・tz = ソフト決定
                  で挿入し、統合元を物理削除(完全削除。墓標ではない)
   適格クラスタが尽きたら budget が残っていても即終了
@@ -436,7 +436,7 @@ I14. 全フィールド・全演算値は §8.1 の安全上限表に対して�
 | 生成 LLM | 圧縮せずに生きる(§5.4 の機械的降格で運転継続。LLM 復帰後の夢が一括整理) |
 | 埋め込みモデルも | 読める平文アーカイブ(text・時刻・TZ は永久に解釈可能) |
 
-**堅牢化。** 追記ログ(WAL)+ スナップショット 8 世代 + 行単位の検証(text 長・時刻範囲・ノルム)。`spec` に本仕様全文を同梱し DB を自己記述化。UUID v7 は西暦 10889 年まで、時刻は 64bit 秒で実質無期限。
+**堅牢化。** 追記ログ(WAL)+ スナップショット 8 世代 + 行単位の検証(text 長・時刻範囲・ノルム)。`spec` に本仕様全文を同梱し DB を自己記述化。ULID は西暦 10889 年まで、時刻は 64bit 秒で実質無期限。
 
 ---
 
