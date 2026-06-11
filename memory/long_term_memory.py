@@ -657,7 +657,7 @@ class LongTermMemory(MemorySystem):
         if len(rows) < self.memory.cluster_min:
             return []
         X = np.stack([c for _, c in rows]).astype(np.float32)
-        k = max(1, round(len(rows) / 4))
+        k = max(1, round(len(rows) / 3))
         labels = _kmeans(X, k)
         groups: dict = {}
         for (row, coarse), lab in zip(rows, labels):
@@ -678,6 +678,8 @@ class LongTermMemory(MemorySystem):
                 continue
             coarses = [m[1] for m in members]
             coh = _cohesion(coarses)
+            if coh < self.memory.cluster_cohesion_min:
+                continue
             max_gen = max(int(m["gen"]) for m in rows_m)
             idset = set(ids)
             n_conf = sum(1 for a, b in conflict_pairs if a in idset and b in idset)

@@ -101,6 +101,7 @@ class LongTermMemoryConfig:
     dream_budget: int = 5             # adjudications per dream() call (0..4096)
     dream_budget_hard: int = 4096     # "∞" bound (§8.1)
     cluster_min: int = 3              # min members for an eligible cluster
+    cluster_cohesion_min: float = 0.6  # minimum mean pairwise cosine for cluster eligibility (§6)
     dream_max_members: int = 64       # members handed to the LLM per adjudication
     snapshot_gens: int = 8            # DB snapshot ring before dream (§8)
 
