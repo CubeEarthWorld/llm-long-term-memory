@@ -49,7 +49,7 @@ app = FastAPI(title=SYSTEM_TITLE)
 # or read-only in GET handlers after the engine is ready.
 STATE = {"ready": False, "running": False, "progress": "", "error": None, "init_error": None}
 ENGINE: dict = {"e": None, "cfg": None}   # "e" holds the Engine from core.engine
-LOCK = threading.Lock()
+LOCK = threading.RLock()
 
 
 class NoCacheStaticFiles(StaticFiles):
@@ -273,8 +273,9 @@ def _start_seed_run(engine: Engine, do_reset: bool, seed_items: list[dict[str, s
     total = len(seed_items)
 
     def worker():
-        STATE["running"] = True
-        STATE["error"] = None
+        with LOCK:
+            STATE["running"] = True
+            STATE["error"] = None
         try:
             if do_reset:
                 with LOCK:
