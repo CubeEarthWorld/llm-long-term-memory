@@ -129,6 +129,20 @@ def test_dream_merged_mass_capped(make_system, cfg):
     assert float(maxmass) <= cfg.memory.m_max + 1e-9
 
 
+def test_dream_passes_dream_time_not_creation_time(make_system):
+    """Consolidation must see 'now' so relative dates anchored to each memory's
+    local_time can be rewritten as absolute dates (the merged row gets a fresh
+    created_at, so a surviving『再来週』would silently shift its meaning)."""
+    s, clock, _ = make_system(llm=ScriptableLLM(dream_action="merge"))
+    for tail in ("plan", "hotel", "food"):
+        s.save_memory(f"trip kyoto {tail} schedule note")
+    created_local = s.now_local()
+    clock.advance_days(21)            # dream runs 3 weeks after the memories were written
+    s.dream(budget=5, force=True)
+    assert s.llm.dream_current_time == s.now_local()
+    assert s.llm.dream_current_time != created_local
+
+
 def test_dream_snapshot_created(make_system):
     s, clock, _ = make_system(llm=ScriptableLLM(dream_action="merge"))
     for tail in ("plan", "hotel", "food"):

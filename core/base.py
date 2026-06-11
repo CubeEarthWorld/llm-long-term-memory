@@ -58,6 +58,10 @@ class MemorySystem(ABC):
     @abstractmethod
     def set_clock(self, fn) -> None: ...
 
+    def now_local(self) -> str:
+        """Current local datetime string for LLM prompts; '' when unknown."""
+        return ""
+
 
 class TurnRunner:
     """Runs retrieve → converse(+save/delete tools) → maintain for one user turn."""
@@ -144,11 +148,12 @@ class TurnRunner:
             return {"ok": ev.get("action") in ("tombstoned", "deleted"), "action": ev.get("action")}
 
         tools = {"save_memory": _save, "delete_memory": _delete}
-        conv = self.llm.converse(pack_text, utterance, tools)
+        current_time = system.now_local()
+        conv = self.llm.converse(pack_text, utterance, tools, current_time=current_time)
 
         saved = any(e.get("action") in _SAVE_ACTIONS for e in events)
         if not saved and getattr(system.memory, "tool_fallback", True):
-            cands = self.llm.extract_save_candidates(utterance, conv.text)
+            cands = self.llm.extract_save_candidates(utterance, conv.text, current_time=current_time)
             for text in cands[:max_writes]:
                 t0 = time.perf_counter()
                 events.append(system.save_memory(text))

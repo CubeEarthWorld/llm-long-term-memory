@@ -51,18 +51,24 @@ class ScriptableLLM:
         self.extract = extract or []
         self.converse_calls = 0
         self.dream_calls = 0
+        self.converse_current_time: str | None = None
+        self.extract_current_time: str | None = None
+        self.dream_current_time: str | None = None
 
-    def converse(self, memory_pack, user_text, tools):
+    def converse(self, memory_pack, user_text, tools, current_time=""):
         self.converse_calls += 1
+        self.converse_current_time = current_time
         if self.save_on_converse and "save_memory" in tools:
             tools["save_memory"](text=user_text[:170])
         return _ConvResult(text="ok", prompt=f"[pack]{memory_pack}[/pack]{user_text}")
 
-    def extract_save_candidates(self, user_text, assistant_text):
+    def extract_save_candidates(self, user_text, assistant_text, current_time=""):
+        self.extract_current_time = current_time
         return list(self.extract)
 
-    def dream_cluster(self, members):
+    def dream_cluster(self, members, current_time=""):
         self.dream_calls += 1
+        self.dream_current_time = current_time
         if not members or self.dream_action == "none":
             return {"action": "none", "memories": []}
         if self.dream_action == "split":
