@@ -25,32 +25,28 @@ class MaintenanceOpsMixin:
     def _enforce_capacity(self, now: float) -> None:
         """Keep each tier within capacity: sweep tombstones, then demote / evict (§5.4, I4)."""
         for tier, cap, to in ((1, self.memory.cap1, 2), (2, self.memory.cap2, 3)):
-            guard = 0
-            while self._tier_count(tier) > cap and guard < self.memory.hard_memory_rows:
-                guard += 1
-                tomb = self.store.one(
-                    "SELECT id FROM memory WHERE tier=? AND superseded_by IS NOT NULL LIMIT 1", (tier,))
-                if tomb is not None:
-                    self._physical_delete(tomb["id"])
-                    continue
-                vid = self._demote_victim(tier, now)
-                if vid is None:
-                    break
-                self._demote(vid, to)
+            self._shrink_tier(tier, cap, now, lambda vid, to=to: self._demote(vid, to))
+        # L3 has nowhere to demote to: eviction is death in this system (§5.4).
+        self._shrink_tier(3, self.memory.cap3, now, self._physical_delete)
+
+    def _shrink_tier(self, tier: int, cap: int, now: float, on_victim) -> None:
+        """Shrink one tier to ``cap``: purge tombstones first, then hand the
+        lowest-activation live row to ``on_victim`` (demote or physical delete)."""
         guard = 0
-        while self._tier_count(3) > self.memory.cap3 and guard < self.memory.hard_memory_rows:
+        while self._tier_count(tier) > cap and guard < self.memory.hard_memory_rows:
             guard += 1
             tomb = self.store.one(
-                "SELECT id FROM memory WHERE tier=3 AND superseded_by IS NOT NULL LIMIT 1")
+                "SELECT id FROM memory WHERE tier=? AND superseded_by IS NOT NULL LIMIT 1", (tier,))
             if tomb is not None:
                 self._physical_delete(tomb["id"])
                 continue
-            vid = self._evict_victim(now)
+            vid = self._victim(tier, now)
             if vid is None:
                 break
-            self._physical_delete(vid)   # this is death in this system (§5.4)
+            on_victim(vid)
 
-    def _demote_victim(self, tier: int, now: float) -> str | None:
+    def _victim(self, tier: int, now: float) -> str | None:
+        """Lowest-activation live row id in ``tier``, preferring rows with A<θ_down."""
         rows = self.store.query(
             "SELECT * FROM memory WHERE tier=? AND superseded_by IS NULL", (tier,))
         if not rows:
@@ -58,13 +54,6 @@ class MaintenanceOpsMixin:
         under = [r for r in rows if self.activation(r, now) < self.memory.theta_down]
         pool = under or rows                                   # A<θ_down first, else lowest A
         return min(pool, key=lambda r: self.activation(r, now))["id"]
-
-    def _evict_victim(self, now: float) -> str | None:
-        rows = self.store.query(
-            "SELECT * FROM memory WHERE tier=3 AND superseded_by IS NULL")
-        if not rows:
-            return None
-        return min(rows, key=lambda r: self.activation(r, now))["id"]
 
     def _demote(self, mid: str, to_tier: int) -> None:
         vr = self.store.one(
@@ -82,7 +71,6 @@ class MaintenanceOpsMixin:
 
     def _physical_delete(self, mid: str) -> None:
         self.store.exec("DELETE FROM memory WHERE id=?", (mid,))   # vec cascades (ON DELETE CASCADE)
-
 
     def _sweep_tombstones(self, now: float) -> None:
         cutoff = int(now - self.memory.tombstone_sweep_age)
@@ -111,7 +99,6 @@ class MaintenanceOpsMixin:
                 "DELETE FROM dream_log WHERE fp IN "
                 "(SELECT fp FROM dream_log ORDER BY at ASC LIMIT ?)",
                 (n - self.memory.dream_log_cap,))
-
 
     # ================================================================== #
     # maintenance (every turn, no LLM)

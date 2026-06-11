@@ -15,6 +15,11 @@ from memory.helpers import ulid
 _DOC_VEC_CACHE_MAX = 4096
 
 
+def decode_unit_vec(blob: bytes, dtype: str, scale: float | None) -> np.ndarray:
+    """Decode a stored vector blob (f32 or int8+scale) into a unit-norm float32 array."""
+    v = unpack_vec(blob) if dtype == "f32" else dequantize_int8(blob, scale)
+    return l2_normalize(np.asarray(v, dtype=np.float32))
+
 
 class VectorOpsMixin:
     # ================================================================== #
@@ -77,11 +82,7 @@ class VectorOpsMixin:
     @staticmethod
     def _vec_array(vrow) -> np.ndarray:
         """Decode a stored vec row into a unit-norm float32 vector."""
-        if vrow["dtype"] == "f32":
-            v = unpack_vec(vrow["v"])
-        else:
-            v = dequantize_int8(vrow["v"], vrow["scale"])
-        return l2_normalize(np.asarray(v, dtype=np.float32))
+        return decode_unit_vec(vrow["v"], vrow["dtype"], vrow["scale"])
 
     def _tier_candidates(self, tier: int) -> tuple[list, np.ndarray | None]:
         """Return (rows, unit-norm vector matrix) for live memories in ``tier`` (joins vec).
@@ -97,19 +98,12 @@ class VectorOpsMixin:
         )
         if not rows:
             return [], None
-        vecs = []
-        for r in rows:
-            if r["_dtype"] == "f32":
-                v = unpack_vec(r["_v"])
-            else:
-                v = dequantize_int8(r["_v"], r["_scale"])
-            vecs.append(l2_normalize(np.asarray(v, dtype=np.float32)))
+        vecs = [decode_unit_vec(r["_v"], r["_dtype"], r["_scale"]) for r in rows]
         return list(rows), np.stack(vecs)
 
     @staticmethod
     def _coarse128(vec: np.ndarray) -> np.ndarray:
         return truncate_normalize(np.asarray(vec, dtype=np.float32), 128)
-
 
     def _doc_vec_cached(self, row) -> np.ndarray:
         """768d document vector for precision refinement, cached per memory id.
