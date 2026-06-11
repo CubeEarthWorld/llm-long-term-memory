@@ -32,6 +32,7 @@ from core.engine import (
     SYSTEM_ID,
     SYSTEM_TITLE,
     Engine,
+    _parse_duration,
     build_engine,
     clean_seed_items,
     default_seed,
@@ -39,7 +40,6 @@ from core.engine import (
     parse_seed_csv,
     reset_state,
     run_dream,
-    run_seed,
     run_turn,
 )
 
@@ -86,6 +86,15 @@ class DreamBody(BaseModel):
     force: bool = True
 
 
+class SeedRunBody(BaseModel):
+    """POST /api/seed payload — replay options.
+
+    reset=True (default) wipes the memory store before replaying, so each seed
+    run starts from an empty DB; reset=False appends onto the current memories.
+    """
+    reset: bool = True
+
+
 class SeedBody(BaseModel):
     """POST /api/seed-utterances payload — replace the entire seed list."""
     items: list
@@ -130,14 +139,13 @@ def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
         dispose_engine(ENGINE["e"])
         ENGINE["e"] = build_engine(cfg, wipe=wipe, seed=SEED["items"])
         ENGINE["cfg"] = cfg
-        # After a long downtime, gradually clean up stale memories instead of
-        # archiving everything at the first write(). Run maintain in a bounded
-        # recovery loop so that not just 5 (max_decay_per_turn) but up to
-        # ~100 decayed memories are cleaned up on startup.
+        # After a long downtime, let maintenance catch up on capacity (tombstone
+        # sweep + demotion/eviction) over a few bounded passes instead of doing it
+        # all at the first turn.
         if not wipe:
             try:
                 system = ENGINE["e"]["system"]
-                for _ in range(20):  # 20 passes × 5 = max 100 memories archived
+                for _ in range(20):
                     before = system.total_records()
                     system.maintain(ENGINE["e"]["turn"])
                     if before == system.total_records():
@@ -237,18 +245,70 @@ def reset_db():
     return {"ok": True}
 
 
+def _start_seed_run(engine: Engine, do_reset: bool, seed_items: list[dict[str, str]]) -> None:
+    """Run seed replay turn-by-turn, releasing LOCK between turns so the UI
+    can poll /api/state and /api/turns-detail in near real-time.
+    """
+    total = len(seed_items)
+
+    def worker():
+        STATE["running"] = True
+        STATE["error"] = None
+        try:
+            if do_reset:
+                with LOCK:
+                    reset_state(engine)
+
+            offset_state = {"offset": 0.0}
+            with LOCK:
+                engine["system"].set_clock(lambda: time.time() + offset_state["offset"])
+
+            try:
+                for item in seed_items:
+                    offset_state["offset"] += _parse_duration(item.get("advance", "0"))
+                    with LOCK:
+                        run_turn(engine, item["text"])
+                        STATE.update(progress=f"turn {engine['turn']}/{total}: {item['text'][:16]}...")
+                    # Yield the GIL briefly so pending readers can acquire LOCK
+                    # and observe the newly completed turn.
+                    time.sleep(0.02)
+            finally:
+                with LOCK:
+                    engine["system"].set_clock(None)
+                    engine["seed"] = True
+                    engine["seeded"] = True
+        except Exception as exc:  # noqa: BLE001
+            with LOCK:
+                STATE["error"] = f"{type(exc).__name__}: {exc}"
+            traceback.print_exc()
+        finally:
+            with LOCK:
+                STATE["running"] = False
+                STATE["progress"] = ""
+
+    threading.Thread(target=worker, daemon=True).start()
+
+
 @app.post("/api/seed")
-def seed():
-    """Replay the current seed utterances along a virtual timeline."""
+def seed(body: SeedRunBody | None = None):
+    """Replay the current seed utterances along a virtual timeline.
+
+    By default the memory store is wiped first (body.reset); pass reset=False to
+    append the seed onto whatever memories already exist.
+    """
     engine = _active_engine()
     engine["seed"] = SEED["items"]
-    total = len(SEED["items"])
+    do_reset = True if body is None else bool(body.reset)
 
-    def job():
-        reset_state(engine)
-        run_seed(engine, on_progress=lambda t, u: STATE.update(progress=f"turn {t}/{total}: {u[:16]}..."))
+    seed_items = engine.get("seed")
+    if not isinstance(seed_items, list):
+        seed_items = default_seed()
 
-    run_job(job)
+    # Mark running immediately while we still hold LOCK so no other mutating
+    # endpoint can slip in before the worker thread starts.
+    STATE["running"] = True
+    STATE["error"] = None
+    _start_seed_run(engine, do_reset, seed_items)
     return {"ok": True}
 
 
@@ -274,7 +334,7 @@ def dream(body: DreamBody):
     system = engine["system"]
     candidates = system._dream_candidates(system.now_unix(), force=force)
     if not candidates:
-        return {"ok": True, "n": 0, "message": "Dream 対象のクラスタがありません（クラスタが小さすぎるか、クールダウン中です）"}
+        return {"ok": True, "n": 0, "message": "Dream 対象の適格クラスタがありません（メンバー3件未満、または「変更なし」指紋でスキップ）"}
 
     def job():
         results = run_dream(engine, max_clusters=n, force=force)
@@ -335,15 +395,19 @@ def metrics():
         if not engine:
             return {"rows": [], "invariants": {}}
         hist = list(engine["recorder"].history)
+        mem = ENGINE["cfg"].memory
         budget = ENGINE["cfg"].glob.budget_chars
-        cap = ENGINE["cfg"].glob.total_cap
+        cap = mem.cap1 + mem.cap2 + mem.cap3
     rows = [m.row() for m in hist]
     return {
         "budget": budget,
         "cap": cap,
         "invariants": {
-            f"全 pack <= {budget}字": all(r["pack_chars"] <= budget for r in rows),
-            f"全 records <= {cap}件": all(r["records"] <= cap for r in rows),
+            f"全 pack <= {budget}字 (注入予算)": all(r["pack_chars"] <= budget for r in rows),
+            f"全 records <= {cap}件 (L1+L2+L3 容量)": all(r["records"] <= cap for r in rows),
+            f"L1 <= {mem.cap1}件": all((r.get("L1") or 0) <= mem.cap1 for r in rows),
+            f"L2 <= {mem.cap2}件": all((r.get("L2") or 0) <= mem.cap2 for r in rows),
+            f"L3 <= {mem.cap3}件": all((r.get("L3") or 0) <= mem.cap3 for r in rows),
         },
         "rows": rows,
     }

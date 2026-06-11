@@ -1,38 +1,30 @@
-"""LLM Long-Term Memory implementation.
+"""LLM Long-Term Memory — internal engine implementing ENGRAM v1.1.
 
-Human-memory-inspired model. Each memory separates three axes that the previous
-single ``freq`` conflated:
+Spec: ``ENGRAM_spec_v1_1.md`` (embedded verbatim into the ``spec`` table at init,
+making the DB self-describing). The whole system compresses to four sentences:
 
-* ``stability`` (S, seconds) — durability. Grows on every successful recall, more
-  when recalled near forgetting (spacing / testing effect, Jost's law, LTP).
-* ``freq`` — cumulative access count, a small ranking signal only.
-* ``w`` — importance / salience; ``confidence`` — reliability (from provenance).
+    生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。破壊はすべて夢の中。
+    (Generation only at the moment of verbalization. All judgement is distance.
+     All forgetting is arithmetic. All destruction happens inside the dream.)
 
-Retrievability follows a **power law** ``r = (1 + dt/S)^(-beta)`` (closer to the
-empirical forgetting curve than a single exponential). Recall is *gated* by ``r``
-so decay causes real, cue-dependent forgetting — not just lower ranking.
+* **Text is canonical, vectors are an index.** Memories are short self-contained
+  propositions (≤170 chars). The ``vec`` table is a derived, regenerable cache.
+* **Three tiers** (§2): L1 episodic (768d f32, τ=7d), L2 semantic (256d int8,
+  τ=90d), L3 schema (128d int8, τ=3y). MRL truncation = forgetting resolution.
+* **Activation** ``A = mass·2^(−Δt/τ)`` (§4.1) gates nothing but reweights the
+  cosine score (§4.2). Identity is pure cosine thresholds (§4.3).
+* **Append-only during conversation.** Physical deletion / consolidation happens
+  only in :meth:`dream` (§5–§6), 1 adjudication = 1 transaction.
 
-Forgetting is two-stage and bounded: a memory that decays below ``r_archive_floor``
-(after a grace period) is moved to a light ``archive`` table (256-d coarse vector
-only, no 768-d) — inaccessible to normal recall but recoverable. When the same
-information reappears it is **restored with a stability head-start** (relearning
-savings). The archive itself is capped, so total storage stays bounded.
-
-Clusters are stable identities consolidated by ``dream()`` (sleep-like). Dreamed
-memories become more durable (episodic -> semantic gist) and keep lineage
-(``source_ids`` / ``created_by_dream_id``) for auditability.
-
-The 256-d coarse vector (MRL truncation) used for clustering / diversity /
-spreading is derived from the full vector on the fly for live memories; for the
-archive it is the only vector stored.
+The class is named ``LongTermMemory`` and the DB filename is unchanged; only the
+algorithm/schema/parameters are ENGRAM (the previous FSRS model is fully removed).
 """
 from __future__ import annotations
 
 import hashlib
 import json
 import math
-import random
-import re
+import os
 import secrets
 import time
 import uuid
@@ -46,39 +38,55 @@ except Exception:  # pragma: no cover
     ZoneInfo = None  # type: ignore[misc,assignment]
 
 from config import GlobalConfig, LongTermMemoryConfig
-from core.base import MemorySystem, RetrieveResult, WriteResult
+from core.base import MemorySystem, RetrieveResult
 from core.embedding import EmbeddingProvider, l2_normalize, truncate_normalize
 from core.llm_client import LLMClient
 from core.metrics import RecalledItem
-from core.storage import Store, cosine, pack_vec, unpack_vec, vec_label
+from core.storage import (
+    Store,
+    dequantize_int8,
+    pack_vec,
+    quantize_int8,
+    unpack_vec,
+)
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_SPEC_PATH = os.path.join(_REPO_ROOT, "ENGRAM_spec_v1_1.md")
 
 SCHEMA = """
-CREATE TABLE IF NOT EXISTS memories (
+CREATE TABLE IF NOT EXISTS memory (
   id TEXT PRIMARY KEY,
-  text TEXT, v_full BLOB,
-  w REAL, provenance TEXT, confidence REAL, freq REAL, stability REAL,
-  accessed_at_unix REAL, updated_at_unix REAL, created_at_unix REAL,
-  timezone TEXT, cluster_id TEXT,
-  source_ids TEXT, summary_of TEXT, dream_action TEXT, created_by_dream_id TEXT
+  text TEXT NOT NULL,
+  tier INTEGER NOT NULL,
+  gen INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL,
+  tz TEXT NOT NULL,
+  last_access INTEGER NOT NULL,
+  last_bonus_at INTEGER NOT NULL DEFAULT 0,
+  mass REAL NOT NULL DEFAULT 1.0,
+  superseded_by TEXT,
+  CHECK (tier IN (1,2,3)),
+  CHECK (gen BETWEEN 0 AND 7),
+  CHECK (mass <= 64),
+  CHECK (length(text) BETWEEN 1 AND 1024)
 );
-CREATE TABLE IF NOT EXISTS archive (
+CREATE TABLE IF NOT EXISTS vec (
   id TEXT PRIMARY KEY,
-  text TEXT, v_coarse BLOB,
-  w REAL, provenance TEXT, confidence REAL,
-  last_r REAL, archived_at_unix REAL, text_hash TEXT, timezone TEXT
+  memory_id TEXT NOT NULL REFERENCES memory(id) ON DELETE CASCADE,
+  model_id TEXT NOT NULL,
+  dim INTEGER NOT NULL,
+  dtype TEXT NOT NULL,
+  scale REAL,
+  v BLOB NOT NULL,
+  UNIQUE(memory_id, model_id)
 );
-CREATE TABLE IF NOT EXISTS clusters (
-  id TEXT PRIMARY KEY,
-  last_dreaming_unix REAL
-);
-CREATE TABLE IF NOT EXISTS meta (
-  key TEXT PRIMARY KEY,
-  value TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_archive_hash ON archive(text_hash);
-CREATE INDEX IF NOT EXISTS idx_archive_evict ON archive(last_r, archived_at_unix);
-CREATE INDEX IF NOT EXISTS idx_memories_accessed ON memories(accessed_at_unix);
-CREATE INDEX IF NOT EXISTS idx_memories_updated ON memories(updated_at_unix);
+CREATE TABLE IF NOT EXISTS conflict (a TEXT, b TEXT, at INTEGER);
+CREATE TABLE IF NOT EXISTS dream_log (fp TEXT PRIMARY KEY, verdict TEXT, at INTEGER);
+CREATE TABLE IF NOT EXISTS spec (k TEXT, v TEXT);
+CREATE INDEX IF NOT EXISTS idx_memory_tier ON memory(tier);
+CREATE INDEX IF NOT EXISTS idx_memory_super ON memory(superseded_by);
+CREATE INDEX IF NOT EXISTS idx_memory_text ON memory(text);
+CREATE INDEX IF NOT EXISTS idx_vec_memory ON vec(memory_id);
 """
 
 
@@ -99,767 +107,717 @@ class LongTermMemory(MemorySystem):
         self.llm = llm
         self.memory = memory
         self.glob = glob
-        self._clock = None  # optional callable -> float (virtual clock for experiments)
+        self._clock = None                       # optional virtual clock (experiments)
+        self.model_id = glob.embedding_model
+        self._write_times: list[float] = []       # soft write-rate window
+        self._maint_count = 0
+        self._snap_dir = os.path.join(os.path.dirname(store.path), "snapshots")
         self.store.execscript(SCHEMA)
-        # Migration: add created_at_unix to existing DBs
-        existing = {c["name"] for c in self.store.query("PRAGMA table_info(memories)")}
-        if "created_at_unix" not in existing:
-            self.store.exec("ALTER TABLE memories ADD COLUMN created_at_unix REAL")
-        self._check_schema_compatibility()
+        self._install_spec()
 
-    # -- time / clock -------------------------------------------------- #
+    # ================================================================== #
+    # time / clock (I2)
+    # ================================================================== #
     def now_unix(self) -> float:
         return float(self._clock()) if self._clock else time.time()
 
     def set_clock(self, fn) -> None:
-        """Inject a clock (callable -> unix seconds) so experiments can accelerate time."""
         self._clock = fn
 
-    def _check_schema_compatibility(self) -> None:
-        """Detect embedding dimension changes so existing vectors are not silently skipped."""
-        stored = self.store.scalar("SELECT value FROM meta WHERE key='dim_full'")
-        if stored is not None and int(stored) != self.glob.dim_full:
-            raise RuntimeError(
-                f"Embedding dimension mismatch: DB was created with dim_full={stored}, "
-                f"but current config uses dim_full={self.glob.dim_full}. "
-                f"Please reset the DB or revert the config."
-            )
+    def _sanitize_timestamps(self, now: float) -> None:
+        """Clamp future timestamps to now so a clock rollback cannot mint immortal mass (I2)."""
+        n = int(now)
         self.store.exec(
-            "INSERT OR REPLACE INTO meta(key, value) VALUES(?, ?)",
-            ("dim_full", str(self.glob.dim_full)),
-        )
-
-    def _sanitize_timestamps(self, now_unix: float) -> None:
-        """Clamp future timestamps to now_unix so clock rollbacks cannot create immortal memories."""
+            "UPDATE memory SET last_access=? WHERE last_access>?", (n, n))
         self.store.exec(
-            "UPDATE memories SET accessed_at_unix = ?, updated_at_unix = ?, created_at_unix = ? "
-            "WHERE accessed_at_unix > ? OR updated_at_unix > ? OR created_at_unix > ?",
-            (now_unix, now_unix, now_unix, now_unix, now_unix, now_unix),
-        )
-        # Also clamp clusters/archive: a virtual clock (seed replay) left in the
-        # future would otherwise block the dream cooldown for years of real time
-        # and skew archive eviction order.
+            "UPDATE memory SET last_bonus_at=? WHERE last_bonus_at>?", (n, n))
         self.store.exec(
-            "UPDATE clusters SET last_dreaming_unix = ? WHERE last_dreaming_unix > ?",
-            (now_unix, now_unix),
-        )
+            "UPDATE memory SET created_at=? WHERE created_at>?", (n, n))
+
+    def _tz_for(self, now: float) -> str:
+        """Return 'IANA;+offset' for the configured timezone at ``now`` (§3.2)."""
+        name = self.glob.default_timezone
+        try:
+            dt = datetime.fromtimestamp(float(now), ZoneInfo(name))
+            off = dt.strftime("%z") or "+0000"
+            return f"{name};{off[:3]}:{off[3:]}"
+        except Exception:
+            return f"{name};+00:00"
+
+    # ================================================================== #
+    # spec self-description (§0, §13.5)
+    # ================================================================== #
+    def _install_spec(self) -> None:
+        try:
+            with open(_SPEC_PATH, encoding="utf-8") as f:
+                spec_text = f.read()
+        except Exception:
+            spec_text = "ENGRAM v1.1 (spec file not found at install time)"
+        self.store.exec("DELETE FROM spec")
+        with self.store.transaction():
+            self.store.exec("INSERT INTO spec(k,v) VALUES('active_model',?)", (self.model_id,))
+            self.store.exec("INSERT INTO spec(k,v) VALUES('spec_version',?)", ("ENGRAM v1.1",))
+            self.store.exec("INSERT INTO spec(k,v) VALUES('four_sentences',?)",
+                            ("生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。破壊はすべて夢の中。",))
+            self.store.exec("INSERT INTO spec(k,v) VALUES('spec_full',?)", (spec_text,))
+
+    # ================================================================== #
+    # activation A (§4.1)
+    # ================================================================== #
+    def _tau(self, tier: int) -> float:
+        return (self.memory.tau1, self.memory.tau2, self.memory.tau3)[int(tier) - 1]
+
+    def _dim(self, tier: int) -> int:
+        return (self.memory.dim1, self.memory.dim2, self.memory.dim3)[int(tier) - 1]
+
+    def activation(self, row, now: float) -> float:
+        """A(now) = mass · 2^(−max(0, now−last_access)/τ_tier). Underflow → 0 (§4.1, §8.1)."""
+        mass = float(row["mass"])
+        dt = max(0.0, now - float(row["last_access"]))
+        exp = dt / self._tau(int(row["tier"]))
+        if exp > self.memory.decay_exp_cap:
+            return 0.0
+        return min(mass * (2.0 ** (-exp)), self.memory.m_max)
+
+    def _apply_recall(self, row, now: float) -> None:
+        """Recall update with the §4.1 ordering: fold decay first, then refractory bonus."""
+        mass = self.activation(row, now)              # 1) fold decay into mass
+        lb = float(row["last_bonus_at"])
+        if now - lb >= self.memory.refractory_seconds:  # 2) refractory gate
+            mass = min(mass + 1.0, self.memory.m_max)
+            lb = now
         self.store.exec(
-            "UPDATE archive SET archived_at_unix = ? WHERE archived_at_unix > ?",
-            (now_unix, now_unix),
+            "UPDATE memory SET mass=?, last_access=?, last_bonus_at=? WHERE id=?",
+            (mass, int(now), int(lb), row["id"]),
         )
 
-    # -- stability / retrievability ------------------------------------ #
-    def _confidence(self, provenance: str) -> float:
-        return self.memory.confidence_user if provenance == "user" else self.memory.confidence_inferred
-
-    def initial_stability(self, w: float, confidence: float) -> float:
-        """Initial S (seconds): importance extends it; low confidence starts more labile."""
-        base = self.memory.stab_base_seconds * (1.0 + self.memory.kappa * w)
-        return base * (self.memory.labile_frac + (1.0 - self.memory.labile_frac) * confidence)
-
-    def _stability(self, row) -> float:
-        return float(row["stability"])
-
-    def retrievability(self, row, now_unix: float) -> float:
-        """Power-law retrievability in (0, 1]: r = (1 + dt/S)^(-beta)."""
-        S = max(1e-6, self._stability(row))
-        elapsed = max(0.0, now_unix - float(row["accessed_at_unix"]))
-        return (1.0 + elapsed / S) ** (-self.memory.forget_beta)
-
-    def _coarse(self, v_full) -> np.ndarray:
-        return truncate_normalize(np.asarray(v_full, dtype=np.float32), self.glob.dim_coarse)
-
-    # -- write --------------------------------------------------------- #
-    def write(self, turn: int, user_text: str, assistant_text: str) -> WriteResult:
-        t0 = time.perf_counter()
-        cands = self.llm.extract_memory(user_text, assistant_text)
-        extract_ms = (time.perf_counter() - t0) * 1000.0
-        if not cands:
-            return WriteResult(written_ids=[], note="保存なし（重要でない発話）", extract_ms=extract_ms)
-
-        now_unix = self.now_unix()
-        self._sanitize_timestamps(now_unix)
-        tz = self.glob.default_timezone
-        written, written_rows = [], []
-        for cand in cands[: self.memory.max_writes_per_turn]:
-            mid, events = self._write_one(
-                cand.get("text", user_text),
-                _clamp01(float(cand.get("w", 0.6))),
-                cand.get("provenance", "user"),
-                tz,
-                now_unix,
-            )
-            written.append(mid)
-            written_rows.extend(events)
-        self._enforce_capacity(now_unix)
-        return WriteResult(written_ids=written, written_rows=written_rows, note=f"{len(written_rows)}件", extract_ms=extract_ms)
-
-    def _write_one(self, text: str, w: float, provenance: str, timezone: str, now_unix: float):
-        if len(text) > self.memory.mem_max_chars:
-            text = _shorten(text, self.memory.mem_max_chars)
-        v = self.provider.encode_document(text, dim=self.glob.dim_full)[0]
-        vc = self._coarse(v)
-        confidence = self._confidence(provenance)
-
-        # 1) Near-duplicate of a live memory: reinforce + refresh, do not copy.
-        nn = self._nearest(v)
-        if nn and nn[1] > self.memory.tau_dup:
-            self._reinforce(nn[2], now_unix)
-            # Update the vector together with the text: keeping the old embedding
-            # would let repeated near-dup merges drift the text away from the
-            # stored vector until retrieval no longer finds it.
-            self.store.exec(
-                "UPDATE memories SET text=?, v_full=?, w=?, updated_at_unix=?, timezone=? WHERE id=?",
-                (text, pack_vec(v), max(w, float(nn[2]["w"])), now_unix, timezone, nn[0]),
-            )
-            self._invalidate_centroids()
-            row = self._get_memory(nn[0])
-            return nn[0], [_memory_event("updated", row, self.retrievability(row, now_unix))]
-
-        # 2) Reappearance of an archived memory: restore with a stability head-start (savings).
-        arc = self._savings_lookup(vc, text)
-        if arc is not None:
-            mid = self._restore_from_archive(arc, text, w, v, vc, timezone, now_unix)
-            row = self._get_memory(mid)
-            return mid, [_memory_event("restored", row, self.retrievability(row, now_unix))]
-
-        # 3) Fresh insert.
-        S0 = self.initial_stability(w, confidence)
-        mid, row = self._insert_memory(text, v, w, provenance, confidence, S0, timezone, now_unix, vc=vc)
-        return mid, [_memory_event("inserted", row, self.retrievability(row, now_unix))]
-
-    def _get_memory(self, mid: str):
-        return self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
-
-    def _nearest(self, v):
-        """Return the single nearest live memory to vector ``v`` as (id, cos, row), or None."""
-        nearest = self.store.cosine_search("memories", "v_full", v, k=1)
-        return nearest[0] if nearest else None
-
-    def _reinforce(self, row, now_unix: float) -> None:
-        """Successful access: grow stability (more when nearly forgotten) and bump access count.
-
-        Both stability and freq are capped to prevent unbounded growth over very long use.
-        """
-        r = self.retrievability(row, now_unix)
-        S = self._stability(row)
-        new_S = min(S * (1.0 + self.memory.stab_growth_c * (1.0 - r)), self.memory.max_stability_seconds)
-        new_freq = min(float(row["freq"]) + self.memory.reinforce_inc, self.memory.max_freq)
+    def _reinforce_write(self, row, now: float) -> None:
+        """Exact-text rehearsal (§5.1.2): definite +1, bypassing the refractory gate."""
+        mass = min(self.activation(row, now) + 1.0, self.memory.m_max)
         self.store.exec(
-            "UPDATE memories SET stability=?, freq=?, accessed_at_unix=? WHERE id=?",
-            (new_S, new_freq, now_unix, row["id"]),
+            "UPDATE memory SET mass=?, last_access=?, last_bonus_at=? WHERE id=?",
+            (mass, int(now), int(now), row["id"]),
         )
 
-    def _insert_memory(self, text, v, w, provenance, confidence, stability, timezone, now_unix,
-                       vc=None, lineage=None):
-        """Insert one memory (lineage cols NULL unless dreamed), assign its cluster, return (id, row)."""
-        mid = uuid7()
-        lin = lineage or {}
+    # ================================================================== #
+    # vectors (§3.3, §8 MRL+int8)
+    # ================================================================== #
+    def _embed_doc(self, text: str) -> np.ndarray:
+        return np.asarray(self.provider.encode_document(text, dim=self.glob.dim_full)[0], dtype=np.float32)
+
+    def _store_vec(self, mid: str, v_full: np.ndarray, tier: int) -> None:
+        dim = self._dim(tier)
+        vt = truncate_normalize(np.asarray(v_full, dtype=np.float32), dim)
+        if tier == 1:
+            blob, dtype, scale = pack_vec(vt), "f32", None
+        else:
+            blob, scale = quantize_int8(vt)
+            dtype = "int8"
         self.store.exec(
-            "INSERT INTO memories("
-            "id,text,v_full,w,provenance,confidence,freq,stability,"
-            "accessed_at_unix,updated_at_unix,created_at_unix,timezone,"
-            "source_ids,summary_of,dream_action,created_by_dream_id"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-            (mid, text, pack_vec(v), w, provenance, confidence,
-             self.memory.freq_seed, stability, now_unix, now_unix, now_unix, timezone,
-             lin.get("source_ids"), lin.get("summary_of"),
-             lin.get("dream_action"), lin.get("created_by_dream_id")),
+            "INSERT OR REPLACE INTO vec(id,memory_id,model_id,dim,dtype,scale,v) VALUES(?,?,?,?,?,?,?)",
+            (uuid7(), mid, self.model_id, dim, dtype, scale, blob),
         )
-        self._assign_cluster(mid, vc if vc is not None else self._coarse(v), now_unix)
-        self._invalidate_centroids()
-        return mid, self._get_memory(mid)
-
-    # -- savings (archive reappearance) -------------------------------- #
-    def _savings_lookup(self, vc: np.ndarray, text: str):
-        """Check whether ``text`` (or a coarse-vector neighbour) already exists in archive.
-
-        Returns the matching archive row so the caller can restore it with a stability head-start.
-        """
-        if self.store.count("archive") == 0:
-            return None
-        exact = self.store.one("SELECT * FROM archive WHERE text_hash=?", (_text_hash(text),))
-        if exact is not None:
-            return exact
-        hits = self.store.cosine_search(
-            "archive", "v_coarse", vc, k=1, max_scan=2000, order_by="archived_at_unix DESC"
-        )
-        if hits and hits[0][1] >= self.memory.tau_savings:
-            return hits[0][2]
-        return None
-
-    def _restore_from_archive(self, arc, text, w, v, vc, timezone, now_unix) -> str:
-        """Move an archived memory back to active store with a relearning savings bonus."""
-        self.store.exec("DELETE FROM archive WHERE id=?", (arc["id"],))
-        confidence = float(arc["confidence"])
-        w_new = max(w, float(arc["w"]))
-        S0 = self.initial_stability(w_new, confidence) * self.memory.savings_gain
-        mid, _ = self._insert_memory(text, v, w_new, arc["provenance"], confidence, S0, timezone, now_unix, vc=vc)
-        return mid
-
-    # -- clustering (centroid/medoid derived from members) ------------- #
-    def _invalidate_centroids(self) -> None:
-        """Clear the cached cluster centroids after any mutation that changes cluster membership."""
-        self._centroids_cache = None
-
-    def _cluster_centroids(self) -> Dict[str, np.ndarray]:
-        """Derive the centroid (mean coarse vector, L2-normalised) for every cluster.
-
-        Results are cached until the next mutation (insert / archive / dream / reset)
-        so that successive writes within the same turn don't recompute from scratch.
-        """
-        cached = getattr(self, "_centroids_cache", None)
-        if cached is not None:
-            return cached
-        rows = self.store.query("SELECT cluster_id, v_full FROM memories WHERE cluster_id IS NOT NULL")
-        acc: Dict[str, List[np.ndarray]] = {}
-        for r in rows:
-            acc.setdefault(r["cluster_id"], []).append(self._coarse(unpack_vec(r["v_full"])))
-        out: Dict[str, np.ndarray] = {}
-        for cid, vecs in acc.items():
-            out[cid] = l2_normalize(np.mean(np.stack(vecs), axis=0))
-        self._centroids_cache = out
-        return out
-
-    def _cluster_medoid(self, cid: str, members=None) -> Optional[str]:
-        """Return the member ID whose coarse vector is closest to the cluster centroid."""
-        if members is None:
-            members = self.store.query("SELECT id, v_full FROM memories WHERE cluster_id=?", (cid,))
-        if not members:
-            return None
-        coarse = [(m["id"], self._coarse(unpack_vec(m["v_full"]))) for m in members]
-        cen = self._cluster_centroids().get(cid)
-        if cen is None:
-            cen = l2_normalize(np.mean(np.stack([c for _, c in coarse]), axis=0))
-        return max(coarse, key=lambda t: float(np.dot(t[1], cen)))[0]
-
-    def _assign_cluster(self, mid: str, vc: np.ndarray, now_unix: float) -> str:
-        """Assign a memory to its nearest existing cluster, or create a new cluster if none is close enough."""
-        best_cid, best_sim = None, -1.0
-        for cid, cen in self._cluster_centroids().items():
-            sim = float(np.dot(vc, cen))
-            if sim > best_sim:
-                best_cid, best_sim = cid, sim
-        if best_cid is not None and best_sim >= self.memory.tau_link:
-            self.store.exec("UPDATE memories SET cluster_id=? WHERE id=?", (best_cid, mid))
-            return best_cid
-        cid = uuid7()
-        self.store.exec("INSERT INTO clusters(id,last_dreaming_unix) VALUES(?,?)", (cid, now_unix))
-        self.store.exec("UPDATE memories SET cluster_id=? WHERE id=?", (cid, mid))
-        return cid
-
-    # -- forgetting: two-stage (active -> archive -> bounded delete) --- #
-    def _is_protected(self, row, r: float, now_unix: float) -> bool:
-        """High-importance + high-confidence memories resist eviction down to r_hard_floor."""
-        created = row["created_at_unix"] if "created_at_unix" in row.keys() else None
-        age = max(0.0, now_unix - float(created or row["accessed_at_unix"]))
-        return (
-            float(row["confidence"] or 0.0) >= self.memory.protect_confidence
-            and float(row["w"]) >= self.memory.protect_w
-            and r >= self.memory.r_hard_floor
-            and age < self.memory.protect_max_seconds
-        )
-
-    def _enforce_capacity(self, now_unix: float) -> None:
-        """Ensure active store stays within total_cap by archiving decayed and then evicting lowest-r memories."""
-        self._archive_decayed(now_unix)
-        for _ in range(self.memory.max_evict_per_turn):
-            if self.store.count("memories") <= self.glob.total_cap:
-                break
-            victim = self._evict_target(now_unix)
-            if victim is None:
-                break
-            self._archive_memory(victim, now_unix)
-        self._enforce_archive_cap()
-
-    def _archive_decayed(self, now_unix: float) -> None:
-        """Move memories that have decayed below the floor (after grace) into the archive.
-
-        To avoid mass-forgetting after a very long downtime, only a limited number
-        of memories are archived per maintenance pass (lowest-r first).
-        """
-        # Query rewritten so an index on accessed_at_unix can be used.
-        rows = self.store.query(
-            "SELECT * FROM memories WHERE accessed_at_unix < ?",
-            (now_unix - self.memory.archive_grace_seconds,),
-        )
-        victims = []
-        for row in rows:
-            r = self.retrievability(row, now_unix)
-            if r < self.memory.r_archive_floor and not self._is_protected(row, r, now_unix):
-                victims.append((row["id"], r))
-        # Archive lowest-r memories first, capped per turn.
-        victims.sort(key=lambda x: x[1])
-        for mid, _ in victims[: self.memory.max_decay_per_turn]:
-            if self.store.one("SELECT 1 FROM memories WHERE id=?", (mid,)):
-                self._archive_memory(mid, now_unix)
-
-    def _evict_target(self, now_unix: float) -> str | None:
-        """Lowest-retrievability unprotected memory (with cluster-medoid protection)."""
-        rows = self.store.query(
-            "SELECT * FROM memories WHERE updated_at_unix < ?",
-            (now_unix - self.memory.min_residency_seconds,),
-        ) or self.store.query("SELECT * FROM memories")
-        if not rows:
-            return None
-        rmap = {r["id"]: self.retrievability(r, now_unix) for r in rows}
-        pool = [r for r in rows if not self._is_protected(r, rmap[r["id"]], now_unix)] or rows
-        victim = min(pool, key=lambda r: rmap[r["id"]])
-        vid = victim["id"]
-        cid = victim["cluster_id"]
-        if cid is None:
-            return vid
-        members = self.store.query("SELECT * FROM memories WHERE cluster_id=?", (cid,))
-        if len(members) >= 2 and vid == self._cluster_medoid(cid, members):
-            vid = min((m for m in members if m["id"] != vid), key=lambda m: self.retrievability(m, now_unix))["id"]
-        return vid
-
-    def _archive_memory(self, mid: str, now_unix: float) -> None:
-        """Move a single live memory into the archive (coarse vector only) and delete it from active."""
-        row = self.store.one("SELECT * FROM memories WHERE id=?", (mid,))
-        if row is None:
-            return
-        vc = self._coarse(unpack_vec(row["v_full"]))
-        self.store.exec(
-            "INSERT OR REPLACE INTO archive("
-            "id,text,v_coarse,w,provenance,confidence,last_r,archived_at_unix,text_hash,timezone"
-            ") VALUES(?,?,?,?,?,?,?,?,?,?)",
-            (row["id"], row["text"], pack_vec(vc), row["w"], row["provenance"],
-             _fval(row, "confidence", self.memory.confidence_inferred),
-             self.retrievability(row, now_unix), now_unix, _text_hash(row["text"]), row["timezone"]),
-        )
-        cid = row["cluster_id"]
-        self.store.exec("DELETE FROM memories WHERE id=?", (mid,))
-        if cid is not None and self.store.count("memories", "cluster_id=?", (cid,)) == 0:
-            self.store.exec("DELETE FROM clusters WHERE id=?", (cid,))
-        self._invalidate_centroids()
-
-    def _enforce_archive_cap(self) -> None:
-        """Permanently delete oldest/lowest-r archived memories when archive_cap is exceeded."""
-        excess = self.store.count("archive") - self.glob.archive_cap
-        if excess > 0:
-            self.store.exec(
-                "DELETE FROM archive WHERE id IN ("
-                "SELECT id FROM archive ORDER BY last_r ASC, archived_at_unix ASC LIMIT ?"
-                ")",
-                (excess,),
-            )
-
-    # -- retrieve ------------------------------------------------------ #
-    def retrieve(self, query: str, turn: int) -> RetrieveResult:
-        now_unix = self.now_unix()
-        candidates = self._gather_candidates(query, now_unix)
-        self._apply_spreading(candidates)
-        for c in candidates.values():
-            c["score"] = self._retrieval_score(c["row"], c["cos"], c["r"]) + c.get("spread", 0.0)
-        result, packed_ids = self._pack_retrieved(self._mmr(list(candidates.values())), now_unix)
-        self._reinforce_ids(packed_ids, now_unix)
-        self._apply_interference(candidates, set(packed_ids), now_unix)
-        return result
-
-    def _gather_candidates(self, query: str, now_unix: float) -> dict[str, dict]:
-        """Recall per paragraph and union the results.
-
-        The turn text is split into paragraphs; each is embedded and searched
-        independently so a memory relevant to *any* paragraph can surface (a
-        single whole-text embedding averages distinct topics together and dilutes
-        them). A memory found by several paragraphs keeps its best (max) cosine,
-        so the gate and downstream score reflect its strongest cue."""
-        chunks = self._split_paragraphs(query)[: self.memory.max_query_chunks]
-        q_mat = self.provider.encode_query(chunks, dim=self.glob.dim_full)
-        pool: dict[str, dict] = {}
-        gated: dict[str, dict] = {}
-        for q in q_mat:
-            for mid, cos, row in self.store.cosine_search("memories", "v_full", q, k=self.memory.k_retrieve):
-                if cos < self.glob.sim_floor:
-                    continue
-                if mid in pool and cos <= pool[mid]["cos"]:
-                    continue
-                r = self.retrievability(row, now_unix)
-                cand = {"id": mid, "cos": cos, "r": r, "row": row, "cluster_id": row["cluster_id"], "v": self._coarse(unpack_vec(row["v_full"]))}
-                pool[mid] = cand
-                if self._recall_gate(cos, r):
-                    gated[mid] = cand
-        candidates = gated or pool
-        self._recall_from_archive(q_mat, candidates, now_unix)
-        return candidates
-
-    def _recall_from_archive(self, q_mat, candidates: Dict[str, Dict], now_unix: float) -> None:
-        """思い出し (recall): search the archive too and restore high-relevance matches mid-retrieve.
-
-        A memory that decayed below ``r_archive_floor`` lives only in the light ``archive``
-        (256-d coarse vector) and is invisible to normal recall. Here a cue whose coarse cosine
-        to an archived memory clears ``tau_recall`` brings it back: the text is re-embedded to a
-        full vector, restored with a relearning head-start (``_restore_from_archive``), and added
-        to the candidate set so it flows through the unchanged score -> MMR -> pack pipeline. This
-        mirrors human reconsolidation — recalling a faded memory returns it to active store."""
-        if self.store.count("archive") == 0:
-            return
-        best: Dict[str, tuple] = {}  # archived id -> (best coarse cos, row)
-        # Cap the scan at 2000 rows so a full archive (5000) doesn't linearly dominate per-turn cost.
-        max_scan = max(self.memory.k_retrieve * 10, 2000)
-        for q in q_mat:
-            qc = self._coarse(q)
-            for aid, cos, arow in self.store.cosine_search(
-                "archive", "v_coarse", qc, k=self.memory.k_retrieve, max_scan=max_scan,
-                order_by="archived_at_unix DESC",
-            ):
-                if cos < self.memory.tau_recall:
-                    continue
-                if aid not in best or cos > best[aid][0]:
-                    best[aid] = (cos, arow)
-        restored = 0
-        for aid, (cos, arow) in sorted(best.items(), key=lambda kv: kv[1][0], reverse=True):
-            if restored >= self.memory.max_recall_per_turn:
-                break
-            text = arow["text"]
-            v = self.provider.encode_document(text, dim=self.glob.dim_full)[0]  # rebuild 768-d
-            vc = self._coarse(v)
-            mid = self._restore_from_archive(
-                arow, text, float(arow["w"]), v, vc, arow["timezone"], now_unix
-            )
-            row = self._get_memory(mid)
-            if row is None:
-                continue
-            cos_full = max(float(cosine(q, v)) for q in q_mat)  # full-dim cos, consistent with live cands
-            candidates[mid] = {
-                "id": mid,
-                "cos": cos_full,
-                "r": self.retrievability(row, now_unix),
-                "row": row,
-                "cluster_id": row["cluster_id"],
-                "v": self._coarse(unpack_vec(row["v_full"])),
-            }
-            restored += 1
 
     @staticmethod
-    def _split_paragraphs(text: str) -> List[str]:
-        """Split a turn into paragraphs (blank-line separated blocks).
+    def _vec_array(vrow) -> np.ndarray:
+        """Decode a stored vec row into a unit-norm float32 vector."""
+        if vrow["dtype"] == "f32":
+            v = unpack_vec(vrow["v"])
+        else:
+            v = dequantize_int8(vrow["v"], vrow["scale"])
+        return l2_normalize(np.asarray(v, dtype=np.float32))
 
-        Falls back to individual non-empty lines when there are no blank lines,
-        and to sentence-level splitting (on ``。！？…`` plus newlines) when the
-        text has very few newlines — this ensures long Japanese monologue text
-        yields diverse query embeddings instead of a single averaged vector.
-
-        Always returns at least one chunk."""
-        blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
-        if len(blocks) <= 1:
-            blocks = [ln.strip() for ln in text.splitlines() if ln.strip()]
-        # When even per-line splitting yields <= 2 chunks and the text is long
-        # (typical for Japanese input without explicit line breaks), split on
-        # sentence-ending punctuation so each semantic unit gets its own vector.
-        if len(blocks) <= 2 and len(text) > 80:
-            sentence_blocks = [
-                s.strip()
-                for s in re.split(r"(?<=[。！？…\n])", text)
-                if s.strip()
-            ]
-            if len(sentence_blocks) > len(blocks):
-                blocks = sentence_blocks
-        return blocks or [text.strip() or text]
-
-    def _recall_gate(self, cos: float, r: float) -> bool:
-        """Functional forgetting: a memory is unreachable unless weighted(cos, r) clears the threshold."""
-        g = self.memory.gate_w_cos * cos + self.memory.gate_w_r * r
-        if self.memory.recall_noise_sigma > 0:
-            g += random.gauss(0.0, self.memory.recall_noise_sigma)
-        return g >= self.memory.gate_theta
-
-    def _apply_spreading(self, candidates: Dict[str, Dict]) -> None:
-        """Spreading activation within the candidate set: boost a memory whose cluster
-        siblings are themselves query-relevant (ACT-R associative term, zero extra I/O)."""
-        groups: Dict[str, List[Dict]] = {}
-        for c in candidates.values():
-            if c["cluster_id"] is not None:
-                groups.setdefault(c["cluster_id"], []).append(c)
-        for c in candidates.values():
-            sibs = [s for s in groups.get(c["cluster_id"], []) if s["id"] != c["id"]]
-            c["spread"] = (
-                self.memory.spread_gamma * max(s["r"] * s["cos"] for s in sibs) if sibs else 0.0
-            )
-
-    def _retrieval_score(self, row, cos: float, r: float) -> float:
-        """Combine cosine, retrievability, importance, frequency and confidence into a single ranking score."""
-        return (
-            self.memory.alpha * cos
-            + self.memory.beta * r
-            + self.memory.delta * float(row["w"])
-            + self.memory.eta * math.log1p(float(row["freq"]))
-            + self.memory.zeta * float(row["confidence"] or 0.0)
+    def _tier_candidates(self, tier: int) -> list[tuple]:
+        """Return [(row, unit-norm vec), ...] for live memories in ``tier`` (joins vec)."""
+        rows = self.store.query(
+            "SELECT m.*, v.dim AS _dim, v.dtype AS _dtype, v.scale AS _scale, v.v AS _v "
+            "FROM memory m JOIN vec v ON v.memory_id=m.id AND v.model_id=? "
+            "WHERE m.tier=? AND m.superseded_by IS NULL",
+            (self.model_id, tier),
         )
+        out = []
+        for r in rows:
+            if r["_dtype"] == "f32":
+                v = unpack_vec(r["_v"])
+            else:
+                v = dequantize_int8(r["_v"], r["_scale"])
+            out.append((r, l2_normalize(np.asarray(v, dtype=np.float32))))
+        return out
 
-    def _pack_retrieved(self, ranked: List[Dict], now_unix: float):
-        """Format top-ranked memories into a text pack for the LLM, respecting budget_chars."""
-        used_chars = 0
-        lines: List[str] = []
-        recalled: List[RecalledItem] = []
-        packed_ids: List[str] = []
-        for item in ranked:
-            row = item["row"]
-            updated = int(row["updated_at_unix"])
-            local = _fmt_local(updated, row["timezone"])
-            line = f"[updated={local} (unix={updated})] {row['text']}\n"
-            if used_chars + len(line) > self.glob.budget_chars:
-                continue
-            lines.append(line)
-            used_chars += len(line)
-            packed_ids.append(row["id"])
-            recalled.append(
-                RecalledItem(
-                    mem_id=row["id"],
-                    text=row["text"],
-                    score=item["score"],
-                    extra={
-                        "cos": round(item["cos"], 3),
-                        "w": row["w"],
-                        "spread": round(item.get("spread", 0.0), 3),
-                        **_row_extra(row, item["r"]),
-                    },
-                )
-            )
-            if used_chars >= self.glob.budget_chars:
-                break
-        return RetrieveResult(pack_text="".join(lines), recalled=recalled), packed_ids
+    @staticmethod
+    def _coarse128(vec: np.ndarray) -> np.ndarray:
+        return truncate_normalize(np.asarray(vec, dtype=np.float32), 128)
 
-    def _reinforce_ids(self, ids: List[str], now_unix: float) -> None:
-        """Apply successful-recall reinforcement to every packed memory ID."""
-        for mid in ids:
-            r = self._get_memory(mid)
-            if r:
-                self._reinforce(r, now_unix)
+    # ================================================================== #
+    # WRITE — save_memory tool (§5.1)
+    # ================================================================== #
+    def save_memory(self, text: str, now: float | None = None) -> dict:
+        """LLM tool: store one self-contained proposition. Append-only (I5)."""
+        now = self.now_unix() if now is None else now
+        text = (text or "").strip()
+        if not text:
+            return {"action": "rejected", "error": "空のテキスト", "text": ""}
+        if len(text.encode("utf-8")) > self.memory.text_hard_max:
+            return {"action": "rejected", "error": "テキストが長すぎます(>1024B)", "text": text[:60]}
+        if len(text) > self.memory.text_max:
+            text = _shorten(text, self.memory.text_max)
+        if not self._write_rate_ok(now):
+            return {"action": "rate_limited", "error": "書込みレート上限", "text": text}
 
-    def _apply_interference(self, candidates: Dict[str, Dict], packed: set, now_unix: float) -> None:
-        """Retrieval-induced forgetting: recalled items mildly weaken un-recalled competitors
-        in the same cluster (their stability shrinks, so future retrievability drops)."""
-        if self.memory.interference_decay <= 0:
-            return
-        packed_clusters = {candidates[i]["cluster_id"] for i in packed if i in candidates}
-        packed_clusters.discard(None)
-        # Floor so stability cannot decay to effectively zero; preserves recoverability over very long use.
-        min_S = self.memory.stab_base_seconds * self.memory.labile_frac
-        updates = []
-        for c in candidates.values():
-            if c["id"] in packed or c["cluster_id"] not in packed_clusters:
-                continue
-            new_S = max(min_S, self._stability(c["row"]) * (1.0 - self.memory.interference_decay))
-            updates.append((new_S, c["id"]))
-        if updates:
+        # 1) exact-text rehearsal (SHA-256 equivalence via stored text) — no new row.
+        dup = self.store.one(
+            "SELECT * FROM memory WHERE text=? AND superseded_by IS NULL", (text,))
+        if dup is not None:
+            self._reinforce_write(dup, now)
+            return self._event("reinforced", self._get(dup["id"]), now)
+
+        # 2) embed (document prompt) and scan ALL tiers (§5.1.3).
+        v = self._embed_doc(text)
+        best = self._identity_scan(v)
+        self._write_times.append(now)
+
+        if best is not None and best[1] >= self.memory.theta_same:
+            # ≥0.97: same proposition update → tombstone old, insert new (再固定化).
+            carry = min(self.activation(best[2], now) + 1.0, self.memory.m_max)
+            nid, row = self._insert(text, v, carry, now)
+            self._supersede(best[0], nid)
+            return self._event("updated", row, now, cos=round(best[1], 3), superseded=best[0])
+
+        if best is not None and best[1] >= self.memory.theta_conflict:
+            # 0.85–0.97: conflict / related → keep both, enqueue for dream adjudication.
+            nid, row = self._insert(text, v, 1.0, now)
+            self._push_conflict(best[0], nid, now)
+            return self._event("conflict", row, now, cos=round(best[1], 3), conflict_with=best[0])
+
+        # <0.85: new memory.
+        nid, row = self._insert(text, v, 1.0, now)
+        return self._event("inserted", row, now, cos=round(best[1], 3) if best else 0.0)
+
+    def _identity_scan(self, v_full: np.ndarray):
+        """Best (id, precise_cos, row) across all tiers; in-band L2/L3 refined at 768d (§5.1)."""
+        cands: dict = {}
+        for tier in (1, 2, 3):
+            qt = truncate_normalize(v_full, self._dim(tier))
+            for row, vec in self._tier_candidates(tier):
+                c = float(np.dot(qt, vec))
+                prev = cands.get(row["id"])
+                if prev is None or c > prev[0]:
+                    cands[row["id"]] = (c, row, tier)
+        best = None
+        band = self.memory.theta_conflict - self.memory.precise_margin
+        for mid, (c, row, tier) in cands.items():
+            cos = c
+            if tier != 1 and c >= band:
+                vs = self._embed_doc(row["text"])          # text is canonical → re-embed at 768d
+                cos = float(np.dot(v_full, vs))
+            if best is None or cos > best[1]:
+                best = (mid, cos, row)
+        return best
+
+    def _insert(self, text: str, v_full: np.ndarray, mass: float, now: float,
+                gen: int = 0, tier: int = 1):
+        mid = uuid7()
+        self.store.exec(
+            "INSERT INTO memory(id,text,tier,gen,created_at,tz,last_access,last_bonus_at,mass,superseded_by) "
+            "VALUES(?,?,?,?,?,?,?,?,?,NULL)",
+            (mid, text, tier, int(gen), int(now), self._tz_for(now),
+             int(now), int(now), float(mass)),
+        )
+        self._store_vec(mid, v_full, tier)
+        return mid, self._get(mid)
+
+    def _supersede(self, old_id: str, new_id: str) -> None:
+        self.store.exec("UPDATE memory SET superseded_by=? WHERE id=?", (new_id, old_id))
+
+    def _push_conflict(self, a: str, b: str, now: float) -> None:
+        self.store.exec("INSERT INTO conflict(a,b,at) VALUES(?,?,?)", (a, b, int(now)))
+        self._trim_ring("conflict", self.memory.conflict_cap)
+
+    def _write_rate_ok(self, now: float) -> bool:
+        day = now - 86400
+        self._write_times = [t for t in self._write_times if t >= day]
+        return len(self._write_times) < self.memory.write_rate_per_day
+
+    # ================================================================== #
+    # DELETE — delete_memory tool (§5.3)
+    # ================================================================== #
+    def delete_memory(self, mid: str, hard: bool = False) -> dict:
+        """Tombstone (conversation) or immediate physical delete (soft side). id-only (I10)."""
+        row = self.store.one("SELECT * FROM memory WHERE id=?", (mid,))
+        if row is None:
+            return {"action": "not_found", "id": mid}
+        if hard:
             with self.store.transaction():
-                for new_S, mid in updates:
-                    self.store.exec("UPDATE memories SET stability=? WHERE id=?", (new_S, mid))
+                self._physical_delete(mid)
+            return {"action": "deleted", "id": mid, "text": row["text"]}
+        # Conversation-time delete = tombstone (self-referential), purged in next dream.
+        self.store.exec("UPDATE memory SET superseded_by=? WHERE id=?", (mid, mid))
+        return {"action": "tombstoned", "id": mid, "text": row["text"]}
 
-    def _mmr(self, items: List[Dict]) -> List[Dict]:
-        """Maximal Marginal Relevance re-ranking: trade off relevance against diversity (coarse-vector cosine)."""
+    # ================================================================== #
+    # READ — retrieve (§5.2, §4.2)
+    # ================================================================== #
+    def retrieve(self, query: str, turn: int) -> RetrieveResult:
+        now = self.now_unix()
+        self._sanitize_timestamps(now)
+        chunks = _split_paragraphs(query)[:16]
+        q_mat = self.provider.encode_query(chunks, dim=self.glob.dim_full)
+
+        cands: dict = {}
+        for tier in (1, 2, 3):
+            cand_rows = self._tier_candidates(tier)
+            if not cand_rows:
+                continue
+            qts = [truncate_normalize(np.asarray(q, dtype=np.float32), self._dim(tier)) for q in q_mat]
+            for row, vec in cand_rows:
+                c = max(float(np.dot(qt, vec)) for qt in qts)
+                prev = cands.get(row["id"])
+                if prev is None or c > prev["cos"]:
+                    cands[row["id"]] = {"id": row["id"], "cos": c, "row": row,
+                                        "mmr": self._coarse128(vec)}
+
+        for c in cands.values():
+            A = self.activation(c["row"], now)
+            A_abs = math.log1p(A) / math.log1p(self.memory.m_max)
+            c["A"] = A
+            c["score"] = max(0.0, c["cos"]) * (self.memory.alpha + (1.0 - self.memory.alpha) * A_abs)
+
+        ranked = self._mmr(self._filter_by_score(list(cands.values())))
+        result, packed_ids = self._pack(ranked, now)
+        for mid in packed_ids:
+            r = self._get(mid)
+            if r is not None:
+                self._apply_recall(r, now)
+        return result
+
+    def _filter_by_score(self, items: list[dict]) -> list[dict]:
+        """Drop low-score memories; relax threshold if nothing remains."""
+        for threshold in (0.05, 0.01, 0.0):
+            filtered = [it for it in items if it["score"] >= threshold]
+            if filtered:
+                return filtered
+        return items
+
+    def _mmr(self, items: list[dict]) -> list[dict]:
+        """MMR selection (§4.2): next = argmax[score − λ·max cos(m, selected)]."""
         if not items:
             return []
-        lam = self.memory.lambda_div
-        # The selection loop is O(n^2); cap the pool (top by score) so a broad
-        # query that gates nothing cannot hand the entire store to MMR.
-        items = sorted(items, key=lambda x: x["score"], reverse=True)[: self.memory.mmr_pool_max]
-        selected: List[Dict] = []
-        pool = items[:]
-        while pool:
+        lam = self.memory.mmr_lambda
+        pool = sorted(items, key=lambda x: x["score"], reverse=True)[:50]
+        selected: list[dict] = []
+        while pool and len(selected) < self.memory.inject_n:
             best, best_val = None, -1e9
             for it in pool:
                 if not selected:
                     val = it["score"]
                 else:
-                    max_sim = max(cosine(it["v"], s["v"]) for s in selected)
-                    val = lam * it["score"] - (1 - lam) * max_sim
+                    max_sim = max(float(np.dot(it["mmr"], s["mmr"])) for s in selected)
+                    val = lam_mmr(it["score"], lam, max_sim)
                 if val > best_val:
                     best, best_val = it, val
             selected.append(best)
             pool.remove(best)
         return selected
 
-    # -- dreaming (LLM-driven consolidation) --------------------------- #
-    def dream(self, now_unix: float | None = None, max_clusters: int | None = None, force: bool = False) -> list[dict]:
-        now_unix = self.now_unix() if now_unix is None else now_unix
-        limit = self.memory.dream_max_clusters if max_clusters is None else max_clusters
-        ranked = self._dream_candidates(now_unix, force=force)
-        results = [self._dream_cluster(cid, prio, now_unix) for cid, prio in ranked[:limit]]
-        self._enforce_capacity(now_unix)
+    def _pack(self, ranked: list[dict], now: float):
+        """Format injected memories ≤ budget_chars with TZ header + id (for delete_memory)."""
+        used, lines, recalled, ids = 0, [], [], []
+        for it in ranked:
+            row = it["row"]
+            local = _fmt_local(row["created_at"], row["tz"])
+            line = f"[{local}] {row['text']}　《id:{row['id']}》\n"
+            if used + len(line) > self.glob.budget_chars:
+                continue
+            lines.append(line)
+            used += len(line)
+            ids.append(row["id"])
+            recalled.append(RecalledItem(
+                mem_id=row["id"], text=row["text"], score=round(it["score"], 3),
+                extra={
+                    "cos": round(it["cos"], 3), "A": round(it["A"], 2),
+                    "mass": round(float(row["mass"]), 2), "tier": int(row["tier"]),
+                    "gen": int(row["gen"]), "tz": row["tz"],
+                },
+            ))
+            if used >= self.glob.budget_chars:
+                break
+        return RetrieveResult(pack_text="".join(lines), recalled=recalled), ids
+
+    # ================================================================== #
+    # machine movement (§5.4) — no LLM
+    # ================================================================== #
+    def _promote(self, now: float) -> None:
+        """A ≥ θ_up L2/L3 → re-embed text at 768d → L1 (re-fixation; text is canonical)."""
+        rows = self.store.query(
+            "SELECT * FROM memory WHERE tier IN (2,3) AND superseded_by IS NULL")
+        for row in rows:
+            if self.activation(row, now) >= self.memory.theta_up:
+                v = self._embed_doc(row["text"])
+                self.store.exec("UPDATE memory SET tier=1 WHERE id=?", (row["id"],))
+                self._store_vec(row["id"], v, 1)
+
+    def _tier_count(self, tier: int) -> int:
+        return self.store.count("memory", "tier=?", (tier,))   # includes tombstones (I4)
+
+    def _enforce_capacity(self, now: float) -> None:
+        """Keep each tier within capacity: sweep tombstones, then demote / evict (§5.4, I4)."""
+        for tier, cap, to in ((1, self.memory.cap1, 2), (2, self.memory.cap2, 3)):
+            guard = 0
+            while self._tier_count(tier) > cap and guard < self.memory.hard_memory_rows:
+                guard += 1
+                tomb = self.store.one(
+                    "SELECT id FROM memory WHERE tier=? AND superseded_by IS NOT NULL LIMIT 1", (tier,))
+                if tomb is not None:
+                    self._physical_delete(tomb["id"])
+                    continue
+                vid = self._demote_victim(tier, now)
+                if vid is None:
+                    break
+                self._demote(vid, to)
+        guard = 0
+        while self._tier_count(3) > self.memory.cap3 and guard < self.memory.hard_memory_rows:
+            guard += 1
+            tomb = self.store.one(
+                "SELECT id FROM memory WHERE tier=3 AND superseded_by IS NOT NULL LIMIT 1")
+            if tomb is not None:
+                self._physical_delete(tomb["id"])
+                continue
+            vid = self._evict_victim(now)
+            if vid is None:
+                break
+            self._physical_delete(vid)   # this is death in this system (§5.4)
+
+    def _demote_victim(self, tier: int, now: float) -> str | None:
+        rows = self.store.query(
+            "SELECT * FROM memory WHERE tier=? AND superseded_by IS NULL", (tier,))
+        if not rows:
+            return None
+        under = [r for r in rows if self.activation(r, now) < self.memory.theta_down]
+        pool = under or rows                                   # A<θ_down first, else lowest A
+        return min(pool, key=lambda r: self.activation(r, now))["id"]
+
+    def _evict_victim(self, now: float) -> str | None:
+        rows = self.store.query(
+            "SELECT * FROM memory WHERE tier=3 AND superseded_by IS NULL")
+        if not rows:
+            return None
+        return min(rows, key=lambda r: self.activation(r, now))["id"]
+
+    def _demote(self, mid: str, to_tier: int) -> None:
+        vr = self.store.one(
+            "SELECT * FROM vec WHERE memory_id=? AND model_id=?", (mid, self.model_id))
+        if vr is None:
+            return
+        v = self._vec_array(vr)
+        vt = truncate_normalize(v, self._dim(to_tier))         # MRL: 768→256→128 prefixes
+        blob, scale = quantize_int8(vt)
+        self.store.exec(
+            "UPDATE vec SET dim=?, dtype='int8', scale=?, v=? WHERE memory_id=? AND model_id=?",
+            (self._dim(to_tier), scale, blob, mid, self.model_id),
+        )
+        self.store.exec("UPDATE memory SET tier=? WHERE id=?", (to_tier, mid))
+
+    def _physical_delete(self, mid: str) -> None:
+        self.store.exec("DELETE FROM memory WHERE id=?", (mid,))   # vec cascades (ON DELETE CASCADE)
+
+    # ================================================================== #
+    # DREAM (§6) — offline, LLM + embedding
+    # ================================================================== #
+    def dream(self, now_unix: float | None = None, max_clusters: int | None = None,
+              budget: int | None = None, force: bool = False) -> list[dict]:
+        now = self.now_unix() if now_unix is None else now_unix
+        self._sanitize_timestamps(now)
+        b = budget if budget is not None else (max_clusters if max_clusters is not None else self.memory.dream_budget)
+        b = max(0, min(int(b), self.memory.dream_budget_hard))
+
+        self.store.snapshot(self._snap_dir, self.memory.snapshot_gens)   # 8-gen ring
+        self._housekeeping(now)
+
+        results: list[dict] = []
+        for fp, members, prio in self._dream_candidates(now, force=force)[:b]:
+            results.append(self._adjudicate(fp, members, prio, now))
+
+        self._promote(now)
+        self._enforce_capacity(now)
+        self.store.wal_checkpoint()
+        self.store.incremental_vacuum()
         return results
 
-    def _dream_candidates(self, now_unix: float, force: bool = False) -> list[tuple]:
-        out: List[tuple] = []
-        for c in self.store.query("SELECT id, last_dreaming_unix FROM clusters"):
-            members = self.store.query("SELECT updated_at_unix, v_full FROM memories WHERE cluster_id=?", (c["id"],))
-            size = len(members)
-            if size < self.memory.dream_min_size:
+    def _housekeeping(self, now: float) -> None:
+        """Cheap, LLM-free chores (§6): tombstone sweep, ring trims, vec orphan GC, WAL."""
+        self._sweep_tombstones(now)
+        self._trim_ring("conflict", self.memory.conflict_cap)
+        self._trim_dream_log()
+        self.store.exec("DELETE FROM vec WHERE model_id<>?", (self.model_id,))
+        self.store.exec("DELETE FROM vec WHERE memory_id NOT IN (SELECT id FROM memory)")
+        self.store.wal_checkpoint()
+
+    def _sweep_tombstones(self, now: float) -> None:
+        cutoff = int(now - self.memory.tombstone_sweep_age)
+        self.store.exec(
+            "DELETE FROM memory WHERE superseded_by IS NOT NULL AND last_access < ?", (cutoff,))
+        for tier in (1, 2, 3):
+            total = self._tier_count(tier)
+            if total <= 0:
                 continue
-            since_dream = now_unix - float(c["last_dreaming_unix"])
-            if not force and since_dream < self.memory.dream_min_interval_seconds:
-                continue
-            ups = [float(m["updated_at_unix"]) for m in members]
-            spread = max(ups) - min(ups)
-            coarse = [self._coarse(unpack_vec(m["v_full"])) for m in members]
-            cen = l2_normalize(np.mean(np.stack(coarse), axis=0))
-            dispersion = 1.0 - float(np.mean([np.dot(vc, cen) for vc in coarse]))
-            priority = (
-                self.memory.dream_w_size * math.log(1 + size)
-                + self.memory.dream_w_spread * (spread / max(1e-6, self.memory.dream_spread_norm))
-                + self.memory.dream_w_age * (since_dream / max(1e-6, self.memory.dream_age_norm))
-                + self.memory.dream_w_disp * dispersion
-            )
-            if priority < self.memory.dream_priority_floor:
-                continue
-            out.append((c["id"], priority))
-        out.sort(key=lambda x: x[1], reverse=True)
+            tomb = self.store.count("memory", "tier=? AND superseded_by IS NOT NULL", (tier,))
+            if tomb > self.memory.tombstone_sweep_pct * total:
+                self.store.exec(
+                    "DELETE FROM memory WHERE tier=? AND superseded_by IS NOT NULL", (tier,))
+
+    def _trim_ring(self, table: str, cap: int) -> None:
+        n = self.store.count(table)
+        if n > cap:
+            self.store.exec(
+                f"DELETE FROM {table} WHERE rowid IN "
+                f"(SELECT rowid FROM {table} ORDER BY rowid ASC LIMIT ?)", (n - cap,))
+
+    def _trim_dream_log(self) -> None:
+        n = self.store.count("dream_log")
+        if n > self.memory.dream_log_cap:
+            self.store.exec(
+                "DELETE FROM dream_log WHERE fp IN "
+                "(SELECT fp FROM dream_log ORDER BY at ASC LIMIT ?)",
+                (n - self.memory.dream_log_cap,))
+
+    def _live_rows_coarse(self, tiers) -> list[tuple]:
+        out = []
+        for tier in tiers:
+            out.extend((row, self._coarse128(vec)) for row, vec in self._tier_candidates(tier))
         return out
 
-    def _dream_cluster(self, cid: str, priority: float, now_unix: float) -> dict:
-        members = sorted(
-            self.store.query("SELECT * FROM memories WHERE cluster_id=?", (cid,)),
-            key=lambda r: float(r["updated_at_unix"]),
-        )[: self.memory.dream_max_members]
-        payload = [
-            {
-                "id": m["id"], "text": m["text"], "w": round(float(m["w"]), 2),
-                "provenance": m["provenance"], "updated_at_unix": int(m["updated_at_unix"]),
-                "updated_at_local": _fmt_local(m["updated_at_unix"], m["timezone"]),
-                "timezone": m["timezone"], "r": round(self.retrievability(m, now_unix), 2),
-            }
-            for m in members
-        ]
-        before = [{k: p[k] for k in ("id", "text", "w", "provenance", "updated_at_unix", "timezone")} for p in payload]
-        decision = self.llm.dream_cluster(payload) or {}
-        action = decision.get("action", "none")
-        new_mems = decision.get("memories") or []
+    def _dream_candidates(self, now: float, force: bool = False) -> list[tuple]:
+        """Cluster live L1/L2 by coarse vector; rank eligible clusters by priority (§6)."""
+        rows = self._live_rows_coarse((1, 2))
+        if len(rows) < self.memory.cluster_min:
+            return []
+        X = np.stack([c for _, c in rows]).astype(np.float32)
+        k = max(1, round(len(rows) / 4))
+        labels = _kmeans(X, k)
+        groups: dict = {}
+        for (row, coarse), lab in zip(rows, labels):
+            groups.setdefault(int(lab), []).append((row, coarse))
 
-        valid_new_mems = [nm for nm in (new_mems or []) if str(nm.get("text", "")).strip()]
-        if action == "none" or not valid_new_mems:
-            self.store.exec("UPDATE clusters SET last_dreaming_unix=? WHERE id=?", (now_unix, cid))
-            return {"cluster_id": cid, "action": "none", "priority": round(priority, 3),
+        conflict_pairs = {tuple(sorted((r["a"], r["b"])))
+                          for r in self.store.query("SELECT a,b FROM conflict")}
+        l1_overflow = max(0.0, self._tier_count(1) - self.memory.cap1) / max(1, self.memory.cap1)
+
+        out = []
+        for members in groups.values():
+            if len(members) < self.memory.cluster_min:
+                continue
+            rows_m = [m[0] for m in members]
+            ids = sorted(m["id"] for m in rows_m)
+            fp = _fp(ids)
+            if self._dream_skip(fp):
+                continue
+            coarses = [m[1] for m in members]
+            coh = _cohesion(coarses)
+            max_gen = max(int(m["gen"]) for m in rows_m)
+            idset = set(ids)
+            n_conf = sum(1 for a, b in conflict_pairs if a in idset and b in idset)
+            prio = (len(rows_m) * coh * (2.0 ** (-max_gen))
+                    * (1.0 + l1_overflow) * (1.0 + n_conf))
+            out.append((fp, rows_m, prio))
+        out.sort(key=lambda t: t[2], reverse=True)
+        return out
+
+    def _dream_skip(self, fp: str) -> bool:
+        v = self.store.scalar("SELECT verdict FROM dream_log WHERE fp=?", (fp,))
+        return v == "変更なし"
+
+    def _record_dream(self, fp: str, verdict: str, now: float) -> None:
+        self.store.exec(
+            "INSERT OR REPLACE INTO dream_log(fp,verdict,at) VALUES(?,?,?)", (fp, verdict, int(now)))
+
+    def _adjudicate(self, fp: str, members: list, prio: float, now: float) -> dict:
+        member_rows = [self._get(m["id"]) for m in members]
+        member_rows = [r for r in member_rows if r is not None]
+        before = [{"id": r["id"], "text": r["text"], "tier": int(r["tier"]),
+                   "gen": int(r["gen"])} for r in member_rows]
+        if len(member_rows) < self.memory.cluster_min:
+            return {"cluster_fp": fp[:12], "action": "none", "priority": round(prio, 3),
                     "before": before, "after": [], "deleted_ids": []}
 
-        # Dreaming no longer raises stability; cap at the best source.
-        member_S = [self._stability(m) for m in members]
-        seed_S = max(member_S) if member_S else self.memory.stab_base_seconds
-        seed_conf = max((_fval(m, "confidence") for m in members), default=self.memory.confidence_inferred)
-        source_ids = [m["id"] for m in members]
-        summary_of = _shorten(" / ".join(m["text"] for m in members), self.memory.mem_max_chars)
-        dream_id = uuid7()
+        payload = [{
+            "id": r["id"], "text": r["text"], "gen": int(r["gen"]),
+            "A": round(self.activation(r, now), 2),
+            "local_time": _fmt_local(r["created_at"], r["tz"]), "timezone": r["tz"],
+        } for r in member_rows[: self.memory.dream_max_members]]
 
-        deleted = [m["id"] for m in members]
-        # Delete + re-insert atomically: a crash or embedding failure between the
-        # two would otherwise permanently lose the whole cluster.
+        decision = self.llm.dream_cluster(payload) or {}
+        action = decision.get("action", "none")
+        new_mems = [nm for nm in (decision.get("memories") or []) if str(nm.get("text", "")).strip()]
+
+        if action == "none" or not new_mems:
+            self._record_dream(fp, "変更なし", now)
+            return {"cluster_fp": fp[:12], "action": "none", "priority": round(prio, 3),
+                    "before": before, "after": [], "deleted_ids": []}
+
+        sum_A = sum(self.activation(r, now) for r in member_rows)
+        max_gen = max(int(r["gen"]) for r in member_rows)
+        is_merge = action != "split"
+        gen = min(max_gen + (1 if is_merge else 0), self.memory.gen_max)
+        deleted = [r["id"] for r in member_rows]
+        after = []
         with self.store.transaction():
-            for m in members:
-                self.store.exec("DELETE FROM memories WHERE id=?", (m["id"],))
-            self._invalidate_centroids()
-
-            affected = {cid}
-            after = []
-            for nm in valid_new_mems[:self.memory.dream_max_members]:
-                row = self._insert_dreamed(nm, seed_S, seed_conf, source_ids, summary_of, action, dream_id, now_unix)
-                if row is None:
+            for r in member_rows:
+                self._physical_delete(r["id"])
+            picks = new_mems[: self.memory.dream_max_members]
+            per_mass = (min(sum_A, self.memory.m_max) if is_merge
+                        else min(sum_A / max(1, len(picks)), self.memory.m_max))
+            for nm in picks:
+                text = str(nm.get("text", "")).strip()
+                if not text:
                     continue
-                affected.add(row["cluster_id"])
-                after.append({k: row[k] for k in ("id", "text", "w", "provenance", "timezone")})
+                if len(text) > self.memory.text_max:
+                    text = _shorten(text, self.memory.text_max)
+                v = self._embed_doc(text)
+                _, row = self._insert(text, v, per_mass, now, gen=gen, tier=1)
+                after.append({"id": row["id"], "text": row["text"], "gen": int(row["gen"])})
+        self._record_dream(fp, action, now)
+        return {"cluster_fp": fp[:12], "action": "merge" if is_merge else "split",
+                "priority": round(prio, 3), "before": before, "after": after, "deleted_ids": deleted}
 
-            for acid in affected:
-                if self.store.count("memories", "cluster_id=?", (acid,)) == 0:
-                    self.store.exec("DELETE FROM clusters WHERE id=?", (acid,))
-                else:
-                    self.store.exec("UPDATE clusters SET last_dreaming_unix=? WHERE id=?", (now_unix, acid))
-
-        return {"cluster_id": cid, "action": action if action in ("merge", "split") else "merge",
-                "priority": round(priority, 3), "before": before, "after": after, "deleted_ids": deleted}
-
-    def _insert_dreamed(self, nm, seed_S, seed_conf, source_ids, summary_of, action, dream_id, now_unix):
-        """Insert one memory produced by a dreaming (consolidation) pass, preserving lineage metadata."""
-        text = str(nm.get("text", "")).strip()
-        if not text:
-            return None
-        if len(text) > self.memory.mem_max_chars:
-            text = _shorten(text, self.memory.mem_max_chars)
-        w = _clamp01(nm.get("w", 0.6))
-        provenance = nm.get("provenance", "inferred")
-        confidence = max(seed_conf, self._confidence(provenance)) if provenance == "user" else seed_conf
-        timezone = nm.get("timezone") or self.glob.default_timezone
-        v = self.provider.encode_document(text, dim=self.glob.dim_full)[0]
-        lineage = {
-            "source_ids": json.dumps(source_ids, ensure_ascii=False),
-            "summary_of": summary_of,
-            "dream_action": action,
-            "created_by_dream_id": dream_id,
-        }
-        _, row = self._insert_memory(text, v, w, provenance, confidence, seed_S, timezone, now_unix, lineage=lineage)
-        return row
-
-    # -- maintenance / introspection ----------------------------------- #
+    # ================================================================== #
+    # maintenance (every turn, no LLM)
+    # ================================================================== #
     def maintain(self, turn: int) -> None:
-        """Periodic housekeeping: purge empty clusters, enforce capacity limits, checkpoint WAL."""
-        now_unix = self.now_unix()
-        self._sanitize_timestamps(now_unix)
-        for c in self.store.query("SELECT id FROM clusters"):
-            if self.store.count("memories", "cluster_id=?", (c["id"],)) == 0:
-                self.store.exec("DELETE FROM clusters WHERE id=?", (c["id"],))
-        self._enforce_capacity(now_unix)
-        # Truncate WAL to prevent unbounded -wal file growth during long operation.
-        try:
-            self.store.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
-        except Exception as exc:
-            import logging
-            logging.warning("WAL checkpoint failed: %s", exc)
-        # Periodic PRAGMA optimize (every ~200 maintain calls). This refreshes query-planner
-        # stats but does NOT shrink the file; freed pages are reused, and record counts are
-        # capped, so the file size stays bounded anyway.
-        self._maintain_count = getattr(self, "_maintain_count", 0) + 1
-        if self._maintain_count % 200 == 0:
-            try:
-                self.store.conn.execute("PRAGMA optimize;")
-            except Exception:
-                pass
+        now = self.now_unix()
+        self._sanitize_timestamps(now)
+        self._sweep_tombstones(now)
+        self._enforce_capacity(now)       # demotion/eviction only (no re-embedding)
+        self._maint_count += 1
+        if self._maint_count % 20 == 0:
+            self.store.wal_checkpoint()
 
-    def stats(self) -> Dict[str, int]:
+    # ================================================================== #
+    # introspection
+    # ================================================================== #
+    def _get(self, mid: str):
+        return self.store.one("SELECT * FROM memory WHERE id=?", (mid,))
+
+    def _event(self, action: str, row, now: float, **extra) -> dict:
         return {
-            "memories": self.store.count("memories"),
-            "clusters": self.store.count("clusters"),
-            "archive": self.store.count("archive"),
+            "action": action, "id": row["id"], "text": row["text"],
+            "tier": int(row["tier"]), "gen": int(row["gen"]),
+            "mass": round(float(row["mass"]), 2),
+            "A": round(self.activation(row, now), 2), "tz": row["tz"], **extra,
+        }
+
+    def stats(self) -> dict[str, int]:
+        return {
+            "L1": self._tier_count(1), "L2": self._tier_count(2), "L3": self._tier_count(3),
+            "tombstones": self.store.count("memory", "superseded_by IS NOT NULL"),
+            "conflict": self.store.count("conflict"),
+            "dream_log": self.store.count("dream_log"),
         }
 
     def total_records(self) -> int:
-        return self.store.count("memories")
+        return self.store.count("memory", "superseded_by IS NULL")
 
-    def snapshot(self) -> Dict[str, List[Dict]]:
+    def snapshot(self) -> dict[str, list[dict]]:
+        now = self.now_unix()
+        mem = []
+        for r in self.store.query("SELECT * FROM memory ORDER BY tier, created_at DESC LIMIT 5000"):
+            d = {k: r[k] for k in r.keys()}
+            d["mass"] = round(float(r["mass"]), 3)
+            d["A"] = round(self.activation(r, now), 3)
+            d["local"] = _fmt_local(r["created_at"], r["tz"])
+            d["tombstone"] = r["superseded_by"] is not None
+            mem.append(d)
+        spec = []
+        for r in self.store.query("SELECT k, v FROM spec"):
+            val = r["v"]
+            spec.append({"k": r["k"], "v": (val[:200] + "…") if len(val) > 200 else val})
         return {
-            k: self.store.rows_as_dicts(k, limit=(self.glob.archive_cap if k == "archive" else 5000))
-            for k in ("memories", "clusters", "archive")
+            "memory": mem,
+            "vec": self.store.rows_as_dicts("vec", limit=5000),
+            "conflict": self.store.rows_as_dicts("conflict", limit=512),
+            "dream_log": self.store.rows_as_dicts("dream_log", limit=512),
+            "spec": spec,
         }
 
     def vector_mb(self) -> float:
-        return self.store.vector_storage_mb([("memories", "v_full"), ("archive", "v_coarse")])
+        return self.store.vector_storage_mb([("vec", "v")])
 
     def db_size_bytes(self) -> int:
         return self.store.db_size_bytes()
 
     def reset(self) -> None:
-        """Wipe all tables (clusters, memories, archive) without deleting the DB file."""
-        # Clear clusters first to avoid FK issues if added later, then memories, then archive.
-        for table in ("clusters", "memories", "archive"):
+        for table in ("vec", "memory", "conflict", "dream_log", "spec"):
             self.store.exec(f"DELETE FROM {table}")
-        self._invalidate_centroids()
+        self._write_times = []
+        self._install_spec()
 
 
-# -- module helpers ---------------------------------------------------- #
-def _clamp01(v) -> float:
-    return max(0.0, min(1.0, float(v)))
+# ====================================================================== #
+# module helpers
+# ====================================================================== #
+def lam_mmr(score: float, lam: float, max_sim: float) -> float:
+    return lam * score - (1.0 - lam) * max_sim
 
 
-def _text_hash(text: str) -> str:
-    return hashlib.sha1(str(text).strip().lower().encode("utf-8")).hexdigest()
+def _fp(ids: list[str]) -> str:
+    return hashlib.sha256("|".join(ids).encode("utf-8")).hexdigest()
 
 
-def _fmt_local(unix, tz) -> str:
-    """Format a UNIX time in its stored timezone, e.g. '2026-06-06 14:56 Asia/Tokyo'."""
+def _cohesion(coarses: list[np.ndarray]) -> float:
+    """Mean pairwise cosine of a cluster's coarse vectors (∈ (0,1])."""
+    n = len(coarses)
+    if n < 2:
+        return 1.0
+    M = np.stack(coarses)
+    sims = M @ M.T
+    total = float(sims.sum() - np.trace(sims))
+    return max(0.0, total / (n * (n - 1)))
+
+
+def _kmeans(X: np.ndarray, k: int, iters: int = 12, seed: int = 0) -> np.ndarray:
+    """Tiny spherical k-means on unit-norm rows (cosine = dot). Method is free per §6."""
+    n = len(X)
+    k = max(1, min(k, n))
+    rng = np.random.default_rng(seed)
+    cent = X[rng.choice(n, k, replace=False)].copy()
+    labels = np.zeros(n, dtype=int)
+    for it in range(iters):
+        new = (X @ cent.T).argmax(axis=1)
+        if it > 0 and np.array_equal(new, labels):
+            labels = new
+            break
+        labels = new
+        for j in range(k):
+            members = X[labels == j]
+            if len(members):
+                cent[j] = l2_normalize(members.mean(axis=0))
+    return labels
+
+
+def _split_paragraphs(text: str) -> list[str]:
+    """Split a turn into chunks so a memory relevant to any part can surface (§5.2)."""
+    import re
+    blocks = [b.strip() for b in re.split(r"\n\s*\n", text) if b.strip()]
+    if len(blocks) <= 1:
+        blocks = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if len(blocks) <= 2 and len(text) > 80:
+        sents = [s.strip() for s in re.split(r"(?<=[。！？…\n])", text) if s.strip()]
+        if len(sents) > len(blocks):
+            blocks = sents
+    return blocks or [text.strip() or text]
+
+
+def _fmt_local(unix, tzfield) -> str:
+    """'2026-06-11 21:30 +09:00' from a UNIX time and a stored 'IANA;+offset' field (§5.2)."""
+    name = str(tzfield).split(";")[0]
     try:
-        dt = datetime.fromtimestamp(float(unix), ZoneInfo(str(tz)))
-        return f"{dt:%Y-%m-%d %H:%M} {tz}"
+        dt = datetime.fromtimestamp(float(unix), ZoneInfo(name))
+        off = dt.strftime("%z") or "+0000"
+        return f"{dt:%Y-%m-%d %H:%M} {off[:3]}:{off[3:]}"
     except Exception:
+        parts = str(tzfield).split(";")
+        off = parts[1] if len(parts) > 1 else "+00:00"
         dt = datetime.utcfromtimestamp(float(unix))
-        return f"{dt:%Y-%m-%d %H:%M} UTC"
+        return f"{dt:%Y-%m-%d %H:%M} {off}"
 
 
 def _shorten(text: str, max_chars: int) -> str:
@@ -873,29 +831,8 @@ def _shorten(text: str, max_chars: int) -> str:
     return cut
 
 
-def _fval(row, key: str, default: float = 0.0) -> float:
-    return float(row[key] or default)
-
-
-def _row_extra(row, r: float) -> Dict:
-    """Common extra fields for memory events and recalled items."""
-    return {
-        "confidence": round(_fval(row, "confidence"), 3),
-        "r": round(r, 3),
-        "S_days": round(_fval(row, "stability") / 86400.0, 2),
-        "freq": int(_fval(row, "freq")),
-        "cluster_id": row["cluster_id"],
-        "updated_at_unix": int(row["updated_at_unix"]),
-        "accessed_at_unix": int(row["accessed_at_unix"]),
-        "timezone": row["timezone"],
-    }
-
-
-def _memory_event(action: str, row, r: float) -> dict:
-    return {"action": action, "id": row["id"], "text": row["text"], "w": row["w"], "provenance": row["provenance"], **_row_extra(row, r), "v_full": vec_label(row["v_full"])}
-
-
 def uuid7() -> str:
+    """RFC 9562 UUIDv7 as string: first 48 bits = ms Unix time → sort order = time order (§3.2)."""
     unix_ms = int(time.time() * 1000)
     rand_a = secrets.randbits(12)
     rand_b = secrets.randbits(62)

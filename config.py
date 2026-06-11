@@ -1,9 +1,14 @@
 """Configuration for the LLM Long-Term Memory technical prototype.
 
-The project is intentionally kept as a small proof of concept: one memory system,
-one SQLite store, and a no-build web UI. Names and boundaries are still explicit
-enough to support future packaging or MCP server work without adding that layer
-now.
+The internal memory engine implements the **ENGRAM v1.1** specification
+(see ``ENGRAM_spec_v1_1.md``): a 3-tier store (L1 episodic / L2 semantic /
+L3 schema), activation ``A = mass·2^(−Δt/τ)``, distance-only identity
+judgement, and LLM use confined to write / read / dream.
+
+The product name, file layout, and DB filename are kept; only the algorithm,
+schema, parameters, and UI semantics are ENGRAM. ``GlobalConfig`` holds
+embedding / LLM / injection settings; ``LongTermMemoryConfig`` holds the
+ENGRAM constants of spec §8.
 """
 from __future__ import annotations
 
@@ -19,31 +24,28 @@ if os.path.exists(_SECRETS_ENV):
     load_dotenv(_SECRETS_ENV)
 load_dotenv()
 
+# Duration constants (seconds) for the ENGRAM half-lives.
+_DAY = 24 * 60 * 60
+_YEAR = 365 * _DAY
+
 
 @dataclass
 class GlobalConfig:
-    # Max chars of recalled memory handed to the LLM.
+    # Max chars of recalled memory injected into the LLM (spec §8: 注入予算 1024).
     budget_chars: int = 1024
-    # Active (hot) memory records cap.
-    total_cap: int = 1000
-    # Archived (cold, savings) records cap. Bounds total storage together with total_cap.
-    archive_cap: int = 5000
-    # Max in-memory turn log entries (sliding window). Prevents unbounded RAM growth during very long sessions.
+    # Max in-memory turn log entries (sliding window) — UI/RAM bound only.
     max_turn_log: int = 1000
     # Max metrics history entries retained in RAM.
     max_metrics_history: int = 1000
 
-    # Minimum cosine similarity required for recall.
-    sim_floor: float = 0.3
-
-    # Default IANA timezone stamped onto memories at write time (overridable per write).
-    # Falls back to MEMORY_TZ env, else Asia/Tokyo. Recall / dreaming pass it to the LLM.
+    # Default IANA timezone stamped onto memories at write time.
+    # Falls back to MEMORY_TZ env, else Asia/Tokyo. ENGRAM stores 'name;+offset'.
     default_timezone: str = os.getenv("MEMORY_TZ", "Asia/Tokyo")
 
-    # EmbeddingGemma native dimension and MRL truncation for coarse clustering/diversity.
+    # Embedding model. EmbeddingGemma native dimension is 768 (L1). MRL truncation
+    # to 256 (L2) / 128 (L3) is applied per tier; see LongTermMemoryConfig.
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
     dim_full: int = 768
-    dim_coarse: int = 256
 
     # LLM provider: "deepseek" or "gemini". Keys come from .env.
     llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek")
@@ -56,91 +58,71 @@ class GlobalConfig:
 
 @dataclass
 class LongTermMemoryConfig:
-    mem_max_chars: int = 300
-    tau_dup: float = 0.92
-    # Cosine threshold for assigning a memory to an existing cluster.
-    tau_link: float = 0.75
-    # -- Stability / forgetting (FSRS-style: power-law retrievability) -- #
-    # Base stability (seconds). Importance w extends it; confidence scales the labile start.
-    stab_base_seconds: float = 14 * 24 * 60 * 60
-    kappa: float = 3.0                 # importance -> stability multiplier
-    forget_beta: float = 0.5           # power-law exponent: r = (1 + dt/S)^(-beta)
-    stab_growth_c: float = 1.0         # stability gain on recall: S *= 1 + c*(1-r) (spacing/testing effect). max 2x when r=0.
-    labile_frac: float = 0.25          # low-confidence (inferred) memories start more fragile
-    freq_seed: float = 1.0             # initial access count on insert
-    reinforce_inc: float = 1.0         # added to freq (access count) on each access
-    # Upper bounds to prevent unbounded numeric growth over very long use.
-    # max_freq is kept low enough that eta*log1p(freq) does not dominate the retrieval
-    # score over cosine similarity (alpha*cos). At 10k accesses, log1p ≈ 9.21, eta*9.21 ≈ 0.18
-    # which is well below alpha*cos (max 0.55).
-    max_freq: float = 10_000.0        # cap cumulative access count
-    max_stability_seconds: float = 10 * 365 * 24 * 60 * 60  # cap stability (~10 years)
-    min_residency_seconds: float = 24 * 60 * 60
+    """ENGRAM v1.1 parameters (spec §8). Constants may be tuned only with a spec record."""
 
-    # Confidence (reliability) axis, derived from provenance. Separate from importance (w) and stability (S).
-    confidence_user: float = 0.9
-    confidence_inferred: float = 0.6
+    # -- Tier capacities (墓標込み, I4) and MRL vector format (§8 dim/dtype) -- #
+    cap1: int = 1000          # L1 episodic
+    cap2: int = 3000          # L2 semantic
+    cap3: int = 6000          # L3 schema
+    dim1: int = 768           # L1 768d f32
+    dim2: int = 256           # L2 256d int8
+    dim3: int = 128           # L3 128d int8
 
-    # Retrieval score: alpha*cos + beta*r + delta*w + eta*log1p(freq) + zeta*confidence (+ spreading).
-    alpha: float = 0.55
-    beta: float = 0.2
-    delta: float = 0.2
-    eta: float = 0.02              # reduced from 0.05 so freq does not dominate long-term ranking
-    zeta: float = 0.05
-    lambda_div: float = 0.5
-    k_retrieve: int = 80
-    spread_gamma: float = 0.15         # spreading activation weight (within candidate set)
-    # Per-turn cost bounds: very long input would otherwise embed+scan once per
-    # sentence, and the O(n^2) MMR loop would re-rank an unbounded candidate set.
-    max_query_chunks: int = 16         # cap paragraph/sentence chunks embedded per retrieve
-    mmr_pool_max: int = 50             # cap candidates entering MMR re-ranking (top by score)
-    # Cap memories written per turn so LLM extraction cannot outpace eviction
-    # (max_evict_per_turn + max_decay_per_turn) and push the store past total_cap.
-    max_writes_per_turn: int = 10
+    # -- Activation half-lives (seconds): L1=7d, L2=90d, L3=3y (§4.1, §8) -- #
+    tau1: float = 7 * _DAY
+    tau2: float = 90 * _DAY
+    tau3: float = 3 * _YEAR
 
-    # -- Forgetting model: recall gate + two-stage archive + interference -- #
-    # Recall gate (functional forgetting): retrievable iff gate_w_cos*cos + gate_w_r*r (+noise) >= gate_theta.
-    gate_w_cos: float = 0.6
-    gate_w_r: float = 0.4
-    gate_theta: float = 0.2
-    recall_noise_sigma: float = 0.0    # >0 makes recall probabilistic (ACT-R logistic noise)
-    # active -> archive (savings) -> bounded permanent deletion.
-    r_archive_floor: float = 0.1       # below this (after grace) a memory is archived (inaccessible)
-    r_hard_floor: float = 0.05         # even protected memories can be archived below this
-    archive_grace_seconds: float = 7 * 24 * 60 * 60
-    # Max memories to archive in a single maintenance pass (prevents mass-forgetting after long downtime).
-    max_decay_per_turn: int = 5
-    # Max memories to evict (archive) in a single capacity-enforcement pass.
-    # Prevents a single turn from stalling when the DB is far over total_cap after a very long downtime.
-    max_evict_per_turn: int = 10
-    tau_savings: float = 0.85          # coarse-cosine threshold to recognize a reappearance
-    savings_gain: float = 1.6          # stability head-start when restoring from archive (relearning saving)
-    # 思い出し (recall): retrieve also searches the archive; an archived memory whose coarse-cosine
-    # to the cue is >= tau_recall is restored mid-retrieve. Looser than tau_savings (near-duplicate)
-    # so a semantically related — not just identical — archived memory can be recovered by a cue.
-    tau_recall: float = 0.6
-    max_recall_per_turn: int = 3       # cap archived memories restored (思い出し) per retrieve
-    protect_confidence: float = 0.85   # high-confidence & high-w memories resist eviction down to r_hard_floor
-    protect_w: float = 0.9
-    # Maximum age (seconds) for protection. Even protected memories lose protection after this.
-    protect_max_seconds: float = 10 * 365 * 24 * 60 * 60  # ~10 years
-    interference_decay: float = 0.05   # retrieval-induced forgetting: competitor stability *= (1 - this)
-    consolidation_gain: float = 1.5    # dream: merged memories become more durable (gist -> semantic)
+    # -- Activation / reinforcement (§4.1) -- #
+    m_max: float = 64.0               # mass / activation cap (I1)
+    refractory_seconds: float = 3600  # min interval between mass bonuses (不応期)
 
-    # -- Dreaming (memory consolidation) ------------------------------- #
-    dream_min_size: int = 2                       # skip clusters smaller than this
-    dream_min_interval_seconds: float = 24 * 60 * 60  # cooldown since last_dreaming_unix
-    dream_max_members: int = 20                   # cap members handed to the LLM
-    dream_max_clusters: int = 1                   # clusters processed per dream() call
-    dream_priority_floor: float = 0.0             # minimum priority to bother dreaming
-    # Priority = w_size*log(1+size) + w_spread*(spread/spread_norm)
-    #          + w_age*(since_dream/age_norm) + w_disp*dispersion
-    dream_w_size: float = 1.0
-    dream_w_spread: float = 1.0
-    dream_w_age: float = 1.0
-    dream_w_disp: float = 0.5
-    dream_spread_norm: float = 14 * 24 * 60 * 60
-    dream_age_norm: float = 14 * 24 * 60 * 60
+    # -- Retrieval score (§4.2) -- #
+    alpha: float = 0.35               # activation floor in score
+    inject_n: int = 5                 # memories injected per READ
+    mmr_lambda: float = 0.3           # MMR diversity penalty
+
+    # -- Identity thresholds (document–document, §4.3) -- #
+    theta_same: float = 0.97          # ≥ → supersede (再固定化)
+    theta_conflict: float = 0.85      # 0.85–0.97 → conflict queue
+    precise_margin: float = 0.03      # WRITE: re-embed at 768d within this band (§5.1)
+
+    # -- Tier movement hysteresis (§4.4) -- #
+    theta_up: float = 16.0            # A ≥ → promote (L2/L3 → L1, in dream)
+    theta_down: float = 4.0           # A < → demotion candidate
+
+    # -- Atomicity of text (§3.1, §8) -- #
+    text_max: int = 170               # max chars of a memory proposition
+    text_hard_max: int = 1024         # hard byte bound (§8.1, I14)
+    gen_max: int = 7                  # consolidation generation cap (I7)
+
+    # -- Dream (§6, §8) -- #
+    dream_budget: int = 5             # adjudications per dream() call (0..4096)
+    dream_budget_hard: int = 4096     # "∞" bound (§8.1)
+    cluster_min: int = 3              # min members for an eligible cluster
+    dream_max_members: int = 64       # members handed to the LLM per adjudication
+    snapshot_gens: int = 8            # DB snapshot ring before dream (§8)
+
+    # -- Ring buffers (§8, I11) -- #
+    conflict_cap: int = 256
+    dream_log_cap: int = 512
+
+    # -- Housekeeping (§6) -- #
+    tombstone_sweep_pct: float = 0.10     # sweep when tombstones exceed 10% of a tier
+    tombstone_sweep_age: float = 7 * _DAY  # ...or older than 7 days
+
+    # -- Soft-side write rate limit (§5.1; final bound 16384/day is §8.1) -- #
+    write_rate_per_day: int = 2000
+    max_writes_per_turn: int = 8          # cap save_memory tool calls applied per turn
+
+    # -- Robustness net (§ plan): if a turn saved nothing via tools, run one
+    #    extraction fallback that proposes propositions through the same save path. -- #
+    tool_fallback: bool = True
+
+    # -- Safety hard bounds (§8.1) used by validation (I14) -- #
+    hard_memory_rows: int = 16384
+    hard_vec_rows: int = 32768
+    decay_exp_cap: float = 64.0           # max(0,Δt)/τ above this → A=0
 
 
 @dataclass

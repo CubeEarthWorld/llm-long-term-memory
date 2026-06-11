@@ -71,11 +71,11 @@ function SystemCard({ detail }) {
         <span class="metachip">records ${detail.records}</span>
         <span class="metachip">pack ${detail.pack_chars}字 / ${detail.pack_n}件</span>
         <span class="metachip strong">total ${t.total}ms</span>
-        <span class="metachip ghost">llm ${t.llm} · retr ${t.retrieve} · write ${t.write} · maint ${t.maintain}</span>
+        <span class="metachip ghost">llm ${t.llm} · retr ${t.retrieve} · maint ${t.maintain} · embed ${t.embed}</span>
       </div>
-      <div class="section-label">LLMが呼び出した記憶</div>
+      <div class="section-label">想起された記憶（READ・過去文脈として注入）</div>
       <${DataTable} rows=${detail.recalled} />
-      <div class="section-label">書き込まれた / 更新された記憶</div>
+      <div class="section-label">save_memory / delete_memory の結果</div>
       <${DataTable} rows=${detail.written} />
       <details class="reveal">
         <summary><${Icon} name="doc" size=${14} /> 送信プロンプト / memory pack</summary>
@@ -130,41 +130,42 @@ function DreamPanel({ state, busy }) {
   const dream = async () => {
     setErr(null);
     setMsg(null);
-    try { 
-      const res = await apiPost("/dream", { max_clusters: 1 }); 
+    try {
+      const res = await apiPost("/dream", { max_clusters: 5 });
       if (res.n === 0) {
-        setMsg(res.message || "Dream 対象のクラスタがありません");
+        setMsg(res.message || "Dream 対象の適格クラスタがありません");
       }
     } catch (e) { setErr(e.message); }
   };
+  const DREAM_LABEL = { merge: "統合", split: "分割", none: "変更なし" };
   return html`
     <div class="dream">
       <div class="dream-head">
-        <div class="dream-title"><${Icon} name="moon" size=${17} /> Dream — 記憶の整理</div>
+        <div class="dream-title"><${Icon} name="moon" size=${17} /> Dream — 記憶の整理（破壊的操作はここだけ）</div>
         <div class="dream-actions">
           <button class="btn primary sm" disabled=${busy} onClick=${dream}>💤 Dream を実行</button>
           ${results.length > 0 && html`<button class="btn ghost sm" onClick=${() => setOpen(!open)}>${open ? "ログを隠す" : `ログ ${results.length}件`}</button>`}
         </div>
       </div>
-      <div class="dream-hint">優先度の高いクラスタを LLM が 統合 / 分割 / 維持 します。</div>
+      <div class="dream-hint">クラスタ化 → 審理 → 統合/分割。LLM が要点(gist)へまとめ、統合元は物理削除されます（1審理=1トランザクション）。</div>
       ${err && html`<div class="err">${err}</div>`}
       ${msg && html`<div class="kpi ok block-msg">${msg}</div>`}
       ${open && (results.length === 0 ? html`<div class="note">まだ Dream のログがありません。</div>` :
         results.map((r, i) => html`
           <div class="dreamcard" key=${i}>
             <div class="metarow">
-              <span class="metachip">cluster ${String(r.cluster_id).slice(0, 8)}</span>
-              <span class=${"metachip action " + r.action}>${r.action}</span>
+              <span class="metachip">cluster ${r.cluster_fp || ""}</span>
+              <span class=${"metachip action " + r.action}>${DREAM_LABEL[r.action] || r.action}</span>
               <span class="metachip ghost">priority ${r.priority}</span>
             </div>
             <div class="dreamcols">
               <div class="dream-col">
-                <div class="col-label before">before · ${r.before.length}</div>
-                <ul class="mem-list">${r.before.map((b, j) => html`<li key=${j}><span class="w">${b.w}</span>${b.text}</li>`)}</ul>
+                <div class="col-label before">統合元 · ${r.before.length}</div>
+                <ul class="mem-list">${r.before.map((b, j) => html`<li key=${j}><span class="w">L${b.tier} g${b.gen}</span>${b.text}</li>`)}</ul>
               </div>
               <div class="dream-col">
-                <div class="col-label after">after · ${r.after.length}</div>
-                ${r.after.length ? html`<ul class="mem-list">${r.after.map((a, j) => html`<li key=${j}><span class="w">${a.w}</span><span class="tzpill">${a.timezone}</span>${a.text}</li>`)}</ul>` : html`<div class="note">変更なし（維持）</div>`}
+                <div class="col-label after">統合後 · ${r.after.length}</div>
+                ${r.after.length ? html`<ul class="mem-list">${r.after.map((a, j) => html`<li key=${j}><span class="w">g${a.gen}</span>${a.text}</li>`)}</ul>` : html`<div class="note">変更なし（維持）</div>`}
               </div>
             </div>
           </div>`))}
@@ -178,6 +179,8 @@ function ConversationView({ state, busy }) {
   const [seedUtts, setSeedUtts] = useState([]);
   const [text, setText] = useState("");
   const [err, setErr] = useState(null);
+  const [resetOnSeed, setResetOnSeed] = useState(true);
+  const [seeding, setSeeding] = useState(false);
 
   const loadTurns = useCallback(async () => {
     const d = await api("/turns-detail");
@@ -187,11 +190,17 @@ function ConversationView({ state, busy }) {
 
   useEffect(() => { api("/seed-utterances").then((d) => setSeedUtts(d.utterances)).catch(() => {}); }, [state.turn]);
   useEffect(() => { loadTurns(); }, [state.turn, state.running, loadTurns]);
+  // Release the local "seeding" latch once the server job has finished, so the
+  // progress banner reflects real backend state even across a page reload.
+  useEffect(() => { if (!state.running) setSeeding(false); }, [state.running]);
 
   const runSeed = async () => {
     setErr(null);
-    try { await apiPost("/seed"); } catch (e) { setErr(e.message); }
+    setSeeding(true);  // immediate feedback — don't wait for the next 1.5s poll
+    try { await apiPost("/seed", { reset: resetOnSeed }); }
+    catch (e) { setErr(e.message); setSeeding(false); }
   };
+  const inProgress = seeding || state.running;
   const sendTurn = async () => {
     if (!text.trim()) return;
     setErr(null);
@@ -205,7 +214,13 @@ function ConversationView({ state, busy }) {
         <button class="btn primary" disabled=${busy} onClick=${runSeed}>
           <${Icon} name="sparkle" size=${16} /> シード実行
         </button>
-        ${state.seeded && html`<span class="kpi ok">シード済み · turn ${state.turn}</span>`}
+        <label class="checkline" title="チェック時は、シード投入前に記憶ストア（DB）を全消去してからやり直します。">
+          <input type="checkbox" checked=${resetOnSeed} disabled=${busy}
+            onChange=${(e) => setResetOnSeed(e.target.checked)} />
+          <span>DBをリセット</span>
+        </label>
+        ${inProgress && html`<span class="kpi busy"><span class="spin"></span>${state.progress || "シード投入中..."}</span>`}
+        ${state.seeded && !inProgress && html`<span class="kpi ok">シード済み · turn ${state.turn}</span>`}
         ${turns.length > 0 && html`
           <div class="spacer"></div>
           <label class="select-label">表示</label>
@@ -215,6 +230,11 @@ function ConversationView({ state, busy }) {
           </select>`}
       </div>
       ${err && html`<div class="err">${err}</div>`}
+      ${inProgress && html`
+        <div class="seedprogress">
+          <span class="spin"></span>
+          <span>${state.progress || "処理中..."}<span class="seedprogress-sub">　完了までしばらくお待ちください（シードは ${seedUtts.length} 発話を順に投入します）。</span></span>
+        </div>`}
 
       ${turns.length === 0 && html`
         <div class="empty">
@@ -307,38 +327,32 @@ function MetricsView({ state }) {
 }
 
 const LABELS = {
+  // global
   llm_provider: "LLMプロバイダー", deepseek_model: "Deepseekモデル", gemini_model: "Geminiモデル",
   deepseek_base_url: "Deepseek Base URL", temperature: "temperature", max_output_tokens: "最大出力token",
-  embedding_model: "埋め込みモデル", budget_chars: "取得最大文字数", total_cap: "記憶上限(hot)",
-  archive_cap: "アーカイブ上限(cold)",
-  sim_floor: "類似度しきい値", dim_full: "検索ベクトル次元", dim_coarse: "coarseベクトル次元",
-  default_timezone: "既定タイムゾーン",
-  mem_max_chars: "記憶1件の最大文字数", tau_dup: "重複判定", tau_link: "クラスタ判定",
-  stab_base_seconds: "基準安定度S(秒)", kappa: "重要度→安定度係数",
-  forget_beta: "忘却べき指数β", stab_growth_c: "想起時の安定度成長係数", labile_frac: "labile開始率",
-  freq_seed: "初期アクセス回数", reinforce_inc: "アクセス時加算",
-  min_residency_seconds: "最小滞在秒",
-  confidence_user: "信頼度(user)", confidence_inferred: "信頼度(inferred)",
-  alpha: "類似度重みα", beta: "保持率重みβ", delta: "重要度重みδ", eta: "頻度重みη", zeta: "信頼度重みζ",
-  lambda_div: "多様性係数", k_retrieve: "検索候補件数", spread_gamma: "連想拡散係数γ",
-  gate_w_cos: "想起ゲート:cos重み", gate_w_r: "想起ゲート:r重み", gate_theta: "想起ゲート閾値θ",
-  recall_noise_sigma: "想起ノイズσ",
-  r_archive_floor: "アーカイブ閾値r", r_hard_floor: "保護解除r下限",
-  archive_grace_seconds: "アーカイブ猶予秒", tau_savings: "再出現判定(coarse cos)", savings_gain: "savings安定度ゲイン",
-  tau_recall: "思い出し閾値(coarse cos)", max_recall_per_turn: "1回の復元上限(思い出し)",
-  protect_confidence: "保護:信頼度下限", protect_w: "保護:重要度下限",
-  interference_decay: "干渉減衰", consolidation_gain: "固定化ゲイン",
-  dream_min_size: "Dream最小サイズ", dream_min_interval_seconds: "Dreamクールダウン秒",
-  dream_max_members: "Dream最大メンバ", dream_max_clusters: "Dream対象クラスタ数",
-  dream_priority_floor: "Dream優先度下限",
-  dream_w_size: "優先度: サイズ重み", dream_w_spread: "優先度: 時間幅重み",
-  dream_w_age: "優先度: 経過重み", dream_w_disp: "優先度: 非凝集重み",
-  dream_spread_norm: "時間幅正規化(秒)", dream_age_norm: "経過正規化(秒)",
+  embedding_model: "埋め込みモデル", dim_full: "L1ベクトル次元(768)", budget_chars: "注入予算(字)",
+  default_timezone: "既定タイムゾーン", max_turn_log: "ターンログ上限", max_metrics_history: "メトリクス履歴上限",
+  // ENGRAM §8 parameters
+  cap1: "L1容量(エピソード)", cap2: "L2容量(意味)", cap3: "L3容量(スキーマ)",
+  dim1: "L1次元 768 f32", dim2: "L2次元 256 int8", dim3: "L3次元 128 int8",
+  tau1: "L1半減期τ(秒/7日)", tau2: "L2半減期τ(秒/90日)", tau3: "L3半減期τ(秒/3年)",
+  m_max: "mass上限 M_max", refractory_seconds: "不応期(秒)",
+  alpha: "活性の床α(スコア)", inject_n: "注入件数", mmr_lambda: "MMR多様性λ",
+  theta_same: "同一閾値θ_same", theta_conflict: "競合閾値θ_conflict", precise_margin: "精査マージン",
+  theta_up: "昇格閾値θ_up(A)", theta_down: "降格閾値θ_down(A)",
+  text_max: "記憶本文上限(字)", text_hard_max: "本文ハード上限(B)", gen_max: "統合世代上限",
+  dream_budget: "夢の審理数 budget", dream_budget_hard: "夢budgetハード上限",
+  cluster_min: "クラスタ適格(最小件数)", dream_max_members: "1審理の最大メンバ", snapshot_gens: "スナップショット世代",
+  conflict_cap: "conflictリング容量", dream_log_cap: "dream_logリング容量",
+  tombstone_sweep_pct: "墓標掃除(層比率)", tombstone_sweep_age: "墓標掃除(経過秒)",
+  write_rate_per_day: "書込みレート/日", max_writes_per_turn: "1ターン保存上限",
+  tool_fallback: "保存フォールバック(抽出)",
+  hard_memory_rows: "memory総行ハード上限", hard_vec_rows: "vec総行ハード上限", decay_exp_cap: "減衰指数上限(A=0)",
 };
 
 const GLOB_GROUPS = [
   ["LLM", ["llm_provider", "deepseek_model", "gemini_model", "deepseek_base_url", "temperature", "max_output_tokens"]],
-  ["埋め込み・取得", ["embedding_model", "dim_full", "dim_coarse", "budget_chars", "total_cap", "archive_cap", "sim_floor", "default_timezone"]],
+  ["埋め込み・注入", ["embedding_model", "dim_full", "budget_chars", "default_timezone"]],
 ];
 
 function SettingsView({ state, busy, onApplied }) {
@@ -366,10 +380,11 @@ function SettingsView({ state, busy, onApplied }) {
         <div class="seg">${["deepseek", "gemini"].map((o) => html`
           <button key=${o} class=${"segbtn " + (val === o ? "on" : "")} onClick=${() => setField(sec, key, o)}>${o}</button>`)}
         </div></div>`;
-    if (sec === "glob" && key === "dim_coarse")
-      return html`<div class="field" key=${id}><label>${label}</label>
-        <select class="select" value=${val} onChange=${(e) => setField(sec, key, Number(e.target.value))}>
-          <option value=${768}>768</option><option value=${256}>256</option></select></div>`;
+    if (typeof val === "boolean")
+      return html`<div class="field" key=${id}><label title=${id}>${label}</label>
+        <div class="seg">${[["on", true], ["off", false]].map(([lbl, o]) => html`
+          <button key=${lbl} class=${"segbtn " + (val === o ? "on" : "")} onClick=${() => setField(sec, key, o)}>${lbl}</button>`)}
+        </div></div>`;
     if (typeof val === "number")
       return html`<div class="field" key=${id}><label title=${id}>${label}</label>
         <input type="number" step="any" value=${val} onChange=${(e) => setField(sec, key, e.target.value === "" ? 0 : Number(e.target.value))} /></div>`;
@@ -392,7 +407,7 @@ function SettingsView({ state, busy, onApplied }) {
         </div>
       </div>
       <div class="group-card">
-        <div class="group-card-head">LLM Long-Term Memory パラメータ</div>
+        <div class="group-card-head">ENGRAM v1.1 パラメータ（§8）</div>
         <div class="group-card-body">
           <div class="fieldgrid">${Object.entries(cfg.memory).map(([k, v]) => field("memory", k, v))}</div>
         </div>
@@ -407,15 +422,15 @@ function SettingsView({ state, busy, onApplied }) {
 function ExplanationBox() {
   return html`
     <details class="explain">
-      <summary><${Icon} name="sparkle" size=${15} /> LLM Long-Term Memory 概要</summary>
+      <summary><${Icon} name="sparkle" size=${15} /> ENGRAM v1.1 概要</summary>
       <div class="explain-body">
-        <p>記憶は2層です: 想起対象の <b>active(hot, 上限1000件)</b> と、忘れて引けなくなった <b>archive(cold, 上限5000件, savings用)</b>。総容量は有界です。</p>
-        <p>検索には768次元のfull embeddingを使い、256次元のcoarse（full から都度導出）はクラスタ・多様性・連想拡散・archive照合に使います。</p>
-        <p>各記憶は人間の記憶に倣い3軸を分離: <code>w</code>(重要度) / <code>confidence</code>(信頼度) / <code>S</code>(定着度=安定度)。忘却はべき乗則 <code>r = (1 + (now-accessed_at)/S)^(-β)</code>。</p>
-        <p>想起成功のたびに安定度が伸びます（忘れかけ＝r が低いほど大きく＝間隔/テスト効果）。<code>S ← S * (1 + c*(1-r))</code>、アクセス回数 <code>freq</code> も加算。</p>
-        <p>想起ランキング: <code>α·cos + β·r + δ·w + η·log1p(freq) + ζ·confidence</code> ＋ 連想拡散。想起は <code>r</code> でゲートされ、引けない記憶は機能的に忘却されます。</p>
-        <p>忘却: <code>r</code> が閾値を下回ると archive へ退避（引けなくなるが savings として復元可能）。同じ話題が再来すると安定度の先取りで復元。archive 超過分は永久削除。</p>
-        <p>💤 Dream はクラスタ単位の睡眠的整理で、LLM が記憶を統合（要点=gist化）/ 分割 / 維持します。統合記憶は耐久性が増し、由来（source_ids）を残します。</p>
+        <p><b>生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。破壊はすべて夢の中。</b></p>
+        <p>記憶の本体は短い自己完結テキスト(≤170字)で、ベクトルは導出物(索引)です。記憶は3層: <b>L1 エピソード</b>(768d f32, τ=7日) / <b>L2 意味</b>(256d int8, τ=90日) / <b>L3 スキーマ</b>(128d int8, τ=3年)。MRL次元切詰め＝忘却の解像度です。</p>
+        <p>活性 <code>A = mass · 2^(−Δt/τ)</code>。想起のたびに <code>mass</code> を +1(不応期1時間)。スコアは <code>max(0,cos) × (α + (1−α)·A_abs)</code>(α=0.35)、注入5件は MMR で多様化、≤1024字。</p>
+        <p>同一性はコサイン距離のみ(文書—文書): <code>≥0.97</code> 同一更新(旧に墓標+新挿入=再固定化) / <code>0.85–0.97</code> 競合(両保持→conflictキュー) / <code>&lt;0.85</code> 新規。</p>
+        <p>会話中は<b>追記のみ</b>(非破壊)。容量超過は機械移動: A≥16 で昇格(L→L1)、A&lt;4 で降格(次元を粗く)、L3 溢れは活性最下位から物理削除(=この系の死)。</p>
+        <p>💤 Dream(オフライン)だけが破壊的: クラスタ化→LLM審理(統合/分割/変更なし)→統合元を物理削除。1審理=1トランザクション、スナップショット8世代で保護。</p>
+        <p>DBは自己記述: <code>spec</code> テーブルに本仕様全文を同梱。依存は「単一ファイルDB・埋め込みモデル・算術」のみ。</p>
       </div>
     </details>`;
 }
@@ -548,7 +563,12 @@ function App() {
   const poll = useCallback(async () => {
     try { setState(await api("/state")); } catch (e) {}
   }, []);
-  useEffect(() => { poll(); const id = setInterval(poll, 1500); return () => clearInterval(id); }, [poll]);
+  useEffect(() => {
+    poll();
+    const interval = state && state.running ? 800 : 1500;
+    const id = setInterval(poll, interval);
+    return () => clearInterval(id);
+  }, [poll, state && state.running]);
   if (!state) return html`<div class="boot"><span class="spin"></span> 起動中...</div>`;
 
   const busy = state.running || !state.ready;
@@ -568,7 +588,7 @@ function App() {
           <div class="brand-mark"><${Icon} name="sparkle" size=${18} /></div>
           <div class="brand-text">
             <h1>LLM Long-Term Memory</h1>
-            <span class="brand-sub">EmbeddingGemma（ローカル） + Deepseek / Gemini</span>
+            <span class="brand-sub">ENGRAM v1.1 — EmbeddingGemma（ローカル） + Deepseek / Gemini</span>
           </div>
         </div>
         <div class="topstatus">

@@ -67,16 +67,16 @@ def _print_dream(results: list) -> None:
         print("  対象クラスタなし（サイズ/クールダウン条件で除外）")
         return
     for r in results:
-        print(f"\n-- cluster {r['cluster_id'][:8]}  action={r['action']}  priority={r['priority']}")
-        print(f"   before ({len(r['before'])}):")
+        print(f"\n-- cluster {r.get('cluster_fp', '')}  action={r['action']}  priority={r['priority']}")
+        print(f"   統合元 ({len(r['before'])}):")
         for b in r["before"]:
-            print(f"     - [{b['w']}] {b['text'][:70]}")
+            print(f"     - [L{b.get('tier', '?')} g{b.get('gen', 0)}] {b['text'][:70]}")
         if r["after"]:
-            print(f"   after ({len(r['after'])}):")
+            print(f"   統合後 ({len(r['after'])}):")
             for a in r["after"]:
-                print(f"     + [{a['w']}] ({a['timezone']}) {a['text'][:70]}")
+                print(f"     + [g{a.get('gen', 0)}] {a['text'][:70]}")
         else:
-            print("   after: （変更なし）")
+            print("   統合後: （変更なし）")
 
 
 def _summary(engine: dict) -> None:
@@ -84,11 +84,13 @@ def _summary(engine: dict) -> None:
     print("\n" + "#" * 78 + "\n# サマリ\n" + "#" * 78)
     df = engine["recorder"].dataframe()
     cfg = engine["cfg"]
+    cap = cfg.memory.cap1 + cfg.memory.cap2 + cfg.memory.cap3
     if not df.empty:
         print(f"  全 pack <= {cfg.glob.budget_chars}字 : {(df['pack_chars'] <= cfg.glob.budget_chars).all()}")
-        print(f"  全 records <= {cfg.glob.total_cap}件 : {(df['records'] <= cfg.glob.total_cap).all()}")
+        print(f"  全 records <= {cap}件 : {(df['records'] <= cap).all()}")
     s = engine["system"]
-    print(f"  {SYSTEM_TITLE}: records={s.total_records()}  {s.stats()}  vec={s.vector_mb():.3f}MB")
+    print(f"  {SYSTEM_TITLE}: records={s.total_records()}  {s.stats()}  "
+          f"vec={s.vector_mb():.3f}MB  db={s.db_size_bytes() / 1024:.1f}KB")
 
 
 def _dump_json(engine: dict, path: str) -> None:
@@ -144,9 +146,10 @@ def main() -> int:
         print(f"[init] llm: {engine['llm'].status}")
 
         if args.seed:
-            run_seed(engine, on_progress=lambda t, u: print(f"  ...turn {t} complete"))
-            for r in engine["log"]:
-                _print_turn(engine, r["turn"])
+            def _on_seed_progress(t: int, u: str) -> None:
+                _print_turn(engine, t)
+
+            run_seed(engine, on_progress=_on_seed_progress)
 
         for text in args.say:
             t = run_turn(engine, text)

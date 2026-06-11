@@ -81,10 +81,11 @@ class TurnMetrics:
             "embed_ms": round(self.embed_ms, 1),
             "retrieve_ms": round(self.retrieve_ms, 1),
             "llm_ms": round(self.llm_ms, 1),
-            "write_ms": round(self.write_ms, 1),
             "maintain_ms": round(self.maintain_ms, 1),
             "total_ms": round(self.total_ms, 1),
             "records": self.total_records,
+            # ENGRAM tier counts (L1/L2/L3) + ring sizes, from system.stats().
+            **{k: self.counts.get(k, 0) for k in ("L1", "L2", "L3", "tombstones", "conflict", "dream_log")},
             "pack_chars": self.pack_chars,
             "pack_n": self.pack_n,
             "db_kb": round(self.db_size_bytes / 1024, 1),

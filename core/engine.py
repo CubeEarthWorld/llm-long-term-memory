@@ -177,8 +177,10 @@ def _open_store(wipe: bool) -> Store:
     return Store(path)
 
 
-def dispose_engine(engine: Engine) -> None:
-    """Close the underlying SQLite store and release resources."""
+def dispose_engine(engine: Engine | None) -> None:
+    """Close the underlying SQLite store and release resources (no-op if no engine yet)."""
+    if not engine:
+        return
     store = engine.get("store")
     if store:
         store.close()
@@ -232,7 +234,7 @@ def run_seed(engine: Engine, on_progress: Callable[[int, str], None] | None = No
 
     The first utterance is anchored at the current wall-clock time.  Each item's
     "advance" field (e.g. "5y") cumulatively pushes the virtual clock forward,
-    so memories genuinely decay and may be archived between widely-spaced turns.
+    so memories genuinely lose activation and demote across tiers between widely-spaced turns.
     This is useful for deterministic demonstration of long-term forgetting.
     """
     state = {"offset": 0.0}

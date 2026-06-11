@@ -11,14 +11,14 @@ Duration syntax (see ``core.engine._parse_duration``): a number with a unit
 suffix — ``s`` seconds, ``m`` minutes, ``h`` hours, ``d`` days, ``w`` weeks,
 ``y`` years — or a bare number meaning days. "0" means no advance.
 
-What the scenario tests:
-* noise rejection (greetings / weather / small talk) — should not be stored, or stored weakly;
-* preference & importance weighting (#2 ice cream, #6 codename, #5/#8 meeting);
-* update-overrides-old (#5 Thu -> #8 next-week Wed -> #11 confirmation question);
-* decay -> archive -> 思い出し (recall): #3 (club) and #6 (codename) fall out of active
-  store across the ~10-year gap (#12, #13), then #14 / #15 cue them back from the archive;
-* reappearance savings / near-duplicate reinforcement (#16 restates #2);
-* cluster formation (meeting / new-product utterances) as material for dream() consolidation.
+What the ENGRAM scenario exercises:
+* noise rejection (greetings / weather / small talk) — should not be saved by the LLM;
+* identity thresholds (#16 restates #2 → exact/near-dup rehearsal; #5 Thu -> #8 next-week Wed
+  is a same-proposition update → tombstone old, insert new, §4.3);
+* activation decay + machine movement: #3 (club) and #6 (codename) lose activation across the
+  ~10-year gap (#12, #13) and demote toward L2/L3 (768d → 256/128, §5.4), then #14 / #15 still
+  recall them — the body text is lossless in every tier;
+* cluster formation (meeting / new-product utterances) as material for dream() consolidation (§6).
 """
 from __future__ import annotations
 

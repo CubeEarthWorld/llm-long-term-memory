@@ -1,13 +1,12 @@
-"""Deterministic mocks so the memory model can be evaluated without the real
+"""Deterministic mocks so the ENGRAM engine can be evaluated without the real
 embedding model or an LLM API key.
 
 * ``FakeEmbeddingProvider`` builds vectors from token overlap, so texts that share
-  words / CJK characters are similar (controllable cosine), while unrelated texts
-  are near-orthogonal. Identical text -> identical vector (exact dedup / savings).
-* ``FakeLLM`` extracts the user utterance verbatim as one memory and merges a
-  cluster into a single gist on dream — enough to exercise the storage/forgetting
-  logic deterministically.
-* ``VirtualClock`` lets scenarios accelerate time arbitrarily (forgetting curves,
+  words / CJK characters are similar (cosine ≈ shared/√(n1·n2)), while unrelated
+  texts are near-orthogonal. Identical tokens -> identical vector.
+* ``FakeLLM`` only needs ``dream_cluster`` for the eval (save_memory is called
+  directly): it merges a cluster into a single gist.
+* ``VirtualClock`` lets scenarios accelerate time arbitrarily (activation decay,
   spacing) at zero real cost.
 """
 from __future__ import annotations
@@ -74,25 +73,21 @@ class FakeEmbeddingProvider:
 
 
 class FakeLLM:
-    """Verbatim extraction + merge-to-gist dreaming. Tunable per call via attributes."""
-
-    def __init__(self):
-        self.default_w = 0.6
-        self.default_provenance = "user"
-
-    def extract_memory(self, user_text: str, assistant_text: str) -> list[dict]:
-        return [{"text": user_text, "w": self.default_w, "provenance": self.default_provenance}]
+    """Merge-to-gist dreaming for ENGRAM eval. save_memory is called directly,
+    so converse/extract are not exercised here."""
 
     def dream_cluster(self, members: list[dict]) -> dict:
         if not members:
             return {"action": "none", "memories": []}
-        gist = " / ".join(m["text"] for m in members)[:200]
-        w = max((float(m.get("w", 0.6)) for m in members), default=0.6)
-        return {"action": "merge", "memories": [{"text": gist, "w": w, "provenance": "inferred",
-                                                 "timezone": members[0].get("timezone", "Asia/Tokyo")}]}
+        gist = " / ".join(m["text"] for m in members)[:160]
+        return {"action": "merge",
+                "memories": [{"text": gist, "timezone": members[0].get("timezone", "Asia/Tokyo")}]}
 
-    def respond(self, memory_pack: str, user_text: str):  # not used in eval
+    def converse(self, memory_pack, user_text, tools):  # not used in eval
         raise NotImplementedError
+
+    def extract_save_candidates(self, user_text, assistant_text):  # not used in eval
+        return []
 
 
 class VirtualClock:

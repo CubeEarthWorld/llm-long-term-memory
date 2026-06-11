@@ -7,8 +7,10 @@ native dependency is needed.
 """
 from __future__ import annotations
 
+import glob as _glob
 import os
 import sqlite3
+import time
 from contextlib import contextmanager
 from typing import Sequence
 
@@ -25,6 +27,25 @@ def unpack_vec(blob: bytes | None) -> np.ndarray | None:
     if blob is None:
         return None
     return np.frombuffer(blob, dtype=np.float32)
+
+
+def quantize_int8(vec: np.ndarray) -> tuple[bytes, float]:
+    """Symmetric int8 quantization (ENGRAM §8: L2/L3 store int8 + scale).
+
+    Returns (blob, scale) so the original can be approximately recovered as
+    ``q * scale``. The input is expected unit-norm; the scale captures its peak.
+    """
+    v = np.asarray(vec, dtype=np.float32)
+    peak = float(np.max(np.abs(v))) if v.size else 0.0
+    scale = peak / 127.0 if peak > 0 else 1.0
+    q = np.clip(np.round(v / scale), -127, 127).astype(np.int8)
+    return q.tobytes(), scale
+
+
+def dequantize_int8(blob: bytes, scale: float) -> np.ndarray:
+    """Inverse of :func:`quantize_int8`. Caller re-normalizes before cosine."""
+    q = np.frombuffer(blob, dtype=np.int8).astype(np.float32)
+    return q * float(scale)
 
 
 def cosine(a: np.ndarray, b: np.ndarray) -> float:
@@ -47,6 +68,10 @@ class Store:
         self.conn = sqlite3.connect(path, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA journal_mode=WAL;")
+        # Incremental auto-vacuum so the dream housekeeping can reclaim freed pages
+        # without a full VACUUM (§6). Effective from creation on a fresh (wiped) DB.
+        self.conn.execute("PRAGMA auto_vacuum=INCREMENTAL;")
+        self.conn.execute("PRAGMA foreign_keys=ON;")
         self._in_txn = False
 
     # -- basic helpers -------------------------------------------------- #
@@ -90,56 +115,6 @@ class Store:
         row = self.conn.execute(sql, params).fetchone()
         return row[0] if row else None
 
-    # -- vector search -------------------------------------------------- #
-    def cosine_search(
-        self,
-        table: str,
-        vec_col: str,
-        query_vec: np.ndarray,
-        k: int,
-        where: str = "",
-        params: Sequence = (),
-        id_col: str = "id",
-        max_scan: int = 0,
-        order_by: str = "",
-    ) -> list[tuple]:
-        """Return [(id, score, row), ...] top-k by cosine over rows matching `where`.
-
-        Vectors are assumed L2-normalized, so cosine == dot product.
-
-        ``max_scan`` (default 0 = no limit) caps the number of rows loaded from the
-        table. Use for large tables (e.g. archive) to bound per-query cost.
-        ``order_by`` controls which rows survive the ``max_scan`` cut; without it
-        SQLite returns rows in insertion order, so rows beyond the limit would
-        silently never be scanned.
-        """
-        sql = f"SELECT * FROM {table}"
-        if where:
-            sql += f" WHERE {where}"
-        if order_by:
-            sql += f" ORDER BY {order_by}"
-        if max_scan > 0:
-            sql += f" LIMIT {int(max_scan)}"
-        rows = self.query(sql, params)
-        if not rows:
-            return []
-        q = np.asarray(query_vec, dtype=np.float32)
-        qn = np.linalg.norm(q)
-        if qn:
-            q = q / qn
-        scored = []
-        for r in rows:
-            blob = r[vec_col]
-            if blob is None:
-                continue
-            v = unpack_vec(blob)
-            if v.shape[0] != q.shape[0]:
-                continue  # all stored vectors share one dimension; skip any stray mismatch
-            score = float(np.dot(v, q))
-            scored.append((r[id_col], score, r))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return scored[:k]
-
     # -- maintenance ---------------------------------------------------- #
     def count(self, table: str, where: str = "", params: Sequence = ()) -> int:
         sql = f"SELECT COUNT(*) FROM {table}"
@@ -171,6 +146,46 @@ class Store:
                         d[k] = vec_label(v)
             return d
         return [_clean(r) for r in self.query(f"SELECT * FROM {table} LIMIT ?", (limit,))]
+
+    # -- durability ----------------------------------------------------- #
+    def wal_checkpoint(self) -> None:
+        """Truncate the WAL so the -wal file cannot grow without bound (§6, §8.1)."""
+        try:
+            self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE);")
+        except Exception:
+            pass
+
+    def incremental_vacuum(self) -> None:
+        try:
+            self.conn.execute("PRAGMA incremental_vacuum;")
+            self.conn.commit()
+        except Exception:
+            pass
+
+    def snapshot(self, snap_dir: str, gens: int = 8) -> str | None:
+        """Copy the DB into a rotating ring of ``gens`` snapshots (ENGRAM §6 snapshot()).
+
+        Uses the SQLite online backup API for a consistent copy, then prunes the
+        oldest files so the保険 stays bounded (~80MB for 8 generations).
+        """
+        try:
+            os.makedirs(snap_dir, exist_ok=True)
+            dst = os.path.join(snap_dir, f"snap_{int(time.time() * 1000)}.db")
+            bck = sqlite3.connect(dst)
+            try:
+                with bck:
+                    self.conn.backup(bck)
+            finally:
+                bck.close()
+            snaps = sorted(_glob.glob(os.path.join(snap_dir, "snap_*.db")))
+            for old in snaps[:-gens]:
+                try:
+                    os.remove(old)
+                except OSError:
+                    pass
+            return dst
+        except Exception:
+            return None
 
     def close(self) -> None:
         try:

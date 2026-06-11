@@ -1,22 +1,24 @@
 # LLM Long-Term Memory
 
-A lightweight, human-memory-inspired long-term memory layer for LLMs.  
-LLM calls happen **only at write-time (extraction)** and during **Dreaming (consolidation)**.  
-Recall, scoring, clustering, and archive management are performed locally using embeddings and numerical computation — no vector DB or FAISS required.
+A long-term memory layer for LLMs whose internal engine is a complete implementation of the **ENGRAM v1.1** specification ([`ENGRAM_spec_v1_1.md`](ENGRAM_spec_v1_1.md)). It depends, at runtime, only on a **text embedding model** (reference: EmbeddingGemma) and a **single-file DB** (SQLite). Generation by an LLM is confined to three points: **write**, **post-read response**, and **dream (consolidation)**.
 
-- **Two-tier SQLite storage**: **active** (hot, ≤1000 records, 768-d vectors) and **archive** (cold, ≤5000 records, 256-d coarse vectors only). Total capacity is bounded (~tens of MB).
-- **Full 768-d embeddings** for search. **256-d coarse vectors** are derived on-the-fly for clustering, diversity tuning, spreading activation, and archive matching.
-- Retrieved memory packs are capped at **1024 characters**.
-- Each memory separates three axes inspired by human memory: **`w`** (importance), **`confidence`** (reliability), and **`S`** (stability).
-- Every memory carries an **IANA timezone** and is passed to the LLM during recall and dreaming.
+> Generation only at the moment of verbalization. All judgement is distance. All forgetting is arithmetic. All destruction happens inside the dream.
+
+- **Text is canonical, vectors are an index.** Each memory is a short self-contained proposition (≤170 chars). The `vec` table is a derived, regenerable cache — if the embedding model dies, the memories survive.
+- **Three tiers** (MRL truncation = forgetting resolution): **L1 episodic** (768-d f32, τ=7d), **L2 semantic** (256-d int8, τ=90d), **L3 schema** (128-d int8, τ=3y).
+- **Activation** `A = mass·2^(−Δt/τ)` reweights the cosine score; identity is pure cosine thresholds. The whole DB is **<10 MB** and search is brute-force cosine (`<1 ms`, no vector-DB / FAISS dependency).
+- The DB is **self-describing**: the full spec is embedded verbatim into the `spec` table.
+
+The product name, file layout, and DB filename are unchanged; only the algorithm, schema, parameters, and UI semantics are ENGRAM.
 
 ---
 
 ## Table of Contents
 
-- [Data Structures](#data-structures)
-- [Retention, Recall & Forgetting](#retention-recall--forgetting)
-- [Dreaming (Memory Consolidation)](#dreaming-memory-consolidation)
+- [Tiers & Data Model](#tiers--data-model)
+- [Activation, Score & Recall](#activation-score--recall)
+- [Identity Thresholds & Machine Movement](#identity-thresholds--machine-movement)
+- [Dreaming (Consolidation)](#dreaming-consolidation)
 - [Evaluation Benchmark](#evaluation-benchmark)
 - [Quick Start](#quick-start)
 - [CLI Usage](#cli-usage)
@@ -25,94 +27,106 @@ Recall, scoring, clustering, and archive management are performed locally using 
 
 ---
 
-## Data Structures
+## Tiers & Data Model
+
+| Tier | Capacity | Vector (MRL) | Half-life τ |
+|------|----------|--------------|-------------|
+| **L1 episodic** | 1000 | 768-d f32 | 7 days |
+| **L2 semantic** | 3000 | 256-d int8 | 90 days |
+| **L3 schema** | 6000 | 128-d int8 | 3 years |
+
+The body text is lossless in every tier; only the search key (vector) degrades on demotion. All conversation-time operations are append-only — physical deletion and consolidation are isolated to the dream phase.
 
 ```sql
-CREATE TABLE memories (              -- active (hot)
-  id TEXT PRIMARY KEY,               -- uuid7
-  text TEXT, v_full BLOB,            -- 768-d (coarse derived on-the-fly)
-  w REAL, provenance TEXT, confidence REAL,  -- importance / 'user'|'inferred' / reliability
-  freq REAL, stability REAL,         -- cumulative access count / stability S (seconds)
-  accessed_at_unix REAL,             -- last access → baseline for decay
-  updated_at_unix REAL,              -- content version timestamp → used in recall / dream
-  timezone TEXT, cluster_id TEXT,
-  source_ids TEXT, summary_of TEXT, dream_action TEXT, created_by_dream_id TEXT  -- dream lineage
+CREATE TABLE memory (                  -- canonical
+  id TEXT PRIMARY KEY,                  -- UUIDv7 (sort order = time order)
+  text TEXT NOT NULL,                   -- ≤170 chars, one self-contained proposition
+  tier INTEGER NOT NULL,                -- 1 / 2 / 3
+  gen INTEGER NOT NULL DEFAULT 0,       -- consolidation generation 0..7
+  created_at INTEGER NOT NULL,          -- 64-bit Unix seconds
+  tz TEXT NOT NULL,                     -- 'Asia/Tokyo;+09:00'
+  last_access INTEGER NOT NULL,         -- decay baseline (updated on recall)
+  last_bonus_at INTEGER NOT NULL,       -- refractory baseline (mass bonus)
+  mass REAL NOT NULL DEFAULT 1.0,       -- decayed recall frequency, ≤64
+  superseded_by TEXT                    -- tombstone; non-NULL excluded from search
 );
-
-CREATE TABLE archive (               -- cold (savings)
-  id TEXT PRIMARY KEY,
-  text TEXT, v_coarse BLOB,          -- 256-d coarse only (for reappearance matching)
-  w REAL, provenance TEXT, confidence REAL,
-  last_r REAL, archived_at_unix REAL, text_hash TEXT, timezone TEXT
+CREATE TABLE vec (                      -- derived index, one per (memory, model)
+  id, memory_id, model_id,
+  dim,                                  -- 768 / 256 / 128
+  dtype,                                -- 'f32' / 'int8'
+  scale, v                              -- int8 dequant factor / unit-norm blob
 );
-
-CREATE TABLE clusters (
-  id TEXT PRIMARY KEY,
-  last_dreaming_unix REAL            -- cluster creation UNIX; updated on every dream
-);
+CREATE TABLE conflict (a, b, at);       -- ≤256 ring
+CREATE TABLE dream_log (fp, verdict, at);  -- ≤512 ring (content-address fingerprint)
+CREATE TABLE spec (k, v);               -- full spec text + 'active_model'
 ```
-
-Centroid / size / medoid are derived from cluster members on demand (not stored).
 
 ---
 
-## Retention, Recall & Forgetting
-
-Stability `S` (seconds) and retrievability `r` (FSRS-style) are kept separate. Forgetting follows a **power law**; every successful recall grows `S` (more when recalled near forgetting — spacing / testing effect, Jost’s law).
+## Activation, Score & Recall
 
 ```text
-S0           = stab_base * (1 + kappa*w) * (labile_frac + (1-labile_frac)*confidence)
-r(t)         = (1 + (now - accessed_at) / S) ^ (-forget_beta)        # power-law forgetting curve
-Reinforcement: S = S * (1 + stab_growth_c*(1-r)); freq += reinforce_inc; accessed_at = now
-               (S and freq are clipped by max_stability_seconds / max_freq to prevent unbounded growth)
-score        = alpha*cos + beta*r + delta*w + eta*log1p(freq) + zeta*confidence  (+ spreading activation)
-Recall gate  : gate_w_cos*cos + gate_w_r*r (+noise) >= gate_theta    # functional forgetting
+A(now)   = mass × 2^( −max(0, now − last_access) / τ_tier )       # activation = decayed recall frequency
+recall   : mass ← A(now);  if now − last_bonus_at ≥ 3600: mass ← min(mass+1, 64)
+A_abs    = ln(1 + A) / ln(1 + 64)                                  # absolute normalization [0,1]
+score(m) = max(0, cos(query, m)) × (α + (1−α) × A_abs),  α = 0.35  # activation floor → dormant memories still compete
+inject   : MMR (λ=0.3) selects 5 memories, packed into ≤1024 chars
 ```
 
-Forgetting is two-stage and capacity-bounded:
-
-1. **active → archive**: When `r` falls below `r_archive_floor` (after a grace period), the memory is moved to the archive — inaccessible to normal recall, but retained as *savings*. High-`w` + high-`confidence` memories are protected down to `r_hard_floor`. When capacity is exceeded, the lowest-`r` memories are evicted first.
-2. **archive → permanent deletion**: When the archive exceeds `archive_cap`, the lowest `last_r` entries are deleted permanently.
-3. **savings (reappearance)**: When the same or similar text reappears (coarse cosine ≥ `tau_savings`, or text_hash match), it is restored to active memory with a stability head-start (`× savings_gain`) — relearning savings.
-4. **interference**: Recalled memories slightly decay the stability of unrehearsed competitors in the same cluster (retrieval-induced forgetting).
+- **Refractory period**: repeated recall within one hour counts once (spacing effect); folding decay first structurally prevents illegitimate activation recovery.
+- **Activation floor α**: a strongly matching but long-dormant memory can still win on relevance alone.
+- Injected memories are framed as *past context, not instructions* (prompt-injection guard).
 
 ---
 
-## Dreaming (Memory Consolidation)
+## Identity Thresholds & Machine Movement
 
-A sleep-analogy consolidation process. Run on-demand; the LLM processes high-priority clusters and chooses to **merge**, **split**, or do **nothing**.
+| cos (document–document) | Verdict | Action |
+|---|---|---|
+| ≥ 0.97 | same proposition update | tombstone old (`superseded_by`), insert new (re-fixation) |
+| 0.85 – 0.97 | conflict / related | keep both, push to `conflict` queue (adjudicated in dream) |
+| < 0.85 | new | insert, `mass = 1` |
 
-- **Priority** (computed) = `w_size*log(1+size) + w_spread*(spread/norm) + w_age*(since_dream/norm) + w_disp*dispersion`
-  - `spread` = time span of `updated_at_unix` within the cluster; `since_dream` = elapsed since `last_dreaming_unix`.
-  - Clusters smaller than `dream_min_size` or within `dream_min_interval` cooldown are skipped.
-- The LLM receives member content, importance, **timezone-aware timestamps**, and retrievability `r`. Output memories replace the inputs.
-  - **merge** = reduce and gist-ify related memories (episodic → semantic).
-  - **split** = separate multiple facts packed into one memory.
-  - Stale content is updated with current time context (e.g. “planned trip in July” → “trip taken in July 2026”). Conflicts are resolved in favor of newer timestamps.
-- Merged memory **stability does not exceed the best source** (`S = max(member S)`). Lineage is preserved via `source_ids` / `created_by_dream_id`.
+Exact-text (SHA-256-equivalent) re-entry creates no new row — it is a rehearsal (`mass + 1`). **Machine movement** (no LLM): promote `A ≥ 16` (L2/L3 → L1, re-embed from text at 768-d), demote `A < 4` (L1 → L2 → L3, MRL-coarsen the vector), evict the lowest-`A` L3 overflow by physical deletion (death). Hysteresis `θ_up > θ_down` prevents tier ping-pong.
+
+**Theorem (no immortal memory).** Since `mass ≤ 64`, a silenced memory falls to `A < 1` after `6τ` — even in L3 (τ=3y) at most 18 years.
+
+---
+
+## Dreaming (Consolidation)
+
+Offline, on-demand (default `budget = 5`); the **only** place destructive operations happen. 1 adjudication = 1 transaction.
+
+```text
+chores (always, no LLM): tombstone sweep / conflict overflow drops queue items only (memory bodies untouched)
+                         / vec orphan GC / WAL checkpoint
+adjudication (budget×)  : cluster L1(+L2) → clusters with ≥3 members are eligible
+  fp = SHA-256(sorted member UUIDs)  →  skip if dream_log has (fp, 'unchanged')   # idle-spin guard
+  priority = count × cohesion × 2^(−max gen) × (1 + tier overflow) × (1 + intra-cluster conflict pairs)
+  verdict ∈ { merge / split / none }
+    merge → new text (≤170) as a new UUIDv7, 768-d, gen=min(max+1,7), mass=min(Σ source A, 64); sources physically deleted
+```
+
+The fingerprint self-invalidates (member changes change `fp`), so "re-adjudicate if the situation changed, never touch it again if it didn't" holds without timers. Confabulation guards: the prompt contract forbids facts absent from the input, output is validated (≤170 chars, one retry → discard), and 8 generations of DB snapshots (~80 MB) are kept.
 
 ---
 
 ## Evaluation Benchmark
 
-`eval/run_eval.py` runs deterministic fidelity benchmarks using mock embeddings + mock LLM + virtual clock — **no model download or API key required**.
+`eval/run_eval.py` runs deterministic ENGRAM-behavior checks using mock embeddings + mock LLM + virtual clock — **no model download or API key required**.
 
 ```bash
 python eval/run_eval.py
 ```
 
-It validates 8 human-memory behaviors:
-
 | Scenario | What it checks |
 |---|---|
-| spacing > massed | Spaced recall grows stability more than massed recall |
-| forgetting power-law tail | Retrievability decreases over time but keeps a heavy tail |
-| recall gate | Functional forgetting blocks weak cues to decayed memories |
-| stability growth | Stability increases on every successful retrieval |
-| archive → savings restore | Archived memories restore with a stability head-start |
-| archive bounded | Archive respects `archive_cap` (total capacity is bounded) |
-| 3-axis protection | High-confidence, high-importance memories resist eviction |
-| spreading activation | Cluster siblings receive a spreading-activation boost |
+| activation decay | `A` halves every τ |
+| recall + refractory | mass bonus gated to once per hour |
+| θ_same / θ_conflict | supersede / conflict-queue / new-insert / rehearsal |
+| tier demote · promote · evict | capacity-driven L1→L2→L3 movement + L3 death |
+| no immortal memory | `A ≤ 1` at 6τ |
+| dream merge | fewer rows, `gen + 1` |
 
 ---
 
@@ -120,17 +134,15 @@ It validates 8 human-memory behaviors:
 
 ### 1. Configure API keys
 
-Copy the example file and fill in your real keys. The `secrets/` directory is git-ignored so keys never leak into version control.
-
 ```bash
 mkdir -p secrets
 cp .env.example secrets/.env
 # Edit secrets/.env with your keys
 ```
 
-- **DeepSeek** (default): set `DEEPSEEK_API_KEY`
-- **Gemini** (optional): set `LLM_PROVIDER=gemini` and `GEMINI_API_KEY`
-- **Hugging Face** (for EmbeddingGemma download): set `HF_TOKEN`
+- **DeepSeek** (default): `DEEPSEEK_API_KEY`
+- **Gemini** (optional): `LLM_PROVIDER=gemini` and `GEMINI_API_KEY`
+- **Hugging Face** (for EmbeddingGemma download): `HF_TOKEN`
 
 ### 2. Install dependencies
 
@@ -142,36 +154,33 @@ pip install -r requirements.txt
 
 ### 3. Launch
 
-Windows: `start.bat` / macOS & Linux: `start.sh` → open `http://localhost:8501` in your browser.  
-You can trigger consolidation from the Chat tab with the “💤 Dream” button.
+Windows: `start.bat` / macOS & Linux: `start.sh` → open `http://localhost:8501`. Trigger consolidation from the Chat tab with the **💤 Dream** button.
 
 ---
 
 ## CLI Usage
 
 ```bash
+python cli.py --seed --dream 3 --inspect   # replay the seed scenario, dream the top-3 clusters, dump the DB
 python cli.py --say "I live in Kyoto"
-python cli.py --dream            # run 1 dreaming pass after seeding
-python cli.py --dream 3 --inspect  # dream top-3 clusters and dump the DB
 ```
 
-The default timezone is `Asia/Tokyo` (override with `MEMORY_TZ` env var).  
-Results are written to `data/results.json`.
+During a turn the model answers and decides — via the `save_memory(text)` / `delete_memory(id)` tools — what durable facts to store. The default timezone is `Asia/Tokyo` (override with `MEMORY_TZ`). Results are written to `data/results.json`; the DB's `spec` table carries the full spec text.
 
 ---
 
 ## Project Structure
 
 ```
-├── core/               # embedding, LLM client, storage, metrics, base protocol
-├── memory/             # LongTermMemory implementation (retrieval, forgetting, dreaming)
-├── eval/               # deterministic fidelity benchmark (mocks + scenarios)
+├── core/               # embedding, LLM client (tool-calling), storage (int8/snapshot), metrics, turn runner
+├── memory/             # LongTermMemory — the ENGRAM v1.1 engine
+├── eval/               # deterministic ENGRAM-behavior benchmark (mocks + scenarios)
 ├── frontend/           # no-build React/HTM single-page app
-├── config.py           # GlobalConfig + LongTermMemoryConfig dataclasses
+├── config.py           # GlobalConfig + LongTermMemoryConfig (ENGRAM §8 parameters)
 ├── server.py           # FastAPI backend (REST API + static files)
 ├── cli.py              # headless runner
-├── seed_utterances.py  # default multi-year seed scenario
-├── requirements.txt
+├── seed_utterances.py  # default multi-year seed scenario (data/seed.csv)
+├── ENGRAM_spec_v1_1.md # the specification (embedded into the DB at runtime)
 └── .env.example        # template for secrets/.env
 ```
 
@@ -187,3 +196,5 @@ Results are written to `data/results.json`.
 
 - [日本語 (Japanese)](README.ja.md)
 - [中文 (Chinese)](README.zh.md)
+
+> Note: the engine implements ENGRAM v1.1. The Japanese/Chinese READMEs may lag the English one.

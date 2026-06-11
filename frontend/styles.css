@@ -201,7 +201,24 @@ code, pre { font-family: var(--mono); }
   padding: 5px 11px; font-size: .76rem; font-weight: 600; color: var(--ink-2);
 }
 .kpi.ok { background: var(--ok-tint); border-color: var(--ok-bd); color: var(--ok); }
+.kpi.busy { background: var(--accent-tint); border-color: var(--accent-tint2); color: var(--accent); }
 .block-msg { display: block; margin-bottom: 12px; }
+
+.checkline {
+  display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+  font-size: .8rem; font-weight: 600; color: var(--ink-2);
+  background: var(--soft); border: 1px solid var(--line); border-radius: var(--r-pill);
+  padding: 5px 12px 5px 10px;
+}
+.checkline input { width: 15px; height: 15px; cursor: pointer; accent-color: var(--accent); margin: 0; }
+.checkline:has(input:disabled) { opacity: .55; cursor: default; }
+
+.seedprogress {
+  display: flex; align-items: center; gap: 10px; margin: 8px 0 14px;
+  background: var(--accent-tint); border: 1px solid var(--accent-tint2); border-radius: var(--r-sm);
+  padding: 11px 14px; font-size: .85rem; font-weight: 600; color: var(--accent);
+}
+.seedprogress-sub { color: var(--ink-3); font-weight: 500; }
 
 .empty {
   text-align: center; padding: 44px 24px 40px;
