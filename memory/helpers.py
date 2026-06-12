@@ -73,6 +73,20 @@ def _split_paragraphs(text: str) -> list[str]:
     return blocks or []
 
 
+def _coalesce_chunks(chunks: list[str], cap: int) -> list[str]:
+    """>cap のチャンクを隣接マージして厳密に cap 個へ畳む (§5.2)。
+
+    ``chunks[:cap]`` による切り捨ては cap 超の発話内容を黙殺してしまうが、ここでは
+    全チャンクを cap 個の連続バケットに折り込むので、長い発話でもすべての内容が
+    行ごとの max-cosine に寄与する。``n>cap`` のとき各バケットは必ず1要素以上
+    （空文字を encode に渡さない）。
+    """
+    n = len(chunks)
+    if n <= cap or cap <= 0:
+        return chunks
+    return ["\n".join(chunks[i * n // cap:(i + 1) * n // cap]) for i in range(cap)]
+
+
 def _utc_datetime(unix) -> datetime:
     """UNIX seconds → aware UTC datetime; OverflowError beyond year 9999.
 

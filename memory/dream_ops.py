@@ -129,8 +129,12 @@ class DreamOpsMixin:
             for r in member_rows:
                 self._physical_delete(r["id"])
             picks = new_mems[: self.memory.dream_max_members]
-            per_mass = (min(sum_A, self.memory.m_max) if is_merge
-                        else min(sum_A / max(1, len(picks)), self.memory.m_max))
+            raw_mass = sum_A if is_merge else sum_A / max(1, len(picks))
+            # 統合はリハーサル行為: 新規書き込み(mass=1.0)以上に「生きて」いなければ
+            # ならない。この床がないと、減衰しきったクラスタは sum_A≈0 → mass 0 となり、
+            # 活性が恒久的に 0 のまま同一 dream() 内の _enforce_capacity で真っ先に
+            # 追放され、統合結果そのものが失われる。
+            per_mass = min(max(raw_mass, 1.0), self.memory.m_max)
             for nm in picks:
                 text = str(nm.get("text", "")).strip()
                 if not text:

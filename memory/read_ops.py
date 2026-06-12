@@ -8,7 +8,11 @@ import numpy as np
 from core.base import RetrieveResult
 from core.embedding import truncate_normalize
 from core.metrics import RecalledItem
-from memory.helpers import _split_paragraphs, lam_mmr
+from memory.helpers import _coalesce_chunks, _shorten, _split_paragraphs, lam_mmr
+
+# Max query chunks embedded per retrieve: bounds encode cost. Content beyond this
+# is coalesced (not dropped) into this many contiguous buckets — see _coalesce_chunks.
+_MAX_QUERY_CHUNKS = 16
 
 
 class ReadOpsMixin:
@@ -18,7 +22,7 @@ class ReadOpsMixin:
     def retrieve(self, query: str, turn: int) -> RetrieveResult:
         now = self.now_unix()
         self._sanitize_timestamps(now)
-        chunks = _split_paragraphs(query)[:16]
+        chunks = _coalesce_chunks(_split_paragraphs(query), _MAX_QUERY_CHUNKS)
         if not chunks:
             return RetrieveResult(pack_text="", recalled=[])
         q_mat = self.provider.encode_query(chunks, dim=self.glob.dim_full)
@@ -102,9 +106,17 @@ class ReadOpsMixin:
         used, lines, recalled, ids = 0, [], [], []
         for it in ranked:
             row = it["row"]
-            line = f"[{int(row['created_at'])} {row['tz']}] {row['text']}　《id:{row['id']}》\n"
+            text = row["text"]
+            line = f"[{int(row['created_at'])} {row['tz']}] {text}　《id:{row['id']}》\n"
             if used + len(line) > self.glob.budget_chars:
-                continue
+                if lines:
+                    continue                       # 既に注入済み → 溢れる追加分のみスキップ
+                # 唯一/最良の一致を過小な予算で握り潰さない: 本文を切り詰めてでも出す。
+                avail = self.glob.budget_chars - (len(line) - len(text))
+                if avail <= 0:
+                    break                          # ヘッダすら入らない予算 → 諦める
+                text = _shorten(text, avail)
+                line = f"[{int(row['created_at'])} {row['tz']}] {text}　《id:{row['id']}》\n"
             lines.append(line)
             used += len(line)
             ids.append(row["id"])
