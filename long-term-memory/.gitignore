@@ -1,4 +1,0 @@
-# Dart tooling artifacts
-.dart_tool/
-build/
-pubspec.lock
