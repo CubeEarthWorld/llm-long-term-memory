@@ -10,7 +10,7 @@ class MaintenanceOpsMixin:
     # machine movement (§5.4) — no LLM
     # ================================================================== #
     def _promote(self, now: float) -> None:
-        """A ≥ θ_up L2/L3 → re-embed text at 768d → L1 (re-fixation; text is canonical)."""
+        """A ≥ θ_up L2/L3 → re-embed text at full width → L1 (re-fixation; text is canonical)."""
         rows = self.store.query(
             "SELECT * FROM memory WHERE tier IN (2,3) AND superseded_by IS NULL")
         for row in rows:
@@ -61,7 +61,7 @@ class MaintenanceOpsMixin:
         if vr is None:
             return
         v = self._vec_array(vr)
-        vt = truncate_normalize(v, self._dim(to_tier))         # MRL: 768→256→128 prefixes
+        vt = truncate_normalize(v, self._dim(to_tier))         # MRL: dim1→dim2→dim3 prefixes
         blob, scale = quantize_int8(vt)
         self.store.exec(
             "UPDATE vec SET dim=?, dtype='int8', scale=?, v=? WHERE memory_id=? AND model_id=?",

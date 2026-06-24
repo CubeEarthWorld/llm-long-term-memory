@@ -11,7 +11,7 @@ from core.embedding import l2_normalize, truncate_normalize
 from core.storage import dequantize_int8, pack_vec, quantize_int8, unpack_vec
 from memory.helpers import ulid
 
-# Max entries in the per-id 768d re-embed cache used by _identity_scan (§5.1).
+# Max entries in the per-id full-dim re-embed cache used by _identity_scan (§5.1).
 _DOC_VEC_CACHE_MAX = 4096
 
 
@@ -101,12 +101,18 @@ class VectorOpsMixin:
         vecs = [decode_unit_vec(r["_v"], r["_dtype"], r["_scale"]) for r in rows]
         return list(rows), np.stack(vecs)
 
-    @staticmethod
-    def _coarse128(vec: np.ndarray) -> np.ndarray:
-        return truncate_normalize(np.asarray(vec, dtype=np.float32), 128)
+    def _coarse(self, vec: np.ndarray) -> np.ndarray:
+        """Truncate any tier vector to the shared coarse dim (``dim_coarse``).
+
+        Used for cross-tier MMR diversity (§4.2) and dream clustering (§6), where
+        vectors from different tiers must live in one common subspace. The coarse
+        dim is config-driven and is guaranteed ≤ every tier dim (see config
+        validation), so this truncation never extends a vector.
+        """
+        return truncate_normalize(np.asarray(vec, dtype=np.float32), self.memory.dim_coarse)
 
     def _doc_vec_cached(self, row) -> np.ndarray:
-        """768d document vector for precision refinement, cached per memory id.
+        """Full-width document vector for precision refinement, cached per memory id.
 
         Safe because text is immutable for a given id (edits create a new row);
         without this, every write re-embeds the same L2/L3 neighbours. Cleared

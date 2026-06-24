@@ -40,7 +40,7 @@ class ReadOpsMixin:
                 prev = cands.get(row["id"])
                 if prev is None or c > prev["cos"]:
                     cands[row["id"]] = {"id": row["id"], "cos": c, "row": row,
-                                        "mmr": self._coarse128(vec)}
+                                        "mmr": self._coarse(vec)}
 
         for c in cands.values():
             A = self.activation(c["row"], now)

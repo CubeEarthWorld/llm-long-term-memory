@@ -20,6 +20,7 @@ def test_tier_capacities():
 def test_vector_dims():
     m = default_config().memory
     assert (m.dim1, m.dim2, m.dim3) == (768, 256, 128)
+    assert m.dim_coarse == 128   # defaults to the coarsest tier
 
 
 def test_half_lives():

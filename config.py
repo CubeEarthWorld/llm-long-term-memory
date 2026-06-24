@@ -42,10 +42,13 @@ class GlobalConfig:
     # Falls back to MEMORY_TZ env, else Asia/Tokyo. ENGRAM stores 'name;+offset'.
     default_timezone: str = os.getenv("MEMORY_TZ", "Asia/Tokyo")
 
-    # Embedding model. EmbeddingGemma native dimension is 768 (L1). MRL truncation
-    # to 256 (L2) / 128 (L3) is applied per tier; see LongTermMemoryConfig.
+    # Embedding model and its full working dimension. The default EmbeddingGemma
+    # native dimension is 768, but any model / dimension may be configured: set
+    # ``dim_full`` to the width you want to embed at, then redefine the per-tier
+    # MRL prefixes in ``LongTermMemoryConfig`` (dim1/dim2/dim3/dim_coarse). The
+    # only constraint is dim_full ≥ dim1 ≥ dim2 ≥ dim3 ≥ dim_coarse > 0.
     embedding_model: str = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
-    dim_full: int = 768
+    dim_full: int = int(os.getenv("EMBEDDING_DIM", "768"))
 
     # LLM provider: "deepseek" or "gemini". Keys come from .env.
     llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek")
@@ -64,9 +67,20 @@ class LongTermMemoryConfig:
     cap1: int = 1000          # L1 episodic
     cap2: int = 3000          # L2 semantic
     cap3: int = 6000          # L3 schema
-    dim1: int = 768           # L1 768d f32
-    dim2: int = 256           # L2 256d int8
-    dim3: int = 128           # L3 128d int8
+
+    # Per-tier embedding dimensions (MRL prefix lengths). Vectors are embedded
+    # once at GlobalConfig.dim_full, then truncated to dim_<tier> per tier (L1
+    # f32, L2/L3 int8). Defaults follow the EmbeddingGemma 768/256/128 profile,
+    # but may be redefined for any weighting model / policy / demand, subject to
+    # the MRL nesting constraint validated in __post_init__:
+    #     dim_full ≥ dim1 ≥ dim2 ≥ dim3 ≥ dim_coarse > 0.
+    dim1: int = 768           # L1 (full-resolution tier, f32)
+    dim2: int = 256           # L2 (int8)
+    dim3: int = 128           # L3 (int8)
+    # Coarse vector shared across tiers for MMR diversity (§4.2) and dream
+    # clustering (§6). Derived by truncating whichever tier vector is on hand, so
+    # it must be ≤ every tier dim. Defaults to the coarsest tier (dim3).
+    dim_coarse: int = 128
 
     # -- Activation half-lives (seconds): L1=7d, L2=90d, L3=3y (§4.1, §8) -- #
     tau1: float = 7 * _DAY
@@ -126,11 +140,51 @@ class LongTermMemoryConfig:
     hard_vec_rows: int = 32768
     decay_exp_cap: float = 65536.0        # max(0,Δt)/τ above this → A=0 (was 64→~192yr; now ~196kyr)
 
+    def __post_init__(self) -> None:
+        self.validate_dims()
+
+    def validate_dims(self) -> None:
+        """Enforce the MRL nesting constraint on the configurable dimensions.
+
+        Vectors are embedded once at the full width then truncated per tier, and
+        the coarse vector is derived from whichever tier vector is on hand, so the
+        dims must form a non-increasing nest of positive integers down to
+        ``dim_coarse``. Called from ``__post_init__`` and again after
+        ``Config.from_dict`` mutates fields (which bypasses ``__post_init__``).
+        """
+        named = (("dim1", self.dim1), ("dim2", self.dim2),
+                 ("dim3", self.dim3), ("dim_coarse", self.dim_coarse))
+        for name, d in named:
+            if not isinstance(d, int) or d <= 0:
+                raise ValueError(f"{name} must be a positive integer (got {d!r}).")
+        if not (self.dim1 >= self.dim2 >= self.dim3 >= self.dim_coarse):
+            raise ValueError(
+                "Embedding dims must be non-increasing (MRL nesting): require "
+                f"dim1({self.dim1}) ≥ dim2({self.dim2}) ≥ dim3({self.dim3}) ≥ "
+                f"dim_coarse({self.dim_coarse})."
+            )
+
 
 @dataclass
 class Config:
     glob: GlobalConfig = field(default_factory=GlobalConfig)
     memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)
+
+    def __post_init__(self) -> None:
+        self.validate()
+
+    def validate(self) -> None:
+        """Validate the dimension settings that span both config sections.
+
+        L1 stores the full-width vector, so its dim cannot exceed the embedding
+        width the model is asked to produce.
+        """
+        self.memory.validate_dims()
+        if self.memory.dim1 > self.glob.dim_full:
+            raise ValueError(
+                f"dim1({self.memory.dim1}) cannot exceed dim_full({self.glob.dim_full}); "
+                "L1 stores the full-width vector, which cannot be truncated upward."
+            )
 
     def to_dict(self) -> dict:
         return {
@@ -146,6 +200,7 @@ class Config:
             for f in fields(dc):
                 if f.name in sub:
                     setattr(dc, f.name, _coerce(sub[f.name], getattr(dc, f.name)))
+        cfg.validate()   # setattr above bypasses __post_init__; re-check dim nesting
         return cfg
 
 

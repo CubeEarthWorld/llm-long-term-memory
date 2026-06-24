@@ -370,11 +370,12 @@ const LABELS = {
   // global
   llm_provider: "LLMプロバイダー", deepseek_model: "Deepseekモデル", gemini_model: "Geminiモデル",
   deepseek_base_url: "Deepseek Base URL", temperature: "temperature", max_output_tokens: "最大出力token",
-  embedding_model: "埋め込みモデル", dim_full: "L1ベクトル次元(768)", budget_chars: "注入予算(字)",
+  embedding_model: "埋め込みモデル", dim_full: "埋め込み全次元(既定768)", budget_chars: "注入予算(字)",
   default_timezone: "既定タイムゾーン", max_turn_log: "ターンログ上限", max_metrics_history: "メトリクス履歴上限",
   // ENGRAM §8 parameters
   cap1: "L1容量(エピソード)", cap2: "L2容量(意味)", cap3: "L3容量(スキーマ)",
-  dim1: "L1次元 768 f32", dim2: "L2次元 256 int8", dim3: "L3次元 128 int8",
+  dim1: "L1次元(既定768 f32)", dim2: "L2次元(既定256 int8)", dim3: "L3次元(既定128 int8)",
+  dim_coarse: "粗ベクトル次元(MMR/夢, 既定128)",
   tau1: "L1半減期τ(秒/7日)", tau2: "L2半減期τ(秒/90日)", tau3: "L3半減期τ(秒/3年)",
   m_max: "mass上限 M_max", refractory_seconds: "不応期(秒)",
   alpha: "活性の床α(スコア)", inject_n: "注入件数", mmr_lambda: "MMR多様性λ",
