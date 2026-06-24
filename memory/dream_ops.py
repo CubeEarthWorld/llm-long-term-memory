@@ -46,7 +46,7 @@ class DreamOpsMixin:
             rows, M = self._tier_candidates(tier)
             if not rows:
                 continue
-            out.extend((row, self._coarse128(vec)) for row, vec in zip(rows, M))
+            out.extend((row, self._coarse(vec)) for row, vec in zip(rows, M))
         return out
 
     def _dream_candidates(self, now: float, force: bool = False) -> list[tuple]:

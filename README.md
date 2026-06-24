@@ -35,6 +35,8 @@ The product name, file layout, and DB filename are unchanged; only the algorithm
 | **L2 semantic** | 3000 | 256-d int8 | 90 days |
 | **L3 schema** | 6000 | 128-d int8 | 3 years |
 
+The vector widths above are the **default** EmbeddingGemma profile, not a hard dependency. Set the embedding width with `EMBEDDING_DIM` (or `GlobalConfig.dim_full`) and the per-tier MRL prefixes with `dim1` / `dim2` / `dim3`, plus `dim_coarse` for the shared MMR / dream-clustering subspace — anything satisfying `dim_full ≥ dim1 ≥ dim2 ≥ dim3 ≥ dim_coarse > 0` is accepted (validated at config load). This lets you match the weighting model, policy, or demand without touching code.
+
 The body text is lossless in every tier; only the search key (vector) degrades on demotion. All conversation-time operations are append-only — physical deletion and consolidation are isolated to the dream phase.
 
 ```sql

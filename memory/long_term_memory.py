@@ -9,8 +9,10 @@ making the DB self-describing). The whole system compresses to four sentences:
 
 * **Text is canonical, vectors are an index.** Memories are short self-contained
   propositions (≤170 chars). The ``vec`` table is a derived, regenerable cache.
-* **Three tiers** (§2): L1 episodic (768d f32, τ=7d), L2 semantic (256d int8,
-  τ=90d), L3 schema (128d int8, τ=3y). MRL truncation = forgetting resolution.
+* **Three tiers** (§2): L1 episodic (f32, τ=7d), L2 semantic (int8, τ=90d),
+  L3 schema (int8, τ=3y). MRL truncation = forgetting resolution. The per-tier
+  dimensions default to 768/256/128 but are config-driven (``dim1``/``dim2``/
+  ``dim3``/``dim_coarse``) so any embedding model or policy can redefine them.
 * **Activation** ``A = mass·2^(−Δt/τ)`` (§4.1) gates nothing but reweights the
   cosine score (§4.2). Identity is pure cosine thresholds (§4.3).
 * **Append-only during conversation.** Physical deletion / consolidation happens
@@ -114,7 +116,7 @@ class LongTermMemory(VectorOpsMixin, WriteOpsMixin, ReadOpsMixin,
         self._clock = None                       # optional virtual clock (experiments)
         self.model_id = glob.embedding_model
         self._write_times: list[float] = []       # soft write-rate window
-        self._doc_vec_cache: dict[str, np.ndarray] = {}  # id → 768d doc vector (text is immutable)
+        self._doc_vec_cache: dict[str, np.ndarray] = {}  # id → full-dim doc vector (text is immutable)
         self._maint_count = 0
         self._snap_dir = os.path.join(os.path.dirname(store.path), "snapshots")
         self.store.execscript(SCHEMA)

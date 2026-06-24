@@ -142,7 +142,10 @@ def reset(body: ConfigBody):
     with LOCK:
         if STATE["running"]:
             raise HTTPException(409, "A job is already running.")
-    cfg = Config.from_dict(body.config)
+    try:
+        cfg = Config.from_dict(body.config)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
     def job():
         init_engine(cfg, wipe=True)
     run_job(job)

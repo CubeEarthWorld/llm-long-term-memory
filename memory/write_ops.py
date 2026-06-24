@@ -61,7 +61,7 @@ class WriteOpsMixin:
         return self._event("inserted", row, now, cos=round(best[1], 3) if best else 0.0)
 
     def _identity_scan(self, v_full: np.ndarray):
-        """Best (id, precise_cos, row) across all tiers; in-band L2/L3 refined at 768d (§5.1)."""
+        """Best (id, precise_cos, row) across all tiers; in-band L2/L3 refined at full width (§5.1)."""
         cands: dict = {}
         for tier in (1, 2, 3):
             rows, M = self._tier_candidates(tier)
@@ -79,7 +79,7 @@ class WriteOpsMixin:
         for mid, (c, row, tier) in cands.items():
             cos = c
             if tier != 1 and c >= band:
-                vs = self._doc_vec_cached(row)             # text is canonical → re-embed at 768d
+                vs = self._doc_vec_cached(row)             # text is canonical → re-embed at full width
                 cos = float(np.dot(v_full, vs))
             if best is None or cos > best[1]:
                 best = (mid, cos, row)
