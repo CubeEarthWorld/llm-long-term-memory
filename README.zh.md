@@ -1,71 +1,43 @@
-# LLM 长期记忆（LLM Long-Term Memory）
+# LLM Long-Term Memory
 
-为 LLM 提供长期记忆的层，其内部引擎是 **ENGRAM v1.1** 规范（[`ENGRAM_spec_v1_1.md`](ENGRAM_spec_v1_1.md)）的完整实现。运行时仅依赖文本嵌入模型（参考实现：EmbeddingGemma）与单文件数据库（SQLite）。生成式 LLM 仅在 **写入、读取后回复、做梦（整合）** 三处使用。
+为 LLM 提供长期记忆的层，实现 **ENGRAM v2**（[`SPEC.md`](SPEC.md)，日文）：一个源自人类记忆原理的**记忆痕迹（trace）模型**，仅依赖**本地嵌入模型**（EmbeddingGemma GGUF，经 llama.cpp 运行）和**单文件 SQLite**。LLM 只在三个时刻生成：写入、使用（并引用）、以及离线的**梦**（整合）。
 
-> 生成只在言语化的瞬间。判断全是距离。遗忘全是算术。破坏只发生在梦中。
+> 只在言语化的瞬间生成。所有判断皆为距离。所有遗忘皆为算术。所有整合皆在梦中。
 
-- **文本是正本，向量是索引。** 记忆是简短的自洽命题（≤170 字）。`vec` 是可重新生成的派生缓存——即使嵌入模型消失，记忆也不会死。
-- **三层**（MRL 截断 = 遗忘的分辨率）：**L1 情景**（768d f32，τ=7天）/ **L2 语义**（256d int8，τ=90天）/ **L3 图式**（128d int8，τ=3年）。
-- **激活** `A = mass·2^(−Δt/τ)` 对余弦得分重新加权；同一性仅靠余弦距离阈值。整库 **<10MB**，检索为全量暴力余弦（`<1ms`，无向量数据库/FAISS 依赖）。
-- 数据库**自描述**：`spec` 表内嵌完整规范全文。
+同一算法也以 Dart 包提供（[`../long-term-memory`](../long-term-memory)），并有跨语言一致性测试：同一脚本场景在两种语言中必须产生相同的执行轨迹。
 
-产品名、文件结构、数据库名保持不变；仅算法、模式、参数与 UI 内容替换为 ENGRAM。
+## 模型概览
 
----
-
-## 三层与激活/得分
-
-| 层 | 容量 | 向量（MRL） | 半衰期 τ |
-|----|------|------------|---------|
-| **L1 情景** | 1000 | 768d f32 | 7 天 |
-| **L2 语义** | 3000 | 256d int8 | 90 天 |
-| **L3 图式** | 6000 | 128d int8 | 3 年 |
-
-正文在所有层均无损；降级时只有检索键（向量）变粗。会话期间仅追加（非破坏）。
+记忆是**痕迹**，只有两个数——上次被回忆的时刻与稳定度（半衰期）——加一个标志（`consolidated`）。
 
 ```text
-A(now)   = mass × 2^( −max(0, now − last_access) / τ_tier )
-回忆更新 : mass ← A(now);  若 now − last_bonus_at ≥ 3600: mass ← min(mass+1, 64)
-A_abs    = ln(1 + A) / ln(1 + 64)
-score(m) = max(0, cos(query, m)) × (α + (1−α) × A_abs),  α = 0.35
-注入     : MMR（λ=0.3）选 5 条，连同表头 ≤1024 字
+R(now)   = 2^(−max(0, now − last_recall) / stability)          可提取性 ∈ [0,1]
+strength = stability · R                                       未来可提取性总量
+a        = max(0, (cos − cosine_floor) / (1 − cosine_floor))   线索激活
+回忆      : stability ← min(stability · (1 + gain·a·(1−R)), S_max);  last_recall ← now
+新痕迹    : stability = clamp(S0 · salience, 1 s, S_max)
 ```
 
-## 同一性阈值（文档—文档）
+| 动词 | 行为 |
+|---|---|
+| `remember(text, salience)` | 完全相同的文本视为复述；否则插入，**从不覆盖**。有邻居（cos ≥ θ_related）的痕迹以*不稳定*状态诞生并使邻居也不稳定（再巩固）。超出容量时，遗忘宽限期（3 天）之外强度最低的痕迹。 |
+| `recall(query)` | 多线索余弦 → `score = a·(α + (1−α)·R)` → 绝对/相对阈值 → MMR → 以 `[unix tz] text 《id》` 注入 ≤1024 字。注入是"暴露"，只强化一半。 |
+| `cite(reply)` | LLM 引用的《id》记忆按"使用"完整强化。 |
+| `forget(id)` | 按 id 物理删除。 |
+| `dream(budget)` | 不稳定痕迹（按稳定度）作为种子，取 cos ≥ θ_related 的邻居簇（≤8），由你的 LLM 判定 **keep** 或 **replace [texts]**。要旨继承最强成员的稳定度加其他成员的"活证据"；与输入无关的输出被视为虚构而拒绝。已整理的存储不会调用 LLM。 |
 
-| cos | 判定 | 动作 |
-|-----|------|------|
-| ≥ 0.97 | 同一命题更新 | 旧记忆立墓碑，插入新记忆（再固化） |
-| 0.85–0.97 | 冲突 | 两者保留 + `conflict` 队列（梦中裁决） |
-| < 0.85 | 新建 | 插入，mass=1 |
+没有层级、计数器、环形队列或维护调用。全部状态有界，计算成本与经过的时间无关；测试套件包含 3000 虚拟年的模拟。
 
-文本完全一致时不新建行，视为回忆（mass+1）。机器迁移（无需 LLM）：晋升 A≥16，降级 A<4，淘汰按 A 升序物理删除 L3 溢出。**不存在不朽记忆**：因 mass≤64，沉默 6τ 后 A<1。
-
-## DREAM（离线，破坏性操作仅在此）
-
-聚类 → LLM 裁决（合并/拆分/不变）→ 物理删除被合并的源。1 次裁决 = 1 个事务。内容寻址指纹 + `dream_log` 防止空转。保留 8 代快照，提示词契约抑制虚构。
-
-## 评测基准
+## 快速开始
 
 ```bash
-python eval/run_eval.py   # 模拟嵌入/LLM + 虚拟时钟，无需 API key
-```
-确定性验证：激活衰减 / 回忆奖励 + 不应期 / 同一性阈值 / 层降级·晋升·淘汰 / 不朽性不存在 / 梦的合并。
-
-## 启动
-
-```bash
-mkdir -p secrets && cp .env.example secrets/.env   # 设置 DEEPSEEK_API_KEY / HF_TOKEN
 python -m venv .venv && .venv\Scripts\activate
 pip install -r requirements.txt
-# Windows: start.bat  /  macOS·Linux: start.sh  → http://localhost:8501
-python cli.py --seed --dream 3 --inspect
+mkdir secrets && copy .env.example secrets\.env       # 填写 DEEPSEEK_API_KEY（或 GEMINI_API_KEY）
+# 将 embeddinggemma-300m-qat-Q4_0.gguf 放入 ./model（https://ai.google.dev/gemma/docs/embeddinggemma）
+start.bat  /  ./start.sh                              # → http://localhost:8501
+python cli.py --seed --dream 5 --inspect              # 命令行
+python -m pytest                                      # 40 个测试（含与 Dart 的一致性测试）；-m slow 为 3000 虚拟年模拟
 ```
 
-对话回合中，模型在回复的同时通过 `save_memory(text)` / `delete_memory(id)` 工具决定保存/删除。默认时区 `Asia/Tokyo`（可用 `MEMORY_TZ` 覆盖）。
-
-详情见 [README.md](README.md) / [docs.html](docs.html) / [ENGRAM_spec_v1_1.md](ENGRAM_spec_v1_1.md)。
-
-## 许可证
-
-[MIT](LICENSE)
+参数（19 个）见 `config.py` 的 `LongTermMemoryConfig` 与 [`SPEC.md`](SPEC.md) §6。许可证：[MIT](LICENSE)。

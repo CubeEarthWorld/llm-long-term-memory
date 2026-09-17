@@ -4,8 +4,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-import pandas as pd
-
 
 @dataclass
 class RecalledItem:
@@ -25,7 +23,6 @@ class TurnMetrics:
     retrieve_ms: float = 0.0
     llm_ms: float = 0.0
     write_ms: float = 0.0
-    maintain_ms: float = 0.0
 
     total_records: int = 0
     counts: dict[str, int] = field(default_factory=dict)
@@ -40,12 +37,13 @@ class TurnMetrics:
     response: str = ""
 
     written_ids: list[Any] = field(default_factory=list)
+    cited: list[str] = field(default_factory=list)
     written_rows: list[dict[str, Any]] = field(default_factory=list)
     write_note: str = ""
 
     @property
     def total_ms(self) -> float:
-        return self.embed_ms + self.retrieve_ms + self.llm_ms + self.write_ms + self.maintain_ms
+        return self.embed_ms + self.retrieve_ms + self.llm_ms + self.write_ms
 
     def to_detail_dict(self, title: str = "") -> dict[str, Any]:
         """Return a rich detail dict suitable for API responses and JSON export."""
@@ -59,12 +57,12 @@ class TurnMetrics:
             "pack_text": self.pack_text,
             "prompt": self.prompt,
             "written": self.written_rows,
+            "cited": self.cited,
             "times": {
                 "total": round(self.total_ms, 1),
                 "llm": round(self.llm_ms, 1),
                 "retrieve": round(self.retrieve_ms, 1),
                 "write": round(self.write_ms, 1),
-                "maintain": round(self.maintain_ms, 1),
                 "embed": round(self.embed_ms, 1),
             },
             "recalled": [
@@ -81,11 +79,10 @@ class TurnMetrics:
             "embed_ms": round(self.embed_ms, 1),
             "retrieve_ms": round(self.retrieve_ms, 1),
             "llm_ms": round(self.llm_ms, 1),
-            "maintain_ms": round(self.maintain_ms, 1),
+            "write_ms": round(self.write_ms, 1),
             "total_ms": round(self.total_ms, 1),
             "records": self.total_records,
-            # ENGRAM tier counts (L1/L2/L3) + ring sizes, from system.stats().
-            **{k: self.counts.get(k, 0) for k in ("L1", "L2", "L3", "tombstones", "conflict", "dream_log")},
+            **{k: self.counts.get(k, 0) for k in ("labile", "unindexed")},
             "pack_chars": self.pack_chars,
             "pack_n": self.pack_n,
             "db_kb": round(self.db_size_bytes / 1024, 1),
@@ -107,9 +104,8 @@ class MetricsRecorder:
     def reset(self) -> None:
         self.history.clear()
 
-    def dataframe(self, system_id: str | None = None) -> pd.DataFrame:
-        rows = [m.row() for m in self.history if system_id is None or m.system_id == system_id]
-        return pd.DataFrame(rows)
+    def rows(self) -> list[dict[str, Any]]:
+        return [m.row() for m in self.history]
 
     def for_turn(self, turn: int, system_id: str) -> TurnMetrics | None:
         return next((m for m in self.history if m.turn == turn and m.system_id == system_id), None)

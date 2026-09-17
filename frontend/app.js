@@ -71,9 +71,9 @@ function SystemCard({ detail }) {
         <span class="metachip">records ${detail.records}</span>
         <span class="metachip">pack ${detail.pack_chars}字 / ${detail.pack_n}件</span>
         <span class="metachip strong">total ${t.total}ms</span>
-        <span class="metachip ghost">llm ${t.llm} · retr ${t.retrieve} · maint ${t.maintain} · embed ${t.embed}</span>
+        <span class="metachip ghost">llm ${t.llm} · recall ${t.retrieve} · write ${t.write} · embed ${t.embed}</span>
       </div>
-      <div class="section-label">想起された記憶（READ・過去文脈として注入）</div>
+      <div class="section-label">想起された記憶（過去文脈として注入 / 引用 ${(detail.cited || []).length} 件）</div>
       <${DataTable} rows=${detail.recalled} />
       <div class="section-label">save_memory / delete_memory の結果</div>
       <${DataTable} rows=${detail.written} />
@@ -136,14 +136,14 @@ function DreamPanel({ state, busy }) {
     setMsg(null);
     setDreaming(true);
     try {
-      const res = await apiPost("/dream", { max_clusters: 5 });
+      const res = await apiPost("/dream", { budget: 5 });
       if (res.n === 0) {
         setMsg(res.message || "Dream 対象の適格クラスタがありません");
         setDreaming(false);
       }
     } catch (e) { setErr(e.message); setDreaming(false); }
   };
-  const DREAM_LABEL = { merge: "統合", split: "分割", none: "変更なし" };
+  const DREAM_LABEL = { replace: "統合", keep: "維持", error: "LLMエラー(再試行)" };
   const inProgress = dreaming || (busy && state.progress && state.progress.startsWith("dreamed"));
   return html`
     <div class="dream">
@@ -154,7 +154,7 @@ function DreamPanel({ state, busy }) {
           ${results.length > 0 && html`<button class="btn ghost sm" onClick=${() => setOpen(!open)}>${open ? "ログを隠す" : `ログ ${results.length}件`}</button>`}
         </div>
       </div>
-      <div class="dream-hint">クラスタ化 → 審理 → 統合/分割。LLM が要点(gist)へまとめ、統合元は物理削除されます（1審理=1トランザクション）。</div>
+      <div class="dream-hint">不安定(labile)な記憶を種に近傍クラスタを作り、LLM が維持(keep)か要旨への置換(replace)を判定します。置換元は削除されます（1クラスタ=1トランザクション、置換前にバックアップ）。</div>
       ${err && html`<div class="err">${err}</div>`}
       ${msg && html`<div class="kpi ok block-msg">${msg}</div>`}
       ${inProgress && html`
@@ -166,18 +166,17 @@ function DreamPanel({ state, busy }) {
         results.map((r, i) => html`
           <div class="dreamcard" key=${i}>
             <div class="metarow">
-              <span class="metachip">cluster ${r.cluster_fp || ""}</span>
               <span class=${"metachip action " + r.action}>${DREAM_LABEL[r.action] || r.action}</span>
-              <span class="metachip ghost">priority ${r.priority}</span>
+              ${r.error && html`<span class="metachip ghost">${r.error}</span>`}
             </div>
             <div class="dreamcols">
               <div class="dream-col">
                 <div class="col-label before">統合元 · ${r.before.length}</div>
-                <ul class="mem-list">${r.before.map((b, j) => html`<li key=${j}><span class="w">L${b.tier} g${b.gen}</span>${b.text}</li>`)}</ul>
+                <ul class="mem-list">${r.before.map((b, j) => html`<li key=${j}><span class="w">R${b.R}</span>${b.text}</li>`)}</ul>
               </div>
               <div class="dream-col">
                 <div class="col-label after">統合後 · ${r.after.length}</div>
-                ${r.after.length ? html`<ul class="mem-list">${r.after.map((a, j) => html`<li key=${j}><span class="w">g${a.gen}</span>${a.text}</li>`)}</ul>` : html`<div class="note">変更なし（維持）</div>`}
+                ${r.after.length ? html`<ul class="mem-list">${r.after.map((a, j) => html`<li key=${j}><span class="w">S${Math.round(a.stability / 86400)}d</span>${a.text}</li>`)}</ul>` : html`<div class="note">維持（変更なし）</div>`}
               </div>
             </div>
           </div>`))}
@@ -279,13 +278,12 @@ function ClusterCard({ cluster }) {
   return html`
     <div class="dreamcard">
       <div class="metarow">
-        <span class="metachip">cluster ${cluster.cluster_fp || ""}</span>
-        <span class="metachip strong">priority ${cluster.priority}</span>
+        <span class="metachip">seed ${cluster.seed || ""}</span>
         <span class="metachip ghost">${cluster.member_count}件</span>
       </div>
       <ul class="mem-list">${cluster.members.map((m, j) => html`
         <li key=${j}>
-          <span class="w">L${m.tier} g${m.gen} A${m.A}</span>
+          <span class="w">R${m.R} S${m.stability_days}d</span>
           <span class="mem-id" title=${m.id}>${m.id.slice(0, 10)}…</span>
           ${m.text}
         </li>`)}
@@ -307,9 +305,9 @@ function DBView() {
         ${clusters && html`
           <div class="tblsection">
             <h2 class="tbl-title">クラスター候補（Dream前プレビュー）<span class="pill">${clusters.total_clusters}</span></h2>
-            <div class="dream-hint">k-means で動的に形成されたクラスタです。Dream 実行時にこのグループが審理（統合/分割）されます。</div>
+            <div class="dream-hint">不安定(labile)な記憶を種に、コサイン ≥ θ_related の近傍で形成されるクラスタです。Dream 実行時にこのグループが審理されます。</div>
             ${clusters.clusters.length === 0
-              ? html`<div class="note">クラスター候補がありません（メモリが ${"<"} 3件、または全クラスタが「変更なし」指紋でスキップされています）。</div>`
+              ? html`<div class="note">クラスター候補がありません（不安定な記憶に近傍がない＝整理済み）。</div>`
               : clusters.clusters.map((c, i) => html`<${ClusterCard} key=${i} cluster=${c} />`)}
           </div>`}
         ${Object.entries(data.tables).map(([tbl, rows]) => html`
@@ -370,31 +368,22 @@ const LABELS = {
   // global
   llm_provider: "LLMプロバイダー", deepseek_model: "Deepseekモデル", gemini_model: "Geminiモデル",
   deepseek_base_url: "Deepseek Base URL", temperature: "temperature", max_output_tokens: "最大出力token",
-  embedding_model: "埋め込みモデル", dim_full: "埋め込み全次元(既定768)", budget_chars: "注入予算(字)",
-  default_timezone: "既定タイムゾーン", max_turn_log: "ターンログ上限", max_metrics_history: "メトリクス履歴上限",
-  // ENGRAM §8 parameters
-  cap1: "L1容量(エピソード)", cap2: "L2容量(意味)", cap3: "L3容量(スキーマ)",
-  dim1: "L1次元(既定768 f32)", dim2: "L2次元(既定256 int8)", dim3: "L3次元(既定128 int8)",
-  dim_coarse: "粗ベクトル次元(MMR/夢, 既定128)",
-  tau1: "L1半減期τ(秒/7日)", tau2: "L2半減期τ(秒/90日)", tau3: "L3半減期τ(秒/3年)",
-  m_max: "mass上限 M_max", refractory_seconds: "不応期(秒)",
-  alpha: "活性の床α(スコア)", inject_n: "注入件数", mmr_lambda: "MMR多様性λ",
-  theta_same: "同一閾値θ_same", theta_conflict: "競合閾値θ_conflict", precise_margin: "精査マージン",
-  theta_up: "昇格閾値θ_up(A)", theta_down: "降格閾値θ_down(A)",
-  text_max: "記憶本文上限(字)", text_hard_max: "本文ハード上限(B)", gen_max: "統合世代上限",
-  dream_budget: "夢の審理数 budget", dream_budget_hard: "夢budgetハード上限",
-  cluster_min: "クラスタ適格(最小件数)", dream_max_members: "1審理の最大メンバ", snapshot_gens: "スナップショット世代",
-  conflict_cap: "conflictリング容量", dream_log_cap: "dream_logリング容量",
-  tombstone_sweep_pct: "墓標掃除(層比率)", tombstone_sweep_age: "墓標掃除(経過秒)",
-  write_rate_per_day: "書込みレート/日", max_writes_per_turn: "1ターン保存上限",
-  tool_fallback: "保存フォールバック(抽出)",
-  hard_memory_rows: "memory総行ハード上限", hard_vec_rows: "vec総行ハード上限", decay_exp_cap: "減衰指数上限(A=0)",
-  score_thresholds: "スコア閾値(カンマ区切り・段階的緩和)",
+  embedding_model: "埋め込みモデル(GGUF)", default_timezone: "既定タイムゾーン",
+  max_turn_log: "ターンログ上限", max_metrics_history: "メトリクス履歴上限",
+  max_writes_per_turn: "1ターン保存上限", tool_fallback: "保存フォールバック(抽出)",
+  // ENGRAM v2 parameters (SPEC §6)
+  capacity: "容量(件)", initial_stability: "初期安定度 S0(秒/1日)", spacing_gain: "間隔効果ゲイン",
+  max_stability: "安定度上限 S_max(秒/10年)", grace_period: "猶予期間(秒/3日)",
+  cosine_floor: "無関係文のコサイン基準(モデル依存)", alpha: "想起可能性の床α", inject_n: "注入件数",
+  mmr_lambda: "MMR多様性λ", min_score: "最小スコア", relative_score: "相対スコア閾値", budget_chars: "注入予算(字)",
+  max_cues: "クエリ手がかり上限", theta_related: "近傍閾値θ_related", dream_budget: "夢のLLM呼び出し数",
+  dream_max_members: "1クラスタ最大件数", gist_min_cosine: "要旨の最小コサイン(作話ガード)",
+  text_max: "記憶本文上限(字)", writes_per_day: "書込み上限/日",
 };
 
 const GLOB_GROUPS = [
   ["LLM", ["llm_provider", "deepseek_model", "gemini_model", "deepseek_base_url", "temperature", "max_output_tokens"]],
-  ["埋め込み・注入", ["embedding_model", "dim_full", "budget_chars", "default_timezone"]],
+  ["埋め込み・ターン", ["embedding_model", "default_timezone", "max_writes_per_turn", "tool_fallback"]],
 ];
 
 function SettingsView({ state, busy, onApplied }) {
@@ -456,7 +445,7 @@ function SettingsView({ state, busy, onApplied }) {
         </div>
       </div>
       <div class="group-card">
-        <div class="group-card-head">ENGRAM v1.1 パラメータ（§8）</div>
+        <div class="group-card-head">ENGRAM v2 パラメータ（SPEC §6）</div>
         <div class="group-card-body">
           <div class="fieldgrid">${Object.entries(cfg.memory).map(([k, v]) => field("memory", k, v))}</div>
         </div>
@@ -471,15 +460,14 @@ function SettingsView({ state, busy, onApplied }) {
 function ExplanationBox() {
   return html`
     <details class="explain">
-      <summary><${Icon} name="sparkle" size=${15} /> ENGRAM v1.1 概要</summary>
+      <summary><${Icon} name="sparkle" size=${15} /> ENGRAM v2 概要</summary>
       <div class="explain-body">
-        <p><b>生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。破壊はすべて夢の中。</b></p>
-        <p>記憶の本体は短い自己完結テキスト(≤170字)で、ベクトルは導出物(索引)です。記憶は3層: <b>L1 エピソード</b>(768d f32, τ=7日) / <b>L2 意味</b>(256d int8, τ=90日) / <b>L3 スキーマ</b>(128d int8, τ=3年)。MRL次元切詰め＝忘却の解像度です。</p>
-        <p>活性 <code>A = mass · 2^(−Δt/τ)</code>。想起のたびに <code>mass</code> を +1(不応期1時間)。スコアは <code>max(0,cos) × (α + (1−α)·A_abs)</code>(α=0.35)、注入5件は MMR で多様化、≤1024字。</p>
-        <p>同一性はコサイン距離のみ(文書—文書): <code>≥0.97</code> 同一更新(旧に墓標+新挿入=再固定化) / <code>0.85–0.97</code> 競合(両保持→conflictキュー) / <code>&lt;0.85</code> 新規。</p>
-        <p>会話中は<b>追記のみ</b>(非破壊)。容量超過は機械移動: A≥16 で昇格(L→L1)、A&lt;4 で降格(次元を粗く)、L3 溢れは活性最下位から物理削除(=この系の死)。</p>
-        <p>💤 Dream(オフライン)だけが破壊的: クラスタ化→LLM審理(統合/分割/変更なし)→統合元を物理削除。1審理=1トランザクション、スナップショット8世代で保護。</p>
-        <p>DBは自己記述: <code>spec</code> テーブルに本仕様全文を同梱。依存は「単一ファイルDB・埋め込みモデル・算術」のみ。</p>
+        <p><b>生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。統合はすべて夢の中。</b></p>
+        <p>記憶は<b>痕跡</b>: 最後に想起した時刻と安定度(半減期)の2つの数を持ちます。想起可能性 <code>R = 2^(−Δt/S)</code>。想起のたびに <code>S ← S·(1 + gain·a·(1−R))</code>（間隔効果・手がかりの活性化 a に比例）。層もカウンタもリングもありません。</p>
+        <p>書込み(remember)は上書きしません。同一テキストはリハーサル、近い記憶は「不安定(labile)」な対として夢で審理されます。容量超過は強度 <code>S·R</code> 最小の古い痕跡を忘却（猶予期間内の新規記憶は保護）。</p>
+        <p>想起(recall)は <code>score = a·(α + (1−α)·R)</code> で選び、MMR で多様化して ≤予算字数を注入。注入は「露出」なので半分だけ強化し、回答が《id》を引用した記憶は cite で完全に強化します。</p>
+        <p>💤 Dream: 不安定な痕跡を種に近傍クラスタを作り、LLM が keep / replace を判定。要旨は最強メンバーの安定度＋生きた証拠を継承。置換前にバックアップ、無関係な出力は作話として拒否。</p>
+        <p>依存は「単一ファイルDB・埋め込みモデル(EmbeddingGemma GGUF、ローカル)・算術」のみ。全状態は有界で、演算コストは経過時間に依存しません。</p>
       </div>
     </details>`;
 }
@@ -637,7 +625,7 @@ function App() {
           <div class="brand-mark"><${Icon} name="sparkle" size=${18} /></div>
           <div class="brand-text">
             <h1>LLM Long-Term Memory</h1>
-            <span class="brand-sub">ENGRAM v1.1 — EmbeddingGemma（ローカル） + Deepseek / Gemini</span>
+            <span class="brand-sub">ENGRAM v2 — EmbeddingGemma GGUF（ローカル） + Deepseek / Gemini</span>
           </div>
         </div>
         <div class="topstatus">

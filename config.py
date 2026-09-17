@@ -1,15 +1,6 @@
-"""Configuration for the LLM Long-Term Memory technical prototype.
-
-The internal memory engine implements the **ENGRAM v1.1** specification
-(see ``ENGRAM_spec_v1_1.md``): a 3-tier store (L1 episodic / L2 semantic /
-L3 schema), activation ``A = mass·2^(−Δt/τ)``, distance-only identity
-judgement, and LLM use confined to write / read / dream.
-
-The product name, file layout, and DB filename are kept; only the algorithm,
-schema, parameters, and UI semantics are ENGRAM. ``GlobalConfig`` holds
-embedding / LLM / injection settings; ``LongTermMemoryConfig`` holds the
-ENGRAM constants of spec §8.
-"""
+"""Configuration: ``GlobalConfig`` (app: LLM, embedding model, timezone, turn
+policy) and ``LongTermMemoryConfig`` (the ENGRAM v2 engine parameters, SPEC §6).
+The engine parameters mirror the Dart ``EngramConfig`` one to one."""
 from __future__ import annotations
 
 import os
@@ -17,152 +8,78 @@ from dataclasses import asdict, dataclass, field, fields
 
 from dotenv import load_dotenv
 
-# Load secrets from git-ignored directory first, then project root as fallback.
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 _SECRETS_ENV = os.path.join(_BASE_DIR, "secrets", ".env")
 if os.path.exists(_SECRETS_ENV):
     load_dotenv(_SECRETS_ENV)
 load_dotenv()
 
-# Duration constants (seconds) for the ENGRAM half-lives.
 _DAY = 24 * 60 * 60
 _YEAR = 365 * _DAY
 
 
 @dataclass
 class GlobalConfig:
-    # Max chars of recalled memory injected into the LLM (spec §8: 注入予算 1024).
-    budget_chars: int = 1024
-    # Max in-memory turn log entries (sliding window) — UI/RAM bound only.
+    # Sliding windows for the UI / RAM only.
     max_turn_log: int = 1000
-    # Max metrics history entries retained in RAM.
     max_metrics_history: int = 1000
-
-    # Default IANA timezone stamped onto memories at write time.
-    # Falls back to MEMORY_TZ env, else Asia/Tokyo. ENGRAM stores 'name;+offset'.
+    # IANA timezone stamped onto memories (offset frozen into 'name;+HH:MM').
     default_timezone: str = os.getenv("MEMORY_TZ", "Asia/Tokyo")
-
-    # Embedding model and its full working dimension. The default EmbeddingGemma
-    # native dimension is 768, but any model / dimension may be configured: set
-    # ``dim_full`` to the width you want to embed at, then redefine the per-tier
-    # MRL prefixes in ``LongTermMemoryConfig`` (dim1/dim2/dim3/dim_coarse). The
-    # only constraint is dim_full ≥ dim1 ≥ dim2 ≥ dim3 ≥ dim_coarse > 0.
-    embedding_model: str = os.getenv("EMBEDDING_MODEL", "google/embeddinggemma-300m")
-    dim_full: int = int(os.getenv("EMBEDDING_DIM", "768"))
-
-    # LLM provider: "deepseek" or "gemini". Keys come from .env.
+    # EmbeddingGemma GGUF (relative paths resolve inside ./model).
+    embedding_model: str = os.getenv("EMBEDDING_MODEL", "embeddinggemma-300m-qat-Q4_0.gguf")
+    # LLM provider: "deepseek" or "gemini". Keys come from secrets/.env.
     llm_provider: str = os.getenv("LLM_PROVIDER", "deepseek")
-    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-v4-flash")
+    deepseek_model: str = os.getenv("DEEPSEEK_MODEL", "deepseek-flash")
     deepseek_base_url: str = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com")
     gemini_model: str = os.getenv("GEMINI_MODEL", "gemini-3.5-flash")
     temperature: float = 0.7
     max_output_tokens: int = 1024
+    # Per-turn policy (app side): tool saves applied per turn, and the extraction
+    # fallback when a turn saved nothing via tools.
+    max_writes_per_turn: int = 8
+    tool_fallback: bool = True
 
 
 @dataclass
 class LongTermMemoryConfig:
-    """ENGRAM v1.1 parameters (spec §8). Constants may be tuned only with a spec record."""
+    """ENGRAM v2 parameters (SPEC §6)."""
 
-    # -- Tier capacities (墓標込み, I4) and MRL vector format (§8 dim/dtype) -- #
-    cap1: int = 1000          # L1 episodic
-    cap2: int = 3000          # L2 semantic
-    cap3: int = 6000          # L3 schema
-
-    # Per-tier embedding dimensions (MRL prefix lengths). Vectors are embedded
-    # once at GlobalConfig.dim_full, then truncated to dim_<tier> per tier (L1
-    # f32, L2/L3 int8). Defaults follow the EmbeddingGemma 768/256/128 profile,
-    # but may be redefined for any weighting model / policy / demand, subject to
-    # the MRL nesting constraint validated in __post_init__:
-    #     dim_full ≥ dim1 ≥ dim2 ≥ dim3 ≥ dim_coarse > 0.
-    dim1: int = 768           # L1 (full-resolution tier, f32)
-    dim2: int = 256           # L2 (int8)
-    dim3: int = 128           # L3 (int8)
-    # Coarse vector shared across tiers for MMR diversity (§4.2) and dream
-    # clustering (§6). Derived by truncating whichever tier vector is on hand, so
-    # it must be ≤ every tier dim. Defaults to the coarsest tier (dim3).
-    dim_coarse: int = 128
-
-    # -- Activation half-lives (seconds): L1=7d, L2=90d, L3=3y (§4.1, §8) -- #
-    tau1: float = 7 * _DAY
-    tau2: float = 90 * _DAY
-    tau3: float = 3 * _YEAR
-
-    # -- Activation / reinforcement (§4.1) -- #
-    m_max: float = 64.0               # mass / activation cap (I1)
-    refractory_seconds: float = 3600  # min interval between mass bonuses (不応期)
-
-    # -- Retrieval score (§4.2) -- #
-    alpha: float = 0.35               # activation floor in score
-    inject_n: int = 5                 # memories injected per READ
-    mmr_lambda: float = 0.3           # MMR diversity penalty
-    score_thresholds: tuple[float, ...] = (0.1, 0.2)  # MMR前のスコア閾値（段階的緩和）
-
-    # -- Identity thresholds (document–document, §4.3) -- #
-    theta_same: float = 0.97          # ≥ → supersede (再固定化)
-    theta_conflict: float = 0.85      # 0.85–0.97 → conflict queue
-    precise_margin: float = 0.03      # WRITE: re-embed at 768d within this band (§5.1)
-
-    # -- Tier movement hysteresis (§4.4) -- #
-    theta_up: float = 16.0            # A ≥ → promote (L2/L3 → L1, in dream)
-    theta_down: float = 4.0           # A < → demotion candidate
-
-    # -- Atomicity of text (§3.1, §8) -- #
-    text_max: int = 170               # max chars of a memory proposition
-    text_hard_max: int = 1024         # hard byte bound (§8.1, I14)
-    gen_max: int = 7                  # consolidation generation cap (I7)
-
-    # -- Dream (§6, §8) -- #
-    dream_budget: int = 5             # adjudications per dream() call (0..4096)
-    dream_budget_hard: int = 4096     # "∞" bound (§8.1)
-    cluster_min: int = 3              # min members for an eligible cluster
-    cluster_cohesion_min: float = 0.5  # minimum mean pairwise cosine for cluster eligibility (§6)
-    dream_max_members: int = 64       # members handed to the LLM per adjudication
-    snapshot_gens: int = 8            # DB snapshot ring before dream (§8)
-
-    # -- Ring buffers (§8, I11) -- #
-    conflict_cap: int = 256
-    dream_log_cap: int = 512
-
-    # -- Housekeeping (§6) -- #
-    tombstone_sweep_pct: float = 0.10     # sweep when tombstones exceed 10% of a tier
-    tombstone_sweep_age: float = 7 * _DAY  # ...or older than 7 days
-
-    # -- Soft-side write rate limit (§5.1; final bound 16384/day is §8.1) -- #
-    write_rate_per_day: int = 2000
-    max_writes_per_turn: int = 8          # cap save_memory tool calls applied per turn
-
-    # -- Robustness net (§ plan): if a turn saved nothing via tools, run one
-    #    extraction fallback that proposes propositions through the same save path. -- #
-    tool_fallback: bool = True
-
-    # -- Safety hard bounds (§8.1) used by validation (I14) -- #
-    hard_memory_rows: int = 16384
-    hard_vec_rows: int = 32768
-    decay_exp_cap: float = 65536.0        # max(0,Δt)/τ above this → A=0 (was 64→~192yr; now ~196kyr)
+    capacity: int = 10000
+    initial_stability: float = _DAY          # S0
+    spacing_gain: float = 3.0                # S ← S·(1 + gain·a·(1−R))
+    max_stability: float = 10 * _YEAR        # no immortal memory
+    grace_period: float = 3 * _DAY           # consolidation window (hippocampal buffer)
+    cosine_floor: float = 0.4                # baseline cosine of unrelated text (EmbeddingGemma ≈ 0.4)
+    alpha: float = 0.35                      # retrievability floor in the score
+    inject_n: int = 5
+    mmr_lambda: float = 0.3
+    min_score: float = 0.1
+    relative_score: float = 0.6
+    budget_chars: int = 1024
+    max_cues: int = 8
+    theta_related: float = 0.75              # neighbourhood for dreams
+    dream_budget: int = 5                    # LLM calls per dream()
+    dream_max_members: int = 8               # blast radius of one verdict
+    gist_min_cosine: float = 0.5             # confabulation guard
+    text_max: int = 170
+    writes_per_day: int = 1000
 
     def __post_init__(self) -> None:
-        self.validate_dims()
+        self.validate()
 
-    def validate_dims(self) -> None:
-        """Enforce the MRL nesting constraint on the configurable dimensions.
-
-        Vectors are embedded once at the full width then truncated per tier, and
-        the coarse vector is derived from whichever tier vector is on hand, so the
-        dims must form a non-increasing nest of positive integers down to
-        ``dim_coarse``. Called from ``__post_init__`` and again after
-        ``Config.from_dict`` mutates fields (which bypasses ``__post_init__``).
-        """
-        named = (("dim1", self.dim1), ("dim2", self.dim2),
-                 ("dim3", self.dim3), ("dim_coarse", self.dim_coarse))
-        for name, d in named:
-            if not isinstance(d, int) or d <= 0:
-                raise ValueError(f"{name} must be a positive integer (got {d!r}).")
-        if not (self.dim1 >= self.dim2 >= self.dim3 >= self.dim_coarse):
-            raise ValueError(
-                "Embedding dims must be non-increasing (MRL nesting): require "
-                f"dim1({self.dim1}) ≥ dim2({self.dim2}) ≥ dim3({self.dim3}) ≥ "
-                f"dim_coarse({self.dim_coarse})."
-            )
+    def validate(self) -> None:
+        if self.capacity <= 0:
+            raise ValueError("capacity must be positive")
+        if not (0 < self.initial_stability <= self.max_stability):
+            raise ValueError("require 0 < initial_stability <= max_stability")
+        if not (0 <= self.cosine_floor < 1):
+            raise ValueError("cosine_floor must be in [0, 1)")
+        if not (0 <= self.alpha <= 1) or not (0 <= self.relative_score <= 1):
+            raise ValueError("alpha and relative_score must be in [0, 1]")
+        if not (0 < self.theta_related < 1):
+            raise ValueError("theta_related must be in (0, 1)")
+        if self.dream_max_members < 2 or self.inject_n <= 0 or self.budget_chars <= 0 or self.text_max <= 0:
+            raise ValueError("dream_max_members ≥ 2; inject_n, budget_chars, text_max > 0")
 
 
 @dataclass
@@ -170,27 +87,8 @@ class Config:
     glob: GlobalConfig = field(default_factory=GlobalConfig)
     memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)
 
-    def __post_init__(self) -> None:
-        self.validate()
-
-    def validate(self) -> None:
-        """Validate the dimension settings that span both config sections.
-
-        L1 stores the full-width vector, so its dim cannot exceed the embedding
-        width the model is asked to produce.
-        """
-        self.memory.validate_dims()
-        if self.memory.dim1 > self.glob.dim_full:
-            raise ValueError(
-                f"dim1({self.memory.dim1}) cannot exceed dim_full({self.glob.dim_full}); "
-                "L1 stores the full-width vector, which cannot be truncated upward."
-            )
-
     def to_dict(self) -> dict:
-        return {
-            "glob": asdict(self.glob),
-            "memory": asdict(self.memory),
-        }
+        return {"glob": asdict(self.glob), "memory": asdict(self.memory)}
 
     @staticmethod
     def from_dict(d: dict) -> "Config":
@@ -200,7 +98,7 @@ class Config:
             for f in fields(dc):
                 if f.name in sub:
                     setattr(dc, f.name, _coerce(sub[f.name], getattr(dc, f.name)))
-        cfg.validate()   # setattr above bypasses __post_init__; re-check dim nesting
+        cfg.memory.validate()
         return cfg
 
 
@@ -215,14 +113,6 @@ def _coerce(value, default):
             return float(value)
         if isinstance(default, str):
             return str(value)
-        if isinstance(default, tuple):
-            # JSON arrays arrive as list; also accept comma-separated string.
-            if isinstance(value, (list, tuple)):
-                return tuple(_coerce(v, default[0]) if default else v for v in value)
-            if isinstance(value, str):
-                parts = [p.strip() for p in value.split(",") if p.strip()]
-                return tuple(_coerce(p, default[0]) if default else p for p in parts)
-            return default
     except (TypeError, ValueError):
         return default
     return value

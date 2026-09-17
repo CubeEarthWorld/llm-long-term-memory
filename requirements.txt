@@ -1,4 +1,4 @@
-# LLM Long-Term Memory prototype
+# LLM Long-Term Memory (ENGRAM v2)
 # Backend: FastAPI (serves REST + the no-build React frontend in ./frontend)
 fastapi>=0.110
 uvicorn>=0.29
@@ -7,13 +7,9 @@ uvicorn>=0.29
 openai>=1.40            # Deepseek (OpenAI-compatible endpoint)
 google-genai>=0.3       # Gemini (optional)
 
-# Local embedding: EmbeddingGemma (downloads into ./model)
-sentence-transformers>=5.0
-transformers>=4.56
-torch>=2.4
+# Local embedding: EmbeddingGemma GGUF via llama.cpp (put the .gguf in ./model)
+llama-cpp-python>=0.3
 
 # data / env
 numpy>=1.26
-pandas>=2.0
 python-dotenv>=1.0
-python-ulid>=3.0

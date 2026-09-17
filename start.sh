@@ -2,9 +2,6 @@
 # === Launcher (Linux) — same as start.command ===
 set -e
 cd "$(dirname "$0")"
-export HF_HOME="$(pwd)/model"
-export HF_HUB_CACHE="$(pwd)/model/hub"
-export SENTENCE_TRANSFORMERS_HOME="$(pwd)/model"
 export PYTHONUTF8=1
 PY=python3
 command -v "$PY" >/dev/null 2>&1 || PY=python
