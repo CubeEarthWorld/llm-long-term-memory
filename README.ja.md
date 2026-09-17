@@ -1,72 +1,89 @@
 # LLM Long-Term Memory
 
-LLM に長期記憶を持たせるレイヤー。内部エンジンは **ENGRAM v1.1** 仕様（[`ENGRAM_spec_v1_1.md`](ENGRAM_spec_v1_1.md)）の完全実装です。常時依存はテキスト埋め込みモデル（参照実装: EmbeddingGemma）と単一ファイルDB（SQLite）のみ。生成LLMの使用は **書込み・読出し後の応答・夢（統合）** の3点に限定されます。
+LLM に長期記憶を与えるレイヤー。**ENGRAM v2**（[`SPEC.md`](SPEC.md)）を実装しています。人間の記憶の原理から導いた**痕跡（trace）モデル**で、**ローカルの埋め込みモデル**（EmbeddingGemma の GGUF を llama.cpp で実行）と**単一ファイルの SQLite** だけで動きます。LLM が生成するのは 書込み・利用（引用）・オフラインの**夢**（統合）の 3 点だけです。
 
-> 生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。破壊はすべて夢の中。
+> 生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。統合はすべて夢の中。
 
-- **テキストが正本、ベクトルは索引。** 記憶は短い自己完結テキスト（≤170字の1命題）。`vec` は導出物（キャッシュ）で再生成可能。埋め込みモデルが滅んでも記憶は死なない。
-- **3層**（MRL次元切詰め＝忘却の解像度）: **L1 エピソード**（768d f32, τ=7日）/ **L2 意味**（256d int8, τ=90日）/ **L3 スキーマ**（128d int8, τ=3年）。
-- **活性** `A = mass·2^(−Δt/τ)` がコサインスコアを再重み付け。同一性はコサイン距離の閾値のみ。DB全体 **<10MB**、検索は全件総当たりコサイン（`<1ms`、ベクトルDB/FAISS 依存ゼロ）。
-- DBは**自己記述**: `spec` テーブルに本仕様全文を平文同梱。
-
-製品名・ファイル構成・DB名は維持し、アルゴリズム・スキーマ・パラメータ・UIの中身のみ ENGRAM 化しています。
+同じアルゴリズムを Dart パッケージ（[`../long-term-memory`](../long-term-memory)）としても提供しています。共通のシナリオを両言語で再生して同一トレースを要求する言語間一致テストがあります。
 
 ---
 
-## 3層と活性・スコア
+## モデルの全体像
 
-| 層 | 容量 | ベクトル（MRL） | 半減期 τ |
-|----|------|----------------|---------|
-| **L1 エピソード** | 1000 | 768d f32 | 7日 |
-| **L2 意味** | 3000 | 256d int8 | 90日 |
-| **L3 スキーマ** | 6000 | 128d int8 | 3年 |
-
-上記のベクトル次元は EmbeddingGemma の**既定値**であり、固定依存ではありません。埋め込み全次元は `EMBEDDING_DIM`（または `GlobalConfig.dim_full`）、層ごとの MRL 切詰め長は `dim1` / `dim2` / `dim3`、MMR・夢クラスタリングの共有部分空間は `dim_coarse` で定義できます。`dim_full ≥ dim1 ≥ dim2 ≥ dim3 ≥ dim_coarse > 0` を満たす任意の組み合わせが受理されます（設定読込時に検証）。これにより、使用する重み付けモデル・方針・需要に合わせて、コードを変更せず次元数を定義できます。
-
-本文は全層で無劣化。降格で劣化するのは検索キー（ベクトル）のみ。会話中は追記のみ（非破壊）。
+記憶は**痕跡**です。持つのは 2 つの数 — 最後に想起した時刻と安定度（半減期）— と 1 つのフラグ（`consolidated`）だけ。
 
 ```text
-A(now)   = mass × 2^( −max(0, now − last_access) / τ_tier )
-想起更新 : mass ← A(now);  if now − last_bonus_at ≥ 3600: mass ← min(mass+1, 64)
-A_abs    = ln(1 + A) / ln(1 + 64)
-score(m) = max(0, cos(query, m)) × (α + (1−α) × A_abs),  α = 0.35
-注入     : MMR（λ=0.3）で5件、ヘッダ込み ≤1024字
+R(now)   = 2^(−max(0, now − last_recall) / stability)          想起可能性 ∈ [0,1]
+strength = stability · R                                       将来の想起可能性の総量
+a        = max(0, (cos − cosine_floor) / (1 − cosine_floor))   手がかりの活性化
+想起      : stability ← min(stability · (1 + gain·a·(1−R)), S_max);  last_recall ← now
+新規      : stability = clamp(S0 · salience, 1 s, S_max)
 ```
 
-## 同一性の閾値（文書—文書）
+| 動詞 | 動作 |
+|---|---|
+| `remember(text, salience)` | 同一テキストはリハーサル。それ以外は挿入し、**決して上書きしない**。近傍（cos ≥ θ_related）がある痕跡は*不安定*に生まれ、その近傍も不安定化する（再固定化）。容量超過時は猶予期間（3 日）外で strength 最小の痕跡を忘却。 |
+| `recall(query)` | 複数手がかりのコサイン → `score = a·(α + (1−α)·R)` → 絶対・相対閾値 → MMR → `[unix tz] text 《id》` を ≤1024 字で注入。注入は「露出」なので半分だけ強化。 |
+| `cite(reply)` | LLM が引用した《id》の記憶を「使用」として完全に強化。 |
+| `forget(id)` | id 指定の物理削除。 |
+| `dream(budget)` | 不安定な痕跡（安定度順）を種に cos ≥ θ_related の近傍クラスタ（≤8）を作り、LLM が **keep** か **replace [texts]** を判定。要旨は最強成員の安定度＋他の「生きた証拠」を継承。無関係な出力は作話として拒否。整理済みのストアでは LLM を呼ばない。 |
 
-| cos | 判定 | 動作 |
-|-----|------|------|
-| ≥ 0.97 | 同一命題の更新 | 旧に墓標、新を挿入（再固定化） |
-| 0.85–0.97 | 競合 | 両保持＋`conflict` キュー（夢で裁定） |
-| < 0.85 | 新規 | 挿入、mass=1 |
+層・カウンタ・リング・保守呼び出しは存在しません。全状態が有界なので演算コストは経過時間に依存せず、3000 仮想年のシミュレーションがテストに含まれています。
 
-完全一致テキストは新規行を作らず想起扱い（mass+1）。機械移動（LLM不要）: 昇格 A≥16、降格 A<4、淘汰は L3 溢れを A 昇順で物理削除。**不死記憶の非存在**: mass≤64 より沈黙後 6τ で A<1。
-
-## DREAM（オフライン・破壊的操作はここだけ）
-
-クラスタ化→LLM審理（統合/分割/変更なし）→統合元を物理削除。1審理=1トランザクション。内容アドレス指紋＋`dream_log` で空転防止。スナップショット8世代で保護、プロンプト契約で作話を抑止。
-
-## 評価ベンチ
+## クイックスタート
 
 ```bash
-python eval/run_eval.py   # モック埋め込み/LLM＋仮想時計。APIキー不要
-```
-活性減衰 / 想起ボーナス＋不応期 / 同一性閾値 / 層降格・昇格・淘汰 / 不死非存在 / 夢の統合 を決定論的に検証。
-
-## 起動
-
-```bash
-mkdir -p secrets && cp .env.example secrets/.env   # DEEPSEEK_API_KEY / HF_TOKEN を設定
-python -m venv .venv && .venv\Scripts\activate
+python -m venv .venv && .venv\Scripts\activate      # macOS/Linux: source .venv/bin/activate
 pip install -r requirements.txt
-# Windows: start.bat  /  macOS・Linux: start.sh  → http://localhost:8501
-python cli.py --seed --dream 3 --inspect
+mkdir secrets && copy .env.example secrets\.env       # DEEPSEEK_API_KEY（または GEMINI_API_KEY）を記入
+# embeddinggemma-300m-qat-Q4_0.gguf を ./model に置く（https://ai.google.dev/gemma/docs/embeddinggemma）
+start.bat            # Windows  → http://localhost:8501
+./start.sh           # macOS / Linux
 ```
 
-会話ターンでは、モデルが応答しつつ `save_memory(text)` / `delete_memory(id)` ツールで保存・削除を判断します。既定TZは `Asia/Tokyo`（`MEMORY_TZ` で上書き）。
+CLI:
 
-詳細: [README.md](README.md) / [docs.html](docs.html) / [ENGRAM_spec_v1_1.md](ENGRAM_spec_v1_1.md)
+```bash
+python cli.py --seed --dream 5 --inspect     # シード再生 → LLM 5 回の夢 → ストアをダンプ
+python cli.py --say "京都に住んでいます"
+python eval/run_eval.py                      # 決定論的ベンチマーク（モデル・キー不要）
+python -m pytest                             # 40 テスト（Dart との言語間一致テスト含む）
+python -m pytest -m slow                     # 3000 仮想年シミュレーション（数分）
+```
+
+## 1 ターンの流れ
+
+```
+recall(発話) → LLM（システムプロンプト + 記憶パック + save_memory / delete_memory ツール） → cite(応答)
+```
+
+LLM は長期的に役立つ事実を代名詞なし・絶対日付の命題として保存し（任意で `salience` 1–10 = 情動的重み）、いま提示された事実は再保存せず、使った記憶の《id》を応答末尾に引用します。保存が無かったターンは抽出呼び出しが 1 回だけ同じ経路で補います。
+
+## ストレージ
+
+1 テーブル `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector)` ＋ UI 用のターンログ。全件を RAM に持ち（1 万件 × 768 次元で約 35 MB）、SQLite は永続化のみ。毎回の夢の前に 8 世代のスナップショットを回します。埋め込みモデルを替えると本文から全件を再埋め込みします（テキストが正本、ベクトルは索引）。
+
+## パラメータ
+
+19 個のエンジンパラメータは `LongTermMemoryConfig`（`config.py`）にあり UI から編集できます（[`SPEC.md`](SPEC.md) §6）。`cosine_floor = 0.4`・`theta_related = 0.75`・`gist_min_cosine = 0.5` は埋め込みモデルのコサイン分布に依存し、EmbeddingGemma 向けに設定済みです。
+
+## 構成
+
+```
+├── memory/engine.py      # ENGRAM v2 エンジン（remember / recall / cite / forget / dream）
+├── memory/model.py       # 痕跡 Memory
+├── memory/util.py        # id・本文の清浄化・手がかり分割・任意の年のローカル時刻
+├── core/embedding.py     # EmbeddingGemma GGUF（llama.cpp、オフライン）
+├── core/storage.py       # SQLite 基盤 + スナップショットリング
+├── core/llm_client.py    # DeepSeek / Gemini: 会話（ツール + 引用）・抽出・夢
+├── core/base.py          # ターン実行
+├── core/engine.py        # エンジン組立・シード再生・ターンログ
+├── server.py / frontend  # FastAPI + ビルド不要の React UI
+├── cli.py                # ヘッドレス実行
+├── eval/                 # 決定論的モック + 振る舞いベンチマーク
+├── tests/                # pytest（一致テストは ../long-term-memory/test/conformance を読む）
+└── SPEC.md               # 仕様書
+```
 
 ## ライセンス
 

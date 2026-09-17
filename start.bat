@@ -4,9 +4,6 @@ setlocal enableextensions
 cd /d "%~dp0"
 
 REM keep the EmbeddingGemma model inside this folder (portable)
-set "HF_HOME=%~dp0model"
-set "HF_HUB_CACHE=%~dp0model\hub"
-set "SENTENCE_TRANSFORMERS_HOME=%~dp0model"
 set "PYTHONUTF8=1"
 set "PORT=8501"
 
@@ -32,7 +29,7 @@ if not exist ".venv\Scripts\python.exe" (
 call ".venv\Scripts\activate.bat"
 
 if not exist ".venv\.deps_ok" (
-  echo [setup] installing dependencies; first run downloads torch etc, please wait ...
+  echo [setup] installing dependencies; first run, please wait ...
   python -m pip install --upgrade pip
   pip install -r requirements.txt
   if errorlevel 1 (

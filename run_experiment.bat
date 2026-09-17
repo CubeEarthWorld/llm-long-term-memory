@@ -2,9 +2,6 @@
 REM === Double-click: run the 10-utterance experiment headlessly and save results ===
 setlocal
 cd /d "%~dp0"
-set "HF_HOME=%~dp0model"
-set "HF_HUB_CACHE=%~dp0model\hub"
-set "SENTENCE_TRANSFORMERS_HOME=%~dp0model"
 set "PYTHONUTF8=1"
 
 if not exist ".venv\Scripts\python.exe" (

@@ -71,9 +71,8 @@ class TurnBody(BaseModel):
 
 
 class DreamBody(BaseModel):
-    """POST /api/dream payload — how many clusters to consolidate."""
-    max_clusters: int = 1
-    force: bool = True
+    """POST /api/dream payload — LLM adjudications to spend."""
+    budget: int = 5
 
 
 class SeedRunBody(BaseModel):
@@ -187,7 +186,7 @@ def seed(body: SeedRunBody | None = None):
 
 @app.post("/api/turn")
 def turn(body: TurnBody):
-    """Run one user turn (retrieve → respond → write → maintain) asynchronously."""
+    """Run one user turn (recall → respond → write → cite) asynchronously."""
     text = body.text.strip()
     if not text:
         raise HTTPException(400, "空の発話です。")
@@ -209,19 +208,17 @@ def dream(body: DreamBody):
             raise HTTPException(503, "Engine is still starting.")
         if STATE["running"]:
             raise HTTPException(409, "A job is already running.")
-        system = engine["system"]
-        candidates = system._dream_candidates(system.now_unix(), force=bool(body.force))
+        candidates = engine["system"].clusters()
     if not candidates:
-        return {"ok": True, "n": 0, "message": "Dream 対象の適格クラスタがありません（メンバー3件未満、または「変更なし」指紋でスキップ）"}
-    n = max(1, int(body.max_clusters))
-    force = bool(body.force)
+        return {"ok": True, "n": 0, "message": "Dream 対象のクラスタがありません（不安定な記憶に近傍がない＝整理済み）"}
+    budget = max(1, int(body.budget))
     def job():
         engine = ENGINE["e"]
         if not engine or not STATE["ready"]:
             return
-        results = run_dream(engine, max_clusters=n, force=force)
-        merged = sum(1 for r in results if r.get("action") != "none")
-        STATE["progress"] = f"dreamed {len(results)} cluster(s), {merged} consolidated"
+        results = run_dream(engine, budget=budget)
+        replaced = sum(1 for r in results if r.get("action") == "replace")
+        STATE["progress"] = f"dreamed {len(results)} cluster(s), {replaced} consolidated"
     run_job(job)
     return {"ok": True, "n": len(candidates)}
 
@@ -259,12 +256,11 @@ def db():
         system = engine["system"]
         return {
             "stats": {
-                "total_records": system.total_records(),
                 **system.stats(),
                 "vector_mb": round(system.vector_mb(), 3),
                 "db_kb": round(system.db_size_bytes() / 1024, 1),
             },
-            "tables": system.snapshot(),
+            "tables": {"memory": system.snapshot()},
         }
 
 
@@ -277,25 +273,13 @@ def clusters():
             return {"clusters": [], "message": "エンジン未起動"}
         system = engine["system"]
         now = system.now_unix()
-        candidates = system._dream_candidates(now, force=True)
-    result = []
-    for fp, members, prio in candidates:
-        member_list = []
-        for m in members:
-            member_list.append({
-                "id": m["id"],
-                "text": m["text"],
-                "tier": int(m["tier"]),
-                "gen": int(m["gen"]),
-                "A": round(system.activation(m, now), 2),
-            })
-        result.append({
-            "cluster_fp": fp[:12],
-            "priority": round(prio, 3),
-            "member_count": len(members),
-            "members": member_list,
-        })
-    # Also include any clusters that were already adjudicated (from dream_log)
+        candidates = system.clusters()
+    result = [{
+        "seed": members[0].id[:10],
+        "member_count": len(members),
+        "members": [{"id": m.id, "text": m.text, "R": round(system.retrievability(m, now), 2),
+                     "stability_days": round(m.stability / 86400, 1)} for m in members],
+    } for members in candidates]
     return {"clusters": result, "total_clusters": len(result)}
 
 
@@ -306,20 +290,14 @@ def metrics():
         engine = ENGINE["e"]
         if not engine:
             return {"rows": [], "invariants": {}}
-        hist = list(engine["recorder"].history)
+        rows = engine["recorder"].rows()
         mem = ENGINE["cfg"].memory
-        budget = ENGINE["cfg"].glob.budget_chars
-        cap = mem.cap1 + mem.cap2 + mem.cap3
-    rows = [m.row() for m in hist]
     return {
-        "budget": budget,
-        "cap": cap,
+        "budget": mem.budget_chars,
+        "cap": mem.capacity,
         "invariants": {
-            f"全 pack <= {budget}字 (注入予算)": all(r["pack_chars"] <= budget for r in rows),
-            f"全 records <= {cap}件 (L1+L2+L3 容量)": all(r["records"] <= cap for r in rows),
-            f"L1 <= {mem.cap1}件": all((r.get("L1") or 0) <= mem.cap1 for r in rows),
-            f"L2 <= {mem.cap2}件": all((r.get("L2") or 0) <= mem.cap2 for r in rows),
-            f"L3 <= {mem.cap3}件": all((r.get("L3") or 0) <= mem.cap3 for r in rows),
+            f"全 pack <= {mem.budget_chars}字 (注入予算)": all(r["pack_chars"] <= mem.budget_chars for r in rows),
+            f"全 records <= {mem.capacity}件 (capacity)": all(r["records"] <= mem.capacity for r in rows),
         },
         "rows": rows,
     }

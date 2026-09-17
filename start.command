@@ -4,9 +4,6 @@
 set -e
 cd "$(dirname "$0")"
 
-export HF_HOME="$(pwd)/model"
-export HF_HUB_CACHE="$(pwd)/model/hub"
-export SENTENCE_TRANSFORMERS_HOME="$(pwd)/model"
 export PYTHONUTF8=1
 
 PY=python3
@@ -18,7 +15,7 @@ if [ ! -x ".venv/bin/python" ]; then
 fi
 source .venv/bin/activate
 
-echo "[setup] installing dependencies (first run downloads torch etc; please wait) ..."
+echo "[setup] installing dependencies (first run; please wait) ..."
 python -m pip install --upgrade pip
 pip install -r requirements.txt
 

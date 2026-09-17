@@ -52,7 +52,7 @@ def _print_turn(engine: dict, turn: int) -> None:
     if not m.recalled:
         print("  想起なし")
         return
-    print(f"  LLMが呼び出した記憶 ({len(m.recalled)}):")
+    print(f"  想起された記憶 ({len(m.recalled)}) / 引用 {len(m.cited)}:")
     for r in m.recalled:
         extra = " ".join(f"{k}={v}" for k, v in list(r.extra.items())[:5])
         print(f"     - [{r.score:.2f}] {r.text[:80]}  ({extra})")
@@ -64,30 +64,29 @@ def _print_dream(results: list) -> None:
     print(f"DREAM  ({len(results)} クラスタ処理)")
     print("=" * 78)
     if not results:
-        print("  対象クラスタなし（サイズ/クールダウン条件で除外）")
+        print("  対象クラスタなし（不安定な記憶に近傍がない）")
         return
     for r in results:
-        print(f"\n-- cluster {r.get('cluster_fp', '')}  action={r['action']}  priority={r['priority']}")
+        print(f"\n-- action={r['action']}" + (f"  error={r['error']}" if r.get('error') else ""))
         print(f"   統合元 ({len(r['before'])}):")
         for b in r["before"]:
-            print(f"     - [L{b.get('tier', '?')} g{b.get('gen', 0)}] {b['text'][:70]}")
+            print(f"     - [R={b.get('R')}] {b['text'][:70]}")
         if r["after"]:
             print(f"   統合後 ({len(r['after'])}):")
             for a in r["after"]:
-                print(f"     + [g{a.get('gen', 0)}] {a['text'][:70]}")
+                print(f"     + [S={a.get('stability')}s] {a['text'][:70]}")
         else:
-            print("   統合後: （変更なし）")
+            print("   統合後: （維持）")
 
 
 def _summary(engine: dict) -> None:
     """Print high-level invariants and final DB statistics."""
     print("\n" + "#" * 78 + "\n# サマリ\n" + "#" * 78)
-    df = engine["recorder"].dataframe()
+    rows = engine["recorder"].rows()
     cfg = engine["cfg"]
-    cap = cfg.memory.cap1 + cfg.memory.cap2 + cfg.memory.cap3
-    if not df.empty:
-        print(f"  全 pack <= {cfg.glob.budget_chars}字 : {(df['pack_chars'] <= cfg.glob.budget_chars).all()}")
-        print(f"  全 records <= {cap}件 : {(df['records'] <= cap).all()}")
+    if rows:
+        print(f"  全 pack <= {cfg.memory.budget_chars}字 : {all(r['pack_chars'] <= cfg.memory.budget_chars for r in rows)}")
+        print(f"  全 records <= {cfg.memory.capacity}件 : {all(r['records'] <= cfg.memory.capacity for r in rows)}")
     s = engine["system"]
     print(f"  {SYSTEM_TITLE}: records={s.total_records()}  {s.stats()}  "
           f"vec={s.vector_mb():.3f}MB  db={s.db_size_bytes() / 1024:.1f}KB")
@@ -121,8 +120,8 @@ def main() -> int:
     ap.add_argument("--seed", dest="seed", action="store_true", default=True)
     ap.add_argument("--no-seed", dest="seed", action="store_false")
     ap.add_argument("--say", action="append", default=[], help="run an extra turn with this text")
-    ap.add_argument("--dream", nargs="?", type=int, const=1, default=0,
-                    help="run a dreaming (consolidation) pass over the top-N clusters after seeding")
+    ap.add_argument("--dream", nargs="?", type=int, const=5, default=0,
+                    help="run a dreaming (consolidation) pass with this LLM budget after seeding")
     ap.add_argument("--provider", default=None, help="deepseek | gemini (override)")
     ap.add_argument("--inspect", action="store_true", help="dump the LLM Long-Term Memory DB tables")
     ap.add_argument("--out", default=os.path.join(DATA_DIR, "results.json"))
@@ -149,14 +148,14 @@ def main() -> int:
             def _on_seed_progress(t: int, u: str) -> None:
                 _print_turn(engine, t)
 
-            run_seed(engine, on_progress=_on_seed_progress)
+            run_seed(engine, on_progress=_on_seed_progress, restore_clock=False)
 
         for text in args.say:
             t = run_turn(engine, text)
             _print_turn(engine, t)
 
         if args.dream:
-            results = run_dream(engine, max_clusters=args.dream)
+            results = run_dream(engine, budget=args.dream)
             _print_dream(results)
 
         if args.inspect:

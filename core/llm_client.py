@@ -1,14 +1,11 @@
-"""Unified LLM client for the LLM Long-Term Memory prototype (ENGRAM v1.1).
+"""Unified LLM client (ENGRAM v2). Generation is confined to three points:
 
-Generation is confined to three points (spec §1, §13.6):
-* **converse** — the conversation turn. The model answers the user and decides,
-  via the ``save_memory`` / ``delete_memory`` function-calling tools (§5.1, §5.3),
-  what durable facts to write. Injected memories are framed as past context, not
-  instructions (prompt-injection guard, §5.2).
-* **extract_save_candidates** — a soft-side robustness net: when a turn saved
-  nothing via tools, propose self-contained propositions to store through the
-  same ``save_memory`` path.
-* **dream_cluster** — sleep-like consolidation (§6): merge / split / none.
+* **converse** — the conversation turn: answer the user and decide, via the
+  ``save_memory`` / ``delete_memory`` tools, what durable facts to write; cite the
+  injected memories that were actually used (``《id:…》``) so the engine can
+  strengthen them as *used* rather than merely exposed.
+* **extract_save_candidates** — soft-side robustness net when a turn saved nothing.
+* **dream_cluster** — sleep-like consolidation (SPEC §5): keep / replace.
 """
 from __future__ import annotations
 
@@ -30,10 +27,13 @@ _DEFAULT_SYSTEM_PROMPT = (
     "・ユーザーの発話に簡潔に答えてください。\n"
     "・会話から長期的に役立つ事実(名前・好み・所属・継続的な予定や制約・明示的な指示)が判明したら、"
     "save_memory を呼んで保存してください。1つの事実につき1回呼び、text は代名詞を使わない自己完結文で170字以内にしてください"
-    "(例『ユーザーは抹茶味のアイスクリームが好き』)。挨拶・天気・一時的な雑談・一般知識は保存しないでください。\n"
+    "(例『ユーザーは抹茶味のアイスクリームが好き』)。挨拶・天気・一時的な雑談・一般知識は保存しないでください。「# 想起された記憶」に既にある事実は再保存しないでください(変更・訂正があるときだけ保存)。\n"
+    "・salience は事実の重要度・情動的な重み(1=通常、最大10=極めて重要・強い感情を伴う)です。通常は省略してください。\n"
     "・日付や予定を保存するときは「今日」「明日」「来週」「再来週」などの相対表現を使わず、"
     "「# 現在日時」を基準に絶対日付(YYYY-MM-DD、できれば曜日も)へ変換して text に書いてください"
     "(例『再来週の水曜に会議』→『2026-06-03(水)に会議がある』)。\n"
+    "・回答の中で「# 想起された記憶」を実際に使った場合は、使った記憶の《id:...》を回答末尾にそのまま引用してください"
+    "(使っていなければ引用しない)。\n"
     "・ユーザーが明示的に過去の記憶の削除/忘却を望んだ場合のみ、注入された《id:...》を使って delete_memory(id) を呼んでください。"
 )
 
@@ -52,11 +52,13 @@ _SAVE_TOOL = {
             "長期的に役立つ事実を1命題=1呼び出しで長期記憶に保存する。"
             "text は代名詞・指示語を含まない自己完結文・170字以内。"
             "日付・予定は「来週」などの相対表現でなく絶対日付(YYYY-MM-DD)で記述する。"
+            "salience は重要度・情動的な重み(1=通常、最大10)。通常は省略。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
-                "text": {"type": "string", "description": "保存する自己完結した1命題（≤170字）"}
+                "text": {"type": "string", "description": "保存する自己完結した1命題（≤170字）"},
+                "salience": {"type": "number", "description": "重要度・情動的な重み 1(通常)〜10(極めて重要)"},
             },
             "required": ["text"],
         },
@@ -84,32 +86,29 @@ _DEFAULT_EXTRACT_INSTRUCTION = (
     "各事実は代名詞や指示語を含まない自己完結文(170字以内)にし、1事実=1要素に分割してください。\n"
     "日付や予定は「今日」「明日」「来週」「再来週」などの相対表現を使わず、"
     "現在日時を基準に絶対日付(YYYY-MM-DD、できれば曜日も)へ変換して記述してください。\n"
+    "「# 既に記憶している事実」にある内容は抽出しないでください(変更・訂正がある場合だけ抽出)。\n"
     'JSON オブジェクト {{"memories": ["文1", "文2"]}} のみを返してください。該当なしは {{"memories": []}}。\n\n'
-    "# ユーザー発話\n{user_text}\n\n# アシスタント応答\n{assistant_text}"
+    "# 既に記憶している事実\n{known}\n\n# ユーザー発話\n{user_text}\n\n# アシスタント応答\n{assistant_text}"
 )
 
 _DEFAULT_EXTRACT_SYSTEM_PROMPT = "You are a memory extraction engine. Return JSON only."
 
 _DEFAULT_DREAM_INSTRUCTION = (
-    "あなたは長期記憶を睡眠中に整理する統合エンジンです(ENGRAM の夢フェーズ)。\n"
+    "あなたは長期記憶を睡眠中に整理する統合エンジンです(夢フェーズ)。\n"
     "現在時刻: {current_time}\n"
-    "以下は意味的に近いクラスタに属する記憶です。各記憶には id・内容時刻(local_time/timezone)・"
-    "統合世代 gen・活性 A があります。local_time はその記憶が書かれた時点の時刻です。\n\n"
+    "以下は意味的に近い記憶のクラスタです。各記憶には id・内容時刻(local_time/timezone)・想起可能性 R があります。"
+    "local_time はその記憶が述べられた時点の時刻です。\n\n"
     "厳守: 入力に存在しない事実を書かないこと(作話禁止)。\n"
-    "厳守: 「今日」「明日」「来週」「再来週」などの相対時間表現は、その記憶の local_time を基準に"
-    "絶対日付(YYYY-MM-DD、できれば曜日も)へ変換し、新しい text に相対表現を残さないこと"
-    "(例 local_time が 2026-05-20 の『再来週の水曜に会議』→『2026-06-03(水)に会議』)。"
-    "統合後の記憶は現在時刻で作り直されるため、相対表現を残すと指す日付がズレます。\n\n"
+    "厳守: 「今日」「明日」「来週」などの相対時間表現は、その記憶の local_time を基準に"
+    "絶対日付(YYYY-MM-DD、できれば曜日も)へ変換し、新しい text に相対表現を残さないこと。\n\n"
     "次のいずれかを選んでください:\n"
-    "- merge(全統合/一部統合): 重複・関連する記憶をより少数の要点(gist)へ統合・抽象化する。"
-    "細かいエピソードの枝葉は削り、後で役立つ命題を残す。現在時刻より前に終わった予定は過去の事実として書き直す"
-    "(例『2026年7月に旅行予定』→『2026年7月に旅行した』)。矛盾は local_time が新しい記憶を優先。\n"
-    "- split(分割再記述): 1つの記憶に複数の事実が詰まっている場合、独立した記憶へ分割する。\n"
-    "- none(変更なし): 整理が不要なら何もしない。\n\n"
-    "無理に1つへまとめず、異なる事実は別々に残してください。各新記憶 text は代名詞を含まない自己完結文・170字以内。\n"
-    "timezone は IANA 名(例 Asia/Tokyo)。出力は JSON オブジェクトのみ:\n"
-    '{"action": "merge|split|none", "memories": [{"text": "...", "timezone": "Asia/Tokyo"}]}\n'
-    "action が none のときは memories を空配列にしてください。\n\n"
+    "- replace: 重複・言い換え・更新・矛盾を整理し、より少数の要点(gist)へ統合する。"
+    "矛盾は local_time が新しい記憶を優先し、変化は命題に書き込む(例『2025年は東京、2026年に大阪へ転居』)。"
+    "現在時刻より前に終わった予定は過去の事実として書き直す(例『2026年7月に旅行予定』→『2026年7月に旅行した』)。"
+    "1つの記憶に複数の事実が詰まっていれば独立した記憶へ分ける。異なる事実を無理に1つへまとめない。\n"
+    "- keep: 整理が不要なら何もしない。\n\n"
+    "各新記憶 text は代名詞を含まない自己完結文・170字以内。「〜時点で確認」のような確認時刻のメタ情報は書かない(事実が変化した場合の日付だけを書く)。出力は JSON オブジェクトのみ:\n"
+    '{"action": "replace", "memories": ["...", "..."]} または {"action": "keep"}\n\n'
     "# クラスタ内の記憶\n{listing}\n"
 )
 
@@ -165,7 +164,7 @@ class LLMClient:
     def __init__(
         self,
         provider: str = "deepseek",
-        deepseek_model: str = "deepseek-v4-flash",
+        deepseek_model: str = "deepseek-flash",
         deepseek_base_url: str = "https://api.deepseek.com",
         gemini_model: str = "gemini-3.5-flash",
         temperature: float = 0.7,
@@ -192,14 +191,14 @@ class LLMClient:
             if self.provider == "deepseek":
                 key = os.getenv("DEEPSEEK_API_KEY")
                 if not key:
-                    raise RuntimeError("DEEPSEEK_API_KEY is not set. Check .env.")
+                    raise RuntimeError("DEEPSEEK_API_KEY is not set. Check secrets/.env.")
                 from openai import OpenAI
 
                 self._client = OpenAI(api_key=key, base_url=self.deepseek_base_url)
             elif self.provider == "gemini":
                 key = os.getenv("GEMINI_API_KEY")
                 if not key:
-                    raise RuntimeError("GEMINI_API_KEY is not set. Check .env.")
+                    raise RuntimeError("GEMINI_API_KEY is not set. Check secrets/.env.")
                 from google import genai
 
                 self._client = genai.Client(api_key=key)
@@ -241,7 +240,7 @@ class LLMClient:
     # ================================================================== #
     def converse(self, memory_pack: str, user_text: str, tools: dict[str, Callable],
                  current_time: str = "") -> ConverseResult:
-        """Answer the user and let the model call save/delete tools (§5.1, §5.3)."""
+        """Answer the user and let the model call save/delete tools."""
         prompt = self._build_prompt(memory_pack, user_text, current_time)
         if self._client is None:
             return ConverseResult("", [], 0.0, False, self.init_error, prompt, 0)
@@ -328,13 +327,14 @@ class LLMClient:
     # extraction fallback (soft side) and dream consolidation
     # ================================================================== #
     def extract_save_candidates(self, user_text: str, assistant_text: str,
-                                current_time: str = "") -> list[str]:
+                                current_time: str = "", known: str = "") -> list[str]:
         """Propose self-contained propositions to store when no tool save happened."""
         if self._client is None:
             return []
         instruction = (
             self._get_prompt("extract_instruction", _DEFAULT_EXTRACT_INSTRUCTION)
             .replace("{user_text}", user_text).replace("{assistant_text}", assistant_text)
+            .replace("{known}", known.strip() or "(なし)")
             .replace("{current_time}", current_time or "(不明)")
         )
         sys_prompt = self._get_prompt("extract_system_prompt", _DEFAULT_EXTRACT_SYSTEM_PROMPT)
@@ -347,20 +347,19 @@ class LLMClient:
             return []
 
     def dream_cluster(self, members: list[dict], current_time: str = "") -> dict:
-        """Sleep-like consolidation of one cluster (§6). Returns {action, memories:[{text,timezone}]}."""
-        if self._client is None or not members:
-            return {"action": "none", "memories": []}
+        """Consolidate one cluster (SPEC §5): {action: keep|replace, memories: [str]}.
+        Raises when the LLM is unavailable so the engine can leave the cluster for retry."""
+        if self._client is None:
+            raise RuntimeError(self.init_error or "LLM not initialised")
+        if not members:
+            return {"action": "keep", "memories": []}
         listing = json.dumps(members, ensure_ascii=False, indent=2)
         instruction = (self._get_prompt("dream_instruction", _DEFAULT_DREAM_INSTRUCTION)
                        .replace("{listing}", listing)
                        .replace("{current_time}", current_time or "(不明)"))
         sys_prompt = self._get_prompt("dream_system_prompt", _DEFAULT_DREAM_SYSTEM_PROMPT)
-        try:
-            raw = self._chat(sys_prompt, instruction, json_mode=True, temperature=0.2, label="dream_cluster")
-            return _parse_dream(raw)
-        except Exception:
-            logger.warning("dream_cluster failed after retries", exc_info=True)
-            return {"action": "none", "memories": []}
+        raw = self._chat(sys_prompt, instruction, json_mode=True, temperature=0.2, label="dream_cluster")
+        return _parse_dream(raw)
 
     def _chat(self, system: str, user: str, *, json_mode: bool = False,
               temperature: float | None = None, label: str = "chat") -> str:
@@ -431,15 +430,14 @@ def _parse_texts(text: str | None) -> list[str]:
 
 
 def _parse_dream(text: str | None) -> dict:
-    """Parse a dreaming decision: {"action": ..., "memories": [{"text","timezone"}]}."""
+    """Parse a dream verdict: {"action": "keep"} or {"action": "replace", "memories": [...]}.
+    Lenient: strings or {text} objects; unknown action with memories ⇒ replace; garbage ⇒ keep."""
     obj = _loads_relaxed(text)
     if not isinstance(obj, dict):
-        return {"action": "none", "memories": []}
-    action = str(obj.get("action", "none")).strip().lower()
-    if action not in ("merge", "split", "none"):
-        action = "merge" if obj.get("memories") else "none"
+        return {"action": "keep", "memories": []}
+    action = str(obj.get("action", "")).strip().lower()
     mems = obj.get("memories")
-    if not isinstance(mems, list):
-        return {"action": action, "memories": []}
-    clean = [m for m in mems if isinstance(m, dict) and _text_of(m)]
-    return {"action": action, "memories": clean}
+    if action == "keep" or not isinstance(mems, list):
+        return {"action": "keep", "memories": []}
+    texts = [t for t in (_text_of(m) for m in mems) if t]
+    return {"action": "replace" if texts else "keep", "memories": texts}

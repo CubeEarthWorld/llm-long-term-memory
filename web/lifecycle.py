@@ -24,9 +24,8 @@ from web.state import ENGINE, LOCK, SEED, STATE
 def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
     """Build or rebuild the engine in the current thread.
 
-    Disposes any existing engine first.  If wipe=False and a previous DB exists,
-    maintain() is called once to gracefully catch up on decayed memories.
-    State flags (ready / init_error) are updated for the UI polling loop.
+    Disposes any existing engine first. State flags (ready / init_error) are
+    updated for the UI polling loop.
     """
     with LOCK:
         STATE["ready"] = False
@@ -35,19 +34,6 @@ def init_engine(cfg: Config | None = None, wipe: bool = False) -> None:
             dispose_engine(ENGINE["e"])
             ENGINE["e"] = build_engine(cfg, wipe=wipe, seed=SEED["items"])
             ENGINE["cfg"] = cfg
-            # After a long downtime, let maintenance catch up on capacity (tombstone
-            # sweep + demotion/eviction) over a few bounded passes instead of doing it
-            # all at the first turn.
-            if not wipe:
-                try:
-                    system = ENGINE["e"]["system"]
-                    for _ in range(20):
-                        before = system.total_records()
-                        system.maintain(ENGINE["e"]["turn"])
-                        if before == system.total_records():
-                            break
-                except Exception:  # noqa: BLE001
-                    traceback.print_exc()
             STATE["init_error"] = None
             STATE["ready"] = True
         except Exception as exc:  # noqa: BLE001

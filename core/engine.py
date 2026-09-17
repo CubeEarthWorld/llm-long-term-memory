@@ -20,7 +20,7 @@ from core.embedding import EmbeddingProvider, get_provider
 from core.llm_client import LLMClient
 from core.metrics import MetricsRecorder
 from core.storage import Store
-from memory.long_term_memory import LongTermMemory
+from memory.engine import LongTermMemory
 from seed_utterances import SEED_ADVANCE, SEED_UTTERANCES
 
 # Virtual-clock advance units used by seed utterances (e.g. "5y", "8d", "12h").
@@ -139,7 +139,7 @@ def build_engine(cfg: Config, wipe: bool = False, seed: list[dict[str, str]] | N
         wipe: If True, delete any existing SQLite DB before opening.
         seed: Optional list of seed items; falls back to the built-in scenario.
     """
-    provider = get_provider(cfg.glob.embedding_model, cfg.glob.dim_full)
+    provider = get_provider(cfg.glob.embedding_model)
     llm = LLMClient(
         provider=cfg.glob.llm_provider,
         deepseek_model=cfg.glob.deepseek_model,
@@ -160,7 +160,7 @@ def build_engine(cfg: Config, wipe: bool = False, seed: list[dict[str, str]] | N
     start_time: float | None = None
     max_turn = 0
     if not wipe:
-        persisted = system.load_turn_log()
+        persisted = store.load_turn_log(cfg.glob.max_turn_log)
         for row in persisted:
             system_detail = {}
             try:
@@ -222,6 +222,7 @@ def dispose_engine(engine: Engine | None) -> None:
 def reset_state(engine: Engine) -> None:
     """Reset the memory system, metrics, and turn log while keeping the DB open."""
     engine["system"].reset()
+    engine["store"].clear()
     engine["system"].set_clock(None)  # drop any virtual seed clock -> back to real time
     engine["recorder"].reset()
     engine["turn"] = 0
@@ -231,7 +232,7 @@ def reset_state(engine: Engine) -> None:
 
 
 def run_turn(engine: Engine, utterance: str, note: str = "") -> int:
-    """Execute one user turn (retrieve → respond → write → maintain) and append to the log.
+    """Execute one user turn (recall → respond → write → cite) and append to the log.
 
     Args:
         utterance: Raw user text.
@@ -258,8 +259,8 @@ def run_turn(engine: Engine, utterance: str, note: str = "") -> int:
     engine["log"].append(entry)
 
     # Persist to DB so turn log survives restarts.
-    system = engine["system"]
-    system.save_turn_log(turn, utterance, note, now, json.dumps(system_detail, ensure_ascii=False))
+    engine["store"].save_turn_log(turn, utterance, note, now, json.dumps(system_detail, ensure_ascii=False),
+                                  cfg.glob.max_turn_log)
 
     # Sliding window to prevent unbounded in-memory growth during very long sessions.
     max_log = cfg.glob.max_turn_log
@@ -268,19 +269,20 @@ def run_turn(engine: Engine, utterance: str, note: str = "") -> int:
     return turn
 
 
-def run_dream(engine: Engine, max_clusters: int = 1, force: bool = False) -> list[dict[str, Any]]:
-    """Trigger memory consolidation (dreaming) on the engine's memory system."""
-    results = engine["system"].dream(max_clusters=max_clusters, force=force)
+def run_dream(engine: Engine, budget: int | None = None) -> list[dict[str, Any]]:
+    """Trigger memory consolidation (dreaming): ≤ budget LLM adjudications."""
+    results = engine["system"].dream(budget=budget)
     engine["last_dream"] = results
     return results
 
 
-def run_seed(engine: Engine, on_progress: Callable[[int, str], None] | None = None) -> None:
+def run_seed(engine: Engine, on_progress: Callable[[int, str], None] | None = None,
+             restore_clock: bool = True) -> None:
     """Replay seed utterances along a virtual timeline to exercise forgetting.
 
     The first utterance is anchored at the current wall-clock time.  Each item's
     "advance" field (e.g. "5y") cumulatively pushes the virtual clock forward,
-    so memories genuinely lose activation and demote across tiers between widely-spaced turns.
+    so memories genuinely decay between widely-spaced turns.
     This is useful for deterministic demonstration of long-term forgetting.
     """
     state = {"offset": 0.0}
@@ -292,6 +294,8 @@ def run_seed(engine: Engine, on_progress: Callable[[int, str], None] | None = No
             if on_progress:
                 on_progress(turn, item["text"])
     finally:
-        # Always restore real clock, even if seed replay is interrupted.
-        engine["system"].set_clock(None)
+        # Restore the real clock (headless runs keep the virtual one so a following dream
+        # sees the seeded memories in its past rather than its future).
+        if restore_clock:
+            engine["system"].set_clock(None)
     engine["seeded"] = True
