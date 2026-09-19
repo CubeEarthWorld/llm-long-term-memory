@@ -1,5 +1,5 @@
 @echo off
-REM === Double-click: run the 10-utterance experiment headlessly and save results ===
+REM === Double-click: run the seed experiment headlessly and save results ===
 setlocal
 cd /d "%~dp0"
 set "PYTHONUTF8=1"

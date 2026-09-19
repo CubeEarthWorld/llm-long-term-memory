@@ -37,7 +37,7 @@ mkdir secrets && copy .env.example secrets\.env       # 填写 DEEPSEEK_API_KEY�
 # 将 embeddinggemma-300m-qat-Q4_0.gguf 放入 ./model（https://ai.google.dev/gemma/docs/embeddinggemma）
 start.bat  /  ./start.sh                              # → http://localhost:8501
 python cli.py --seed --dream 5 --inspect              # 命令行
-python -m pytest                                      # 40 个测试（含与 Dart 的一致性测试）；-m slow 为 3000 虚拟年模拟
+python -m pytest                                      # 确定性测试（无需模型与密钥，含与 Dart 的一致性测试）；-m slow 为 3000 虚拟年模拟
 ```
 
 参数（19 个）见 `config.py` 的 `LongTermMemoryConfig` 与 [`SPEC.md`](SPEC.md) §6。许可证：[MIT](LICENSE)。

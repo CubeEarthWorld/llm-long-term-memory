@@ -9,9 +9,9 @@ import time
 
 import numpy as np
 
-from core import BASE_DIR
+from config import ROOT
 
-MODEL_DIR = os.path.join(BASE_DIR, "model")
+MODEL_DIR = os.path.join(ROOT, "model")
 
 
 def l2_normalize(mat: np.ndarray) -> np.ndarray:

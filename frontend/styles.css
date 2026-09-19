@@ -173,7 +173,6 @@ code, pre { font-family: var(--mono); }
 .btn.danger { background: var(--panel); color: var(--err); border-color: var(--err-bd); box-shadow: var(--sh-sm); }
 .btn.danger:hover { background: var(--err-tint); }
 .btn.sm { padding: 6px 11px; font-size: .8rem; }
-.btn.block { width: 100%; justify-content: center; margin-top: 8px; }
 .btn:disabled { opacity: .45; cursor: not-allowed; box-shadow: none; }
 
 /* ----------------------------------------------------------------
@@ -283,9 +282,6 @@ code, pre { font-family: var(--mono); }
 .metachip.strong { background: var(--ink); color: #fff; border-color: transparent; font-weight: 600; }
 .metachip.ghost { background: transparent; color: var(--ink-3); }
 .metachip.action { font-weight: 700; text-transform: uppercase; letter-spacing: .03em; }
-.metachip.action.merge { background: var(--accent-tint); color: var(--accent-ink); border-color: var(--accent-tint2); }
-.metachip.action.split { background: var(--warn-tint); color: var(--warn); border-color: #f0d9b8; }
-.metachip.action.none  { background: var(--line-2); color: var(--ink-3); }
 
 .section-label {
   font-size: .72rem; font-weight: 700; color: var(--ink-3);
@@ -350,7 +346,6 @@ pre.pack {
   background: var(--soft); border: 1px solid var(--line); border-radius: var(--r-xs); padding: 1px 6px;
   font-variant-numeric: tabular-nums;
 }
-.tzpill { font-size: .66rem; color: var(--dream); background: var(--dream-tint); border-radius: var(--r-xs); padding: 1px 6px; }
 
 /* ----------------------------------------------------------------
    Tables
@@ -468,8 +463,6 @@ tbody tr:hover td { background: var(--soft); }
 /* ----------------------------------------------------------------
    Misc
    ---------------------------------------------------------------- */
-.badge { display: inline-flex; align-items: center; padding: 2px 9px; border-radius: var(--r-pill); font-size: .7rem; font-weight: 700; color: #fff; }
-.badge.ok { background: var(--ok); } .badge.warn { background: var(--warn); } .badge.err { background: var(--err); } .badge.busy { background: var(--ink-3); }
 .note { color: var(--ink-3); font-size: .82rem; }
 .err { color: var(--err); background: var(--err-tint); border: 1px solid var(--err-bd); border-radius: var(--r-sm); padding: 9px 12px; font-size: .82rem; font-weight: 500; margin: 8px 0; }
 .pill { font-size: .7rem; padding: 2px 8px; border-radius: var(--r-pill); background: var(--soft); border: 1px solid var(--line); color: var(--ink-3); font-weight: 600; }

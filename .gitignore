@@ -3,7 +3,8 @@
 secrets/
 
 # Generated data & caches
-# Keep CSV prompts and seed data under version control; ignore runtime artifacts only.
+# data/ holds runtime artifacts only (the built-in seed scenario lives in core/seed.py).
+data/seed.csv
 data/*.db
 data/*.db-*
 data/*.log
@@ -16,7 +17,6 @@ __pycache__/
 *.db
 *.sqlite
 *.sqlite3
-.streamlit/secrets.toml
 
 # OS-generated files
 .DS_Store

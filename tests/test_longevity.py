@@ -7,7 +7,7 @@ import random
 import pytest
 
 from core.storage import Store
-from eval.mocks import FakeEmbeddingProvider
+from fakes import FakeEmbeddingProvider
 from memory.util import fmt_local
 
 _DAY = 86400

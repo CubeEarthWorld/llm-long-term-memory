@@ -33,11 +33,12 @@ CREATE TABLE IF NOT EXISTS turn_log (
 );
 """
 
+_SNAPSHOT_GENS = 8
+
 
 class Store:
-    def __init__(self, path: str, snapshot_gens: int = 8):
+    def __init__(self, path: str):
         self.path = path
-        self.snapshot_gens = snapshot_gens
         if path != ":memory:":
             os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
         self.conn = sqlite3.connect(path, check_same_thread=False)
@@ -84,7 +85,7 @@ class Store:
             self._in_txn = False
 
     def backup(self) -> str | None:
-        """Copy the DB into a rotating ring of ``snapshot_gens`` files (before each dream)."""
+        """Copy the DB into a rotating ring of snapshot files (before each dream)."""
         if self.path == ":memory:":
             return None
         try:
@@ -97,7 +98,7 @@ class Store:
                     self.conn.backup(bck)
             finally:
                 bck.close()
-            for old in sorted(_glob.glob(os.path.join(snap_dir, "snap_*.db")))[:-self.snapshot_gens]:
+            for old in sorted(_glob.glob(os.path.join(snap_dir, "snap_*.db")))[:-_SNAPSHOT_GENS]:
                 try:
                     os.remove(old)
                 except OSError:
@@ -137,11 +138,11 @@ class Store:
         except Exception:
             pass
 
-    def wipe_file(self) -> None:
-        self.close()
+    @staticmethod
+    def delete_files(path: str) -> None:
+        """Best-effort removal of a closed DB (a locked file is left for ``clear``)."""
         for s in ("", "-wal", "-shm"):
-            if os.path.exists(self.path + s):
-                try:
-                    os.remove(self.path + s)
-                except Exception:
-                    pass
+            try:
+                os.remove(path + s)
+            except OSError:
+                pass

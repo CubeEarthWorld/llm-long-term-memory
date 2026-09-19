@@ -46,8 +46,7 @@ CLI:
 ```bash
 python cli.py --seed --dream 5 --inspect     # シード再生 → LLM 5 回の夢 → ストアをダンプ
 python cli.py --say "京都に住んでいます"
-python eval/run_eval.py                      # 決定論的ベンチマーク（モデル・キー不要）
-python -m pytest                             # 40 テスト（Dart との言語間一致テスト含む）
+python -m pytest                             # 決定論的テスト一式（モデル・キー不要、Dart との言語間一致テスト含む）
 python -m pytest -m slow                     # 3000 仮想年シミュレーション（数分）
 ```
 
@@ -76,12 +75,12 @@ LLM は長期的に役立つ事実を代名詞なし・絶対日付の命題と�
 ├── core/embedding.py     # EmbeddingGemma GGUF（llama.cpp、オフライン）
 ├── core/storage.py       # SQLite 基盤 + スナップショットリング
 ├── core/llm_client.py    # DeepSeek / Gemini: 会話（ツール + 引用）・抽出・夢
-├── core/base.py          # ターン実行
-├── core/engine.py        # エンジン組立・シード再生・ターンログ
-├── server.py / frontend  # FastAPI + ビルド不要の React UI
+├── core/turn.py          # ターン実行（+ core/metrics.py）
+├── core/session.py       # アプリセッション: 組立・ターンログ・シード再生・夢
+├── core/seed.py          # 既定シードシナリオ + シード CSV
+├── server.py / web/jobs.py / frontend  # FastAPI ルート・ジョブ状態・ビルド不要の React UI
 ├── cli.py                # ヘッドレス実行
-├── eval/                 # 決定論的モック + 振る舞いベンチマーク
-├── tests/                # pytest（一致テストは ../long-term-memory/test/conformance を読む）
+├── tests/                # pytest + 決定論的フェイク（一致テストは ../long-term-memory/test/conformance を読む）
 └── SPEC.md               # 仕様書
 ```
 

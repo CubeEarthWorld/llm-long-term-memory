@@ -4,19 +4,12 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-
-@dataclass
-class RecalledItem:
-    mem_id: Any
-    text: str
-    score: float
-    extra: dict[str, Any] = field(default_factory=dict)
+from config import SYSTEM_ID, SYSTEM_TITLE
 
 
 @dataclass
 class TurnMetrics:
     turn: int
-    system_id: str
     utterance: str
 
     embed_ms: float = 0.0
@@ -31,12 +24,11 @@ class TurnMetrics:
 
     pack_chars: int = 0
     pack_n: int = 0
-    recalled: list[RecalledItem] = field(default_factory=list)
+    recalled: list[dict[str, Any]] = field(default_factory=list)   # engine recall items
     pack_text: str = ""
     prompt: str = ""
     response: str = ""
 
-    written_ids: list[Any] = field(default_factory=list)
     cited: list[str] = field(default_factory=list)
     written_rows: list[dict[str, Any]] = field(default_factory=list)
     write_note: str = ""
@@ -45,10 +37,10 @@ class TurnMetrics:
     def total_ms(self) -> float:
         return self.embed_ms + self.retrieve_ms + self.llm_ms + self.write_ms
 
-    def to_detail_dict(self, title: str = "") -> dict[str, Any]:
+    def to_detail_dict(self) -> dict[str, Any]:
         """Return a rich detail dict suitable for API responses and JSON export."""
         return {
-            "title": title,
+            "title": SYSTEM_TITLE,
             "response": self.response,
             "write_note": self.write_note,
             "records": self.total_records,
@@ -65,16 +57,13 @@ class TurnMetrics:
                 "write": round(self.write_ms, 1),
                 "embed": round(self.embed_ms, 1),
             },
-            "recalled": [
-                {"id": item.mem_id, "text": item.text, "score": round(item.score, 3), **item.extra}
-                for item in self.recalled
-            ],
+            "recalled": self.recalled,
         }
 
     def row(self) -> dict[str, Any]:
         return {
             "turn": self.turn,
-            "system": self.system_id,
+            "system": SYSTEM_ID,
             "utterance": self.utterance,
             "embed_ms": round(self.embed_ms, 1),
             "retrieve_ms": round(self.retrieve_ms, 1),
@@ -107,8 +96,5 @@ class MetricsRecorder:
     def rows(self) -> list[dict[str, Any]]:
         return [m.row() for m in self.history]
 
-    def for_turn(self, turn: int, system_id: str) -> TurnMetrics | None:
-        return next((m for m in self.history if m.turn == turn and m.system_id == system_id), None)
-
-    def latest_turn(self) -> int:
-        return max((m.turn for m in self.history), default=0)
+    def for_turn(self, turn: int) -> TurnMetrics | None:
+        return next((m for m in self.history if m.turn == turn), None)

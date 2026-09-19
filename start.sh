@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# === Launcher (Linux) — same as start.command ===
+# === Launcher (macOS / Linux) — creates .venv, installs dependencies, starts the web app ===
 set -e
 cd "$(dirname "$0")"
 export PYTHONUTF8=1
