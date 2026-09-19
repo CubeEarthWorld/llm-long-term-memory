@@ -1,1 +1,1 @@
-"""Web server support package: shared state and engine lifecycle for server.py."""
+"""Web layer: server runtime state and background jobs (see jobs.py)."""

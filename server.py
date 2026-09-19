@@ -124,8 +124,9 @@ def reset(body: ConfigBody):
 @app.post("/api/reset-db")
 def reset_db():
     """Soft-reset: erase memories, turn log and metrics without rebuilding the session."""
-    s = session(idle=True)
-    with LOCK:
+    s = session()
+    with LOCK:                 # idle check under LOCK: a seed replay admits between turns
+        require_idle()
         s.reset()
     return {"ok": True}
 
@@ -245,9 +246,8 @@ def seed_utts():
 
 
 def _set_seed(items: list[dict[str, str]]) -> dict:
-    with LOCK:
-        APP["seed"] = items
-        seed.save(SEED_CSV_PATH, items)
+    APP["seed"] = items        # rebound atomically; the CSV is independent of the DB
+    seed.save(SEED_CSV_PATH, items)
     return {"ok": True, "n": len(items)}
 
 

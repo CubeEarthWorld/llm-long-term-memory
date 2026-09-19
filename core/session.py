@@ -42,8 +42,8 @@ class Session:
         if wipe:
             self.memory.reset()
         else:
-            self.log = [{"turn": int(r["turn"]), "utterance": str(r["utterance"]), "note": str(r["note"]),
-                         "timestamp": float(r["timestamp"]), "system": _loads(r["system_json"])}
+            self.log = [{"turn": int(r["turn"]), "utterance": str(r["utterance"]), "note": str(r.get("note", "")),
+                         "timestamp": float(r["timestamp"]), "system": _loads(r.get("system_json"))}
                         for r in self.store.load_turn_log(cfg.glob.max_turn_log)]
         self.turn = max((e["turn"] for e in self.log), default=0)
 
