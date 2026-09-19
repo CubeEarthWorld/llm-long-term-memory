@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from core.llm_client import _parse_dream, _parse_texts
-from eval.mocks import BrokenEmbeddingProvider, FakeEmbeddingProvider, FakeLLM
+from fakes import BrokenEmbeddingProvider, FakeEmbeddingProvider, FakeLLM
 
 
 def seeded(make_system, **kw):

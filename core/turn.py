@@ -7,22 +7,25 @@ from __future__ import annotations
 import time
 from collections import Counter
 
-from .metrics import MetricsRecorder, RecalledItem, TurnMetrics
+from config import GlobalConfig
+
+from .metrics import MetricsRecorder, TurnMetrics
 
 # Actions that mean a memory was created or strengthened this turn.
 _SAVE_ACTIONS = {"inserted", "reinforced"}
 
 
 class TurnRunner:
-    def __init__(self, provider, llm, recorder: MetricsRecorder, system):
+    def __init__(self, provider, llm, recorder: MetricsRecorder, system, glob: GlobalConfig):
         self.provider = provider
         self.llm = llm
         self.recorder = recorder
         self.system = system
+        self.glob = glob                     # per-turn policy: max_writes_per_turn, tool_fallback
 
     def run_turn(self, turn: int, utterance: str) -> TurnMetrics:
         system = self.system
-        metrics = TurnMetrics(turn=turn, system_id="llm_long_term_memory", utterance=utterance)
+        metrics = TurnMetrics(turn=turn, utterance=utterance)
 
         # 1) RECALL — inject ≤ budget_chars of relevant traces.
         result, logic_ms, embed_ms = self._timed(lambda: system.recall(utterance))
@@ -31,9 +34,7 @@ class TurnRunner:
         metrics.pack_text = result["pack_text"]
         metrics.pack_chars = len(result["pack_text"])
         metrics.pack_n = len(result["recalled"])
-        metrics.recalled = [RecalledItem(r["id"], r["text"], r["score"],
-                                         {k: v for k, v in r.items() if k not in ("id", "text", "score")})
-                            for r in result["recalled"]]
+        metrics.recalled = result["recalled"]
 
         # 2) CONVERSE — generation + tools; then 3) CITE — used memories are strengthened.
         (response, events, write_ms), logic_ms, embed_ms = self._timed(
@@ -44,7 +45,6 @@ class TurnRunner:
         metrics.response = response.text
         metrics.prompt = response.prompt
         metrics.written_rows = events
-        metrics.written_ids = [e.get("id") for e in events if e.get("id")]
         metrics.write_note = _summarize_events(events)
         metrics.cited = system.cite(response.text)
 
@@ -60,7 +60,7 @@ class TurnRunner:
         system = self.system
         events: list[dict] = []
         write_ms = 0.0
-        max_writes = self.system.glob.max_writes_per_turn
+        max_writes = self.glob.max_writes_per_turn
 
         def _saved() -> int:
             return sum(1 for e in events if e.get("action") in _SAVE_ACTIONS)
@@ -90,7 +90,7 @@ class TurnRunner:
         current_time = system.now_local()
         conv = self.llm.converse(pack_text, utterance, {"save_memory": _save, "delete_memory": _delete},
                                  current_time=current_time)
-        if not _saved() and self.system.glob.tool_fallback:
+        if not _saved() and self.glob.tool_fallback:
             for text in self.llm.extract_save_candidates(utterance, conv.text, current_time=current_time,
                                                          known=pack_text)[:max_writes]:
                 t0 = time.perf_counter()

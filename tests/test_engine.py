@@ -1,10 +1,8 @@
 """remember / recall / cite / forget / capacity (SPEC §4)."""
 from __future__ import annotations
 
-import pytest
 
-from conftest import by_text, tokens
-from eval.mocks import BrokenEmbeddingProvider, FakeEmbeddingProvider
+from fakes import BrokenEmbeddingProvider, FakeEmbeddingProvider
 
 
 def test_insert_rehearse_reject(make_system):
@@ -38,7 +36,7 @@ def test_related_write_is_labile_and_reactivates_neighbour(make_system):
 def test_salience_scales_and_clamps(make_system, cfg):
     s, _ = make_system()
     assert s.remember("alpha", salience=3)["stability"] == 3 * 86400
-    huge = by_text(s, "beta") if False else s.memory(s.remember("beta", salience=1e9)["id"])
+    huge = s.memory(s.remember("beta", salience=1e9)["id"])
     assert huge.stability == cfg.memory.max_stability / 365
     zero = s.memory(s.remember("gamma", salience=0)["id"])
     assert zero.stability == 1.0 and s.retrievability(zero, zero.last_recall + 100) < 1e-20
@@ -79,6 +77,17 @@ def test_flood_evicts_its_own_members(make_system, cfg):
     s, _ = make_system(config=cfg)
     keep = s.remember("precious", salience=10)["id"]
     for i in range(40):
+        s.remember(f"junk {i} x{i}")
+    assert s.total_records() == 20 and s.memory(keep) is not None
+
+
+def test_flood_spares_the_old_stable_fact(make_system, cfg):
+    """Old and young mixed: once the young exceed a tenth of capacity, the flood evicts itself."""
+    cfg.memory.capacity, cfg.memory.grace_period = 20, 86400
+    s, clock = make_system(config=cfg)
+    keep = s.remember("precious fact", salience=10)["id"]
+    clock.advance_days(2)
+    for i in range(60):
         s.remember(f"junk {i} x{i}")
     assert s.total_records() == 20 and s.memory(keep) is not None
 
@@ -148,8 +157,3 @@ def test_initialize_clamps_and_persists(make_system, tmp_path):
     s2, _ = make_system(store=store)
     loaded = s2.memories()[0]
     assert loaded.last_recall <= clock.t and loaded.stability == s2.cfg.max_stability
-
-
-@pytest.mark.parametrize("n", [1, 7])
-def test_tokens_helper(n):
-    assert len(tokens(n).split()) == n

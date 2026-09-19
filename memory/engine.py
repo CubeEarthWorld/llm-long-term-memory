@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from config import GlobalConfig, LongTermMemoryConfig
+from config import LongTermMemoryConfig
 from memory.model import Memory
 from memory.util import clean_text, cues, fmt_local, tz_field, ulid
 
@@ -23,13 +23,13 @@ _CITE = re.compile("《id:([^》]+)》")
 
 
 class LongTermMemory:
-    def __init__(self, store, provider, llm, memory: LongTermMemoryConfig, glob: GlobalConfig):
+    def __init__(self, store, provider, llm, cfg: LongTermMemoryConfig, timezone: str = "UTC", clock=None):
         self.store = store
         self.provider = provider
         self.llm = llm
-        self.cfg = memory
-        self.glob = glob
-        self._clock = None
+        self.cfg = cfg
+        self.timezone = timezone             # IANA name stamped onto new traces
+        self._clock = clock
         self._traces: dict[str, Memory] = {}
         self._write_times: list[float] = []
         self._last_recall: dict[str, dict] = {}
@@ -47,7 +47,7 @@ class LongTermMemory:
 
     def now_local(self, now: float | None = None) -> str:
         now = self.now_unix() if now is None else now
-        return fmt_local(now, tz_field(self.glob.default_timezone, now))
+        return fmt_local(now, tz_field(self.timezone, now))
 
     # ------------------------------------------------------------------ #
     # the forgetting curve (SPEC §3)
@@ -63,10 +63,6 @@ class LongTermMemory:
     def strength(self, m: Memory, now: float) -> float:
         """S·R — proportional to the trace's total remaining retrievability."""
         return m.stability * self.retrievability(m, now)
-
-    def _rank(self, m: Memory, now: float) -> float:
-        """log2(strength): same ordering, no underflow ties."""
-        return math.log2(m.stability) - self._elapsed(m, now) / m.stability
 
     def _clamp_stability(self, s: float) -> float:
         return min(max(s, 1.0), self.cfg.max_stability)
@@ -102,8 +98,9 @@ class LongTermMemory:
                 vecs = self.provider.encode_document([m.text for m in batch])
             except Exception:
                 return                                   # embedder offline: stay stale
-            for m, v in zip(batch, vecs):
-                self._put(m.with_(model_id=self.provider.model_id, vector=v))
+            with self.store.transaction():
+                for m, v in zip(batch, vecs):
+                    self._put(m.with_(model_id=self.provider.model_id, vector=v))
 
     def _search(self) -> tuple[list[Memory], np.ndarray]:
         """Indexed traces and their vector matrix. The matrix is cached and rebuilt only
@@ -174,7 +171,7 @@ class LongTermMemory:
         related = best >= self.cfg.theta_related
         m = Memory(
             id=ulid(int(now * 1000)), text=text, created_at=int(now),
-            tz=tz_field(self.glob.default_timezone, now), last_recall=int(now),
+            tz=tz_field(self.timezone, now), last_recall=int(now),
             stability=self._clamp_stability(self.cfg.initial_stability * min(max(float(salience), 0.0), 10.0)),
             consolidated=v is not None and not related and not self._stale(),
             model_id=self.provider.model_id if v is not None else "",
@@ -194,6 +191,7 @@ class LongTermMemory:
     def recall(self, query: str, now: float | None = None) -> dict:
         """Inject ≤inject_n relevant traces (half-activation strengthening; ``cite`` completes it)."""
         now = self.now_unix() if now is None else now
+        self._last_recall.clear()
         parts = cues(query, self.cfg.max_cues)
         rows, M = self._search()
         if not parts or not rows:
@@ -209,7 +207,6 @@ class LongTermMemory:
         floor = max(self.cfg.min_score, self.cfg.relative_score * float(score.max()))
         pool = sorted((i for i in range(len(rows)) if score[i] >= floor), key=lambda i: -score[i])
         lines, recalled = [], []
-        self._last_recall.clear()
         with self.store.transaction():                     # one operation = one commit
             self._pack(self._mmr(pool, score, M), rows, score, cos, R, now, lines, recalled)
         return {"pack_text": "".join(lines), "recalled": recalled}
@@ -363,8 +360,9 @@ class LongTermMemory:
                 texts.append(c)
         gists = [] if len(texts) > len(cluster) else self._gists(texts, cluster, now)
         if not gists:
-            for m in cluster:
-                self._put(m.with_(consolidated=True))
+            with self.store.transaction():
+                for m in cluster:
+                    self._put(m.with_(consolidated=True))
             return {"action": "keep", "before": before, "after": []}
         with self.store.transaction():
             for m in cluster:
@@ -396,7 +394,7 @@ class LongTermMemory:
         r = min(1.0, sum_sr / stability)
         elapsed = min(64.0, -math.log2(r)) if r > 0 else 64.0
         last_recall = int(round(now - stability * elapsed))
-        tz = tz_field(self.glob.default_timezone, now)
+        tz = tz_field(self.timezone, now)
         return [Memory(id=ulid(int(now * 1000)), text=t, created_at=int(now), tz=tz, last_recall=last_recall,
                        stability=stability, consolidated=True, model_id=self.provider.model_id, vector=v)
                 for t, v in zip(texts, vecs)]

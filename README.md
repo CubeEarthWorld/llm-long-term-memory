@@ -48,8 +48,7 @@ CLI:
 ```bash
 python cli.py --seed --dream 5 --inspect     # replay the seed scenario, dream with 5 LLM calls, dump the store
 python cli.py --say "I live in Kyoto"
-python eval/run_eval.py                      # deterministic behaviour benchmark, no model or key needed
-python -m pytest                             # 40 tests incl. the Dart conformance scenario
+python -m pytest                             # deterministic suite (no model or key needed) incl. the Dart conformance scenario
 python -m pytest -m slow                     # the 3000-virtual-year simulation (minutes)
 ```
 
@@ -78,12 +77,12 @@ All 19 engine parameters live in `LongTermMemoryConfig` (`config.py`) and are ed
 ├── core/embedding.py     # EmbeddingGemma GGUF via llama.cpp (offline)
 ├── core/storage.py       # SQLite substrate + snapshot ring
 ├── core/llm_client.py    # DeepSeek / Gemini: converse (tools + citation), extraction, dream
-├── core/base.py          # per-turn runner
-├── core/engine.py        # engine assembly, seed replay, turn log
-├── server.py / frontend  # FastAPI + no-build React UI
+├── core/turn.py          # per-turn runner (+ core/metrics.py)
+├── core/session.py       # app session: assembly, turn log, seed replay, dream
+├── core/seed.py          # built-in seed scenario + seed CSV
+├── server.py / web/jobs.py / frontend  # FastAPI routes, job state, no-build React UI
 ├── cli.py                # headless runner
-├── eval/                 # deterministic mocks + behaviour benchmark
-├── tests/                # pytest suite (conformance test reads ../long-term-memory/test/conformance)
+├── tests/                # pytest suite + deterministic fakes (conformance test reads ../long-term-memory/test/conformance)
 └── SPEC.md               # the specification
 ```
 

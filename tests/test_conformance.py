@@ -9,7 +9,7 @@ import re
 import pytest
 
 from config import Config
-from eval.mocks import FakeEmbeddingProvider
+from fakes import FakeEmbeddingProvider
 
 _DART = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))),
                      "long-term-memory", "test", "conformance")

@@ -22,11 +22,3 @@ class Memory:
 
     def with_(self, **changes) -> "Memory":
         return replace(self, **changes)
-
-    def to_json(self) -> dict:
-        return {
-            "id": self.id, "text": self.text, "created_at": self.created_at, "tz": self.tz,
-            "last_recall": self.last_recall, "stability": self.stability,
-            "consolidated": self.consolidated, "model_id": self.model_id,
-            "vector": self.vector.astype(np.float32).tolist(),
-        }

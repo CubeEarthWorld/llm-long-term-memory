@@ -39,10 +39,6 @@ function Icon({ name, size }) {
     <path d=${d} /></svg>`;
 }
 
-function Badge({ kind, children }) {
-  return html`<span class=${"badge " + kind}>${children}</span>`;
-}
-
 function DataTable({ rows }) {
   if (!rows || rows.length === 0) return html`<div class="empty-cell">データなし</div>`;
   const cols = [];
@@ -136,7 +132,7 @@ function DreamPanel({ state, busy }) {
     setMsg(null);
     setDreaming(true);
     try {
-      const res = await apiPost("/dream", { budget: 5 });
+      const res = await apiPost("/dream");
       if (res.n === 0) {
         setMsg(res.message || "Dream 対象の適格クラスタがありません");
         setDreaming(false);
@@ -416,13 +412,6 @@ function SettingsView({ state, busy, onApplied }) {
         <div class="seg">${[["on", true], ["off", false]].map(([lbl, o]) => html`
           <button key=${lbl} class=${"segbtn " + (val === o ? "on" : "")} onClick=${() => setField(sec, key, o)}>${lbl}</button>`)}
         </div></div>`;
-    if (Array.isArray(val))
-      return html`<div class="field" key=${id}><label title=${id}>${label}</label>
-        <input type="text" value=${val.join(",")} placeholder="例: 0.1,0.2"
-          onChange=${(e) => {
-            const parts = e.target.value.split(",").map((s) => { const n = Number(s.trim()); return isNaN(n) ? s.trim() : n; });
-            setField(sec, key, parts);
-          }} /></div>`;
     if (typeof val === "number")
       return html`<div class="field" key=${id}><label title=${id}>${label}</label>
         <input type="number" step="any" value=${val} onChange=${(e) => setField(sec, key, e.target.value === "" ? 0 : Number(e.target.value))} /></div>`;
@@ -516,7 +505,7 @@ function SeedEditor({ busy, onChanged }) {
     catch (e) { setErr(e.message); }
   };
   const exportCsv = () => {
-    const csv = "\\ufeff" + ["text,note,advance", ...items.map((r) => csvCell(r.text) + "," + csvCell(r.note) + "," + csvCell(r.advance || "0"))].join("\r\n");
+    const csv = "\ufeff" + ["text,note,advance", ...items.map((r) => csvCell(r.text) + "," + csvCell(r.note) + "," + csvCell(r.advance || "0"))].join("\r\n");
     const blob = new Blob([csv], { type: "text/csv;charset=utf-8" });
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");

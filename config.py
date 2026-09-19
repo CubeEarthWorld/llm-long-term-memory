@@ -8,8 +8,11 @@ from dataclasses import asdict, dataclass, field, fields
 
 from dotenv import load_dotenv
 
-_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-_SECRETS_ENV = os.path.join(_BASE_DIR, "secrets", ".env")
+ROOT = os.path.dirname(os.path.abspath(__file__))   # repository root — the one definition
+SYSTEM_ID = "llm_long_term_memory"
+SYSTEM_TITLE = "LLM Long-Term Memory"
+
+_SECRETS_ENV = os.path.join(ROOT, "secrets", ".env")
 if os.path.exists(_SECRETS_ENV):
     load_dotenv(_SECRETS_ENV)
 load_dotenv()
@@ -116,7 +119,3 @@ def _coerce(value, default):
     except (TypeError, ValueError):
         return default
     return value
-
-
-def default_config() -> Config:
-    return Config()

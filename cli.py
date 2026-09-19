@@ -21,27 +21,18 @@ try:
 except Exception:
     pass
 
-from config import default_config
-from core.engine import (
-    DATA_DIR,
-    SYSTEM_ID,
-    SYSTEM_TITLE,
-    build_engine,
-    dispose_engine,
-    run_dream,
-    run_seed,
-    run_turn,
-)
+from config import SYSTEM_TITLE, Config
+from core import seed
+from core.session import DATA_DIR, SEED_CSV_PATH, Session
 
 
-def _print_turn(engine: dict, turn: int) -> None:
+def _print_turn(session: Session, turn: int) -> None:
     """Pretty-print a single turn's metrics to the console."""
-    rec = engine["recorder"]
-    utt = next((r["utterance"] for r in engine["log"] if r["turn"] == turn), "")
+    utt = next((r["utterance"] for r in session.log if r["turn"] == turn), "")
     print("\n" + "=" * 78)
     print(f"TURN {turn}  {utt}")
     print("=" * 78)
-    m = rec.for_turn(turn, SYSTEM_ID)
+    m = session.recorder.for_turn(turn)
     if m is None:
         print("No metrics recorded.")
         return
@@ -54,8 +45,8 @@ def _print_turn(engine: dict, turn: int) -> None:
         return
     print(f"  想起された記憶 ({len(m.recalled)}) / 引用 {len(m.cited)}:")
     for r in m.recalled:
-        extra = " ".join(f"{k}={v}" for k, v in list(r.extra.items())[:5])
-        print(f"     - [{r.score:.2f}] {r.text[:80]}  ({extra})")
+        extra = " ".join(f"{k}={v}" for k, v in r.items() if k not in ("id", "text", "score"))
+        print(f"     - [{r['score']:.2f}] {r['text'][:80]}  ({extra})")
 
 
 def _print_dream(results: list) -> None:
@@ -79,32 +70,26 @@ def _print_dream(results: list) -> None:
             print("   統合後: （維持）")
 
 
-def _summary(engine: dict) -> None:
+def _summary(session: Session) -> None:
     """Print high-level invariants and final DB statistics."""
     print("\n" + "#" * 78 + "\n# サマリ\n" + "#" * 78)
-    rows = engine["recorder"].rows()
-    cfg = engine["cfg"]
+    rows = session.recorder.rows()
+    cfg = session.cfg
     if rows:
         print(f"  全 pack <= {cfg.memory.budget_chars}字 : {all(r['pack_chars'] <= cfg.memory.budget_chars for r in rows)}")
         print(f"  全 records <= {cfg.memory.capacity}件 : {all(r['records'] <= cfg.memory.capacity for r in rows)}")
-    s = engine["system"]
+    s = session.memory
     print(f"  {SYSTEM_TITLE}: records={s.total_records()}  {s.stats()}  "
           f"vec={s.vector_mb():.3f}MB  db={s.db_size_bytes() / 1024:.1f}KB")
 
 
-def _dump_json(engine: dict, path: str) -> None:
+def _dump_json(session: Session, path: str) -> None:
     """Export the full turn log + metrics + final DB snapshot to JSON."""
-    rec = engine["recorder"]
-    out = {"turns": [], "final": {}}
-    for r in engine["log"]:
-        t = r["turn"]
-        m = rec.for_turn(t, SYSTEM_ID)
-        d = m.to_detail_dict() if m else {}
-        out["turns"].append({
-            "turn": t, "utterance": r["utterance"], "note": r.get("note", ""),
-            "system": {k: d[k] for k in ("response", "write_note", "records", "pack_chars", "times", "recalled") if k in d},
-        })
-    system = engine["system"]
+    keys = ("response", "write_note", "records", "pack_chars", "times", "recalled")
+    out = {"turns": [{"turn": r["turn"], "utterance": r["utterance"], "note": r["note"],
+                      "system": {k: r["system"][k] for k in keys if k in r["system"]}} for r in session.log],
+           "final": {}}
+    system = session.memory
     out["final"] = {"records": system.total_records(), "stats": system.stats(), "vector_mb": system.vector_mb()}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
@@ -127,7 +112,7 @@ def main() -> int:
     ap.add_argument("--out", default=os.path.join(DATA_DIR, "results.json"))
     args = ap.parse_args()
 
-    cfg = default_config()
+    cfg = Config()
     if args.provider:
         cfg.glob.llm_provider = args.provider
 
@@ -135,36 +120,31 @@ def main() -> int:
     print(f"[init] provider={cfg.glob.llm_provider} model={model}")
     print(f"[init] embedding={cfg.glob.embedding_model} -> ./model")
     try:
-        engine = build_engine(cfg, wipe=args.reset)
+        session = Session(cfg, wipe=args.reset)
     except Exception as e:  # noqa: BLE001
         print(f"\n[FATAL] EmbeddingGemma load failed: {type(e).__name__}: {e}")
         return 2
 
     try:
-        print(f"[init] embedding: {engine['provider'].status}")
-        print(f"[init] llm: {engine['llm'].status}")
+        print(f"[init] embedding: {session.provider.status}")
+        print(f"[init] llm: {session.llm.status}")
 
         if args.seed:
-            def _on_seed_progress(t: int, u: str) -> None:
-                _print_turn(engine, t)
-
-            run_seed(engine, on_progress=_on_seed_progress, restore_clock=False)
+            session.replay(seed.load(SEED_CSV_PATH), lambda t, _item: _print_turn(session, t), restore_clock=False)
 
         for text in args.say:
-            t = run_turn(engine, text)
-            _print_turn(engine, t)
+            _print_turn(session, session.run_turn(text))
 
         if args.dream:
-            results = run_dream(engine, budget=args.dream)
-            _print_dream(results)
+            _print_dream(session.dream(args.dream))
 
         if args.inspect:
-            print(json.dumps(engine["system"].snapshot(), ensure_ascii=False, indent=2)[:8000])
+            print(json.dumps(session.memory.snapshot(), ensure_ascii=False, indent=2)[:8000])
 
-        _summary(engine)
-        _dump_json(engine, args.out)
+        _summary(session)
+        _dump_json(session, args.out)
     finally:
-        dispose_engine(engine)
+        session.close()
     return 0
 
 
