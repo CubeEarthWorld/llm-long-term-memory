@@ -85,6 +85,11 @@ class LongTermMemory:
         self._traces.clear()
         self._index = None
         for raw in self.store.load_all():
+            # Every row is validated (SPEC §2). A store can hand back a row an older
+            # version or a hand-edited database wrote; an unusable one is skipped rather
+            # than allowed to break search for the whole store.
+            if not raw.id or not raw.text:
+                continue
             m = raw.with_(stability=self._clamp_stability(raw.stability),
                           last_recall=min(raw.last_recall, now), created_at=min(raw.created_at, now))
             self._traces[m.id] = m
@@ -98,6 +103,14 @@ class LongTermMemory:
         stale and re-embedded, so the index can never mix dimensions."""
         return m.model_id == self.provider.model_id and m.vector.shape == (self.provider.dimension,)
 
+    def _vector(self, v) -> np.ndarray | None:
+        """A freshly embedded vector, or ``None`` when the provider contradicted its own
+        ``dimension``. A wrong-length vector is an embedder fault, not data: returning
+        None routes it through the same path as an offline embedder, so it is indexed on
+        a later attempt instead of reaching a matmul that would raise."""
+        v = np.asarray(v, dtype=np.float32)
+        return v if v.shape == (self.provider.dimension,) else None
+
     def _reindex(self) -> None:
         stale = [m for m in self._traces.values() if not self._is_indexed(m)]
         for i in range(0, len(stale), 64):
@@ -107,8 +120,10 @@ class LongTermMemory:
             except Exception:
                 return                                   # embedder offline: stay stale
             with self.store.transaction():
-                for m, v in zip(batch, vecs):
-                    self._put(m.with_(model_id=self.provider.model_id, vector=v))
+                for m, raw in zip(batch, vecs):
+                    v = self._vector(raw)
+                    if v is not None:                    # else: stays stale, retried later
+                        self._put(m.with_(model_id=self.provider.model_id, vector=v))
 
     def _search(self) -> tuple[list[Memory], np.ndarray]:
         """Indexed traces and their vector matrix. The matrix is cached and rebuilt only
@@ -173,7 +188,7 @@ class LongTermMemory:
             return {"action": "rate_limited", "error": "daily write limit", "text": text}
         self._write_times.append(now)
         try:
-            v = self.provider.encode_document([text])[0]
+            v = self._vector(self.provider.encode_document([text])[0])
         except Exception:
             v = None                                     # embedder offline: index later
         q = None if v is None else self._cue_vector(cue, v)
@@ -205,7 +220,8 @@ class LongTermMemory:
         if not cue:
             return own
         try:
-            return self.provider.encode_query([cue])[0]
+            v = self._vector(self.provider.encode_query([cue])[0])
+            return own if v is None else v
         except Exception:
             return own                                   # embedder offline: fall back to the text
 
@@ -233,9 +249,11 @@ class LongTermMemory:
         if not parts or not rows:
             return {"pack_text": "", "recalled": []}
         try:
-            qs = self.provider.encode_query(parts)
+            qs = np.asarray(self.provider.encode_query(parts), dtype=np.float32)
         except Exception:
             return {"pack_text": "", "recalled": []}
+        if qs.ndim != 2 or qs.shape[1] != self.provider.dimension:
+            return {"pack_text": "", "recalled": []}     # embedder contradicted itself
         cos = (M @ qs.T).max(axis=1)
         R = self._retrievabilities(rows, now)
         act = self._activation(cos)
@@ -421,6 +439,8 @@ class LongTermMemory:
         if not texts:
             return []
         vecs = self.provider.encode_document(texts)
+        if np.shape(vecs) != (len(texts), self.provider.dimension):
+            raise ValueError("embedder returned a wrong-dimension gist vector")
         M = np.stack([m.vector for m in absorbed])
         if float((M @ vecs.T).max(axis=0).min()) < self.cfg.gist_min_cosine:
             return []

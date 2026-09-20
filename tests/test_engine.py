@@ -36,11 +36,25 @@ def test_wrong_dimension_vector_is_treated_as_stale(make_system):
 
     s, _ = make_system(provider=Glitching())
     s.remember("a trace the provider mis-embedded")
-    assert s.stats()["unindexed"] == 1
+    assert s.stats()["unindexed"] == 1                      # never reaches the index
     s.remember("a trace about kyoto embedded normally")     # would raise before the fix
     assert len(s.recall("kyoto")["recalled"]) >= 1
     s.initialize()                                          # reindex re-embeds it
     assert s.stats()["unindexed"] == 0
+
+
+def test_row_with_no_text_is_skipped_on_load(make_system, tmp_path):
+    """SPEC §2: every row is validated on load; an unusable one must not survive."""
+    import numpy as np
+
+    from core.storage import Store
+    from memory.model import Memory
+
+    store = Store(str(tmp_path / "empty_text.db"))
+    store.put(Memory("01EMPTY", "", 1_700_000_000, "UTC;+00:00", 1_700_000_000,
+                     86400.0, True, "fake/token-overlap", np.zeros(64, dtype=np.float32)))
+    s, _ = make_system(store=store)
+    assert s.memories() == []
 
 
 def test_text_hygiene(make_system, cfg):
