@@ -6,8 +6,6 @@ import json
 import os
 import re
 
-import pytest
-
 from config import Config
 from fakes import FakeEmbeddingProvider
 
@@ -32,7 +30,8 @@ def _norm(v):
     return v
 
 
-@pytest.mark.skipif(not os.path.exists(os.path.join(_DIR, "trace.json")), reason="Dart trace not generated")
+# No skipif on a missing trace.json: the baseline is committed, so a missing one
+# means a broken checkout, not a reason to skip the cross-language guarantee.
 def test_dart_scenario_reproduced(make_system):
     scenario = json.load(open(os.path.join(_DIR, "scenario.json"), encoding="utf-8"))
     expected = json.load(open(os.path.join(_DIR, "trace.json"), encoding="utf-8"))

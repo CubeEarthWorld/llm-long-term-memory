@@ -1,7 +1,7 @@
-"""Local embedding provider: EmbeddingGemma as a GGUF file run by llama.cpp
-(``llama-cpp-python``), fully offline. Asymmetric prompts per the model card:
-``task: search result | query: …`` for queries, ``title: none | text: …`` for
-documents. Vectors are returned L2-normalised as float32 rows."""
+"""Local embedding provider: any GGUF embedding model run by llama.cpp
+(``llama-cpp-python``), fully offline. The asymmetric retrieval prompts come from
+the model card and are configurable (EmbeddingGemma's by default). Vectors are
+returned L2-normalised as float32 rows; the engine imposes no dimension."""
 from __future__ import annotations
 
 import os
@@ -21,16 +21,18 @@ def l2_normalize(mat: np.ndarray) -> np.ndarray:
 
 
 class EmbeddingProvider:
-    def __init__(self, model_path: str, n_threads: int | None = None):
+    def __init__(self, model_path: str, query_prefix: str = "", document_prefix: str = ""):
         from llama_cpp import Llama
 
         if not os.path.isabs(model_path):
             model_path = os.path.join(MODEL_DIR, model_path)
         self.model_path = model_path
         self.model_id = os.path.basename(model_path)
+        self.query_prefix, self.document_prefix = query_prefix, document_prefix
         self.total_ms = 0.0
-        self._model = Llama(model_path=model_path, embedding=True, n_ctx=2048, verbose=False,
-                            n_threads=n_threads or os.cpu_count())
+        # n_ctx=0: the model's own training context (e5 trains at 512, Gemma at 2048).
+        self._model = Llama(model_path=model_path, embedding=True, n_ctx=0, verbose=False,
+                            n_threads=os.cpu_count())
         self.dimension = int(self._model.n_embd())
 
     def pop_ms(self) -> float:
@@ -44,10 +46,10 @@ class EmbeddingProvider:
         return l2_normalize(out)
 
     def encode_query(self, texts: list[str]) -> np.ndarray:
-        return self._encode(list(texts), "task: search result | query: ")
+        return self._encode(list(texts), self.query_prefix)
 
     def encode_document(self, texts: list[str]) -> np.ndarray:
-        return self._encode(list(texts), "title: none | text: ")
+        return self._encode(list(texts), self.document_prefix)
 
     @property
     def status(self) -> str:
@@ -57,9 +59,11 @@ class EmbeddingProvider:
 _PROVIDER: EmbeddingProvider | None = None
 
 
-def get_provider(model_path: str) -> EmbeddingProvider:
-    """One model per process."""
+def get_provider(glob) -> EmbeddingProvider:
+    """One model per process (``glob`` is the GlobalConfig: path + retrieval prompts)."""
     global _PROVIDER
-    if _PROVIDER is None or os.path.basename(_PROVIDER.model_path) != os.path.basename(model_path):
-        _PROVIDER = EmbeddingProvider(model_path)
+    want = (os.path.basename(glob.embedding_model), glob.embed_query_prefix, glob.embed_document_prefix)
+    if _PROVIDER is None or (os.path.basename(_PROVIDER.model_path),
+                             _PROVIDER.query_prefix, _PROVIDER.document_prefix) != want:
+        _PROVIDER = EmbeddingProvider(glob.embedding_model, want[1], want[2])
     return _PROVIDER

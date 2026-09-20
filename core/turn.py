@@ -48,9 +48,9 @@ class TurnRunner:
         metrics.write_note = _summarize_events(events)
         metrics.cited = system.cite(response.text)
 
-        metrics.total_records = system.total_records()
         metrics.counts = system.stats()
-        metrics.db_size_bytes = system.db_size_bytes()
+        metrics.total_records = metrics.counts["records"]
+        metrics.db_size_bytes = system.store.db_size_bytes()
         metrics.vector_mb = system.vector_mb()
         self.recorder.add(metrics)
         return metrics
@@ -65,26 +65,29 @@ class TurnRunner:
         def _saved() -> int:
             return sum(1 for e in events if e.get("action") in _SAVE_ACTIONS)
 
-        def _save(text: str = "", salience: float = 1.0, **_ignore):
+        def _write(fn) -> dict:
+            """Record one mutation, timing the engine work only — the embedding calls
+            inside it are already accounted for by ``_timed``."""
             nonlocal write_ms
+            t0, e0 = time.perf_counter(), self.provider.total_ms
+            ev = fn()
+            write_ms += (time.perf_counter() - t0) * 1000.0 - (self.provider.total_ms - e0)
+            events.append(ev)
+            return ev
+
+        def _save(text: str = "", salience: float = 1.0, cue: str = "", **_ignore):
             if _saved() >= max_writes:
                 events.append({"action": "rate_limited", "error": "per-turn save limit", "text": text})
                 return {"ok": False, "action": "rate_limited"}
-            t0 = time.perf_counter()
             try:
-                ev = system.remember(text, salience=float(salience))
+                sal = float(salience)                      # the model may send junk here
             except (TypeError, ValueError):
-                ev = system.remember(text)
-            write_ms += (time.perf_counter() - t0) * 1000.0
-            events.append(ev)
+                sal = 1.0
+            ev = _write(lambda: system.remember(text, salience=sal, cue=str(cue or "")))
             return {"ok": ev.get("action") in _SAVE_ACTIONS, "action": ev.get("action"), "id": ev.get("id")}
 
         def _delete(id: str = "", **_ignore):  # noqa: A002 — tool param name is 'id'
-            nonlocal write_ms
-            t0 = time.perf_counter()
-            ev = system.forget(id)
-            write_ms += (time.perf_counter() - t0) * 1000.0
-            events.append(ev)
+            ev = _write(lambda: system.forget(id))
             return {"ok": ev.get("action") == "deleted", "action": ev.get("action")}
 
         current_time = system.now_local()
@@ -93,9 +96,7 @@ class TurnRunner:
         if not _saved() and self.glob.tool_fallback:
             for text in self.llm.extract_save_candidates(utterance, conv.text, current_time=current_time,
                                                          known=pack_text)[:max_writes]:
-                t0 = time.perf_counter()
-                events.append(system.remember(text))
-                write_ms += (time.perf_counter() - t0) * 1000.0
+                _write(lambda t=text: system.remember(t))
         return conv, events, write_ms
 
     def _timed(self, fn):

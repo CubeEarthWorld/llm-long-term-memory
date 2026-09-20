@@ -81,7 +81,7 @@ class BrokenEmbeddingProvider(FakeEmbeddingProvider):
 
 
 class FakeLLM:
-    """Merge-to-gist dreaming (joins member texts); converse/extract are not used here."""
+    """Merge-to-gist dreaming (joins member texts); only used as the dream adjudicator."""
 
     def __init__(self, action: str = "replace"):
         self.action = action
@@ -90,16 +90,11 @@ class FakeLLM:
     def dream_cluster(self, members: list[dict], current_time: str = "") -> dict:
         self.dream_calls += 1
         if self.action == "keep" or not members:
-            return {"action": "keep", "memories": []}
+            return {"action": "keep", "ids": [], "memories": []}
         if self.action == "error":
             raise RuntimeError("llm down")
-        return {"action": "replace", "memories": [" / ".join(m["text"] for m in members)]}
-
-    def converse(self, memory_pack, user_text, tools, current_time=""):  # pragma: no cover
-        raise NotImplementedError
-
-    def extract_save_candidates(self, user_text, assistant_text, current_time="", known=""):
-        return []
+        return {"action": "replace", "ids": [m["id"] for m in members[1:]],
+                "memories": [" / ".join(m["text"] for m in members)]}
 
 
 class VirtualClock:

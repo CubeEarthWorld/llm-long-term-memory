@@ -98,3 +98,18 @@ class MetricsRecorder:
 
     def for_turn(self, turn: int) -> TurnMetrics | None:
         return next((m for m in self.history if m.turn == turn), None)
+
+
+def invariants(rows: list[dict[str, Any]], mem) -> dict[str, bool]:
+    """The two per-turn invariants over ``rows``, keyed by their display label
+    (``mem`` is a LongTermMemoryConfig)."""
+    return {
+        f"全 pack <= {mem.budget_chars}字 (注入予算)": all(r["pack_chars"] <= mem.budget_chars for r in rows),
+        f"全 records <= {mem.capacity}件 (capacity)": all(r["records"] <= mem.capacity for r in rows),
+    }
+
+
+def final_stats(memory) -> dict[str, Any]:
+    """Final engine figures (counts + sizes) as reported by the API, the CLI and the dump."""
+    return {**memory.stats(), "vector_mb": round(memory.vector_mb(), 3),
+            "db_kb": round(memory.store.db_size_bytes() / 1024, 1)}

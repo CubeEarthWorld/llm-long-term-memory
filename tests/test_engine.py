@@ -16,6 +16,33 @@ def test_insert_rehearse_reject(make_system):
     assert s.total_records() == 1
 
 
+def test_wrong_dimension_vector_is_treated_as_stale(make_system):
+    """One model_id means one dimension: a short vector must not reach the index, or
+    ``np.stack``/``M @ q`` would raise on the next write (SPEC §7)."""
+    import numpy as np
+
+    class Glitching(FakeEmbeddingProvider):
+        """Returns a half-length vector once, then behaves normally."""
+
+        def __init__(self):
+            super().__init__()
+            self.glitched = False
+
+        def encode_document(self, texts):
+            if not self.glitched:
+                self.glitched = True
+                return np.zeros((len(texts), self.dimension // 2), dtype=np.float32)
+            return super().encode_document(texts)
+
+    s, _ = make_system(provider=Glitching())
+    s.remember("a trace the provider mis-embedded")
+    assert s.stats()["unindexed"] == 1
+    s.remember("a trace about kyoto embedded normally")     # would raise before the fix
+    assert len(s.recall("kyoto")["recalled"]) >= 1
+    s.initialize()                                          # reindex re-embeds it
+    assert s.stats()["unindexed"] == 0
+
+
 def test_text_hygiene(make_system, cfg):
     cfg.memory.text_max = 20
     s, _ = make_system(config=cfg)
@@ -23,13 +50,15 @@ def test_text_hygiene(make_system, cfg):
     assert "《" not in r["text"] and "\n" not in r["text"] and len(r["text"]) <= 20
 
 
-def test_related_write_is_labile_and_reactivates_neighbour(make_system):
+def test_write_that_reactivates_the_past_is_born_labile(make_system):
     s, _ = make_system()
     old = s.remember("cat dog bird fish")
-    assert old["consolidated"]
+    assert old["consolidated"]                        # nothing to reactivate
     r = s.remember("cat dog bird fish!")
     assert r["cos"] > 0.9 and r["consolidated"] is False
-    assert s.memory(old["id"]).consolidated is False
+    assert s.memory(old["id"]).consolidated           # a candidate, not rewritten on the way in
+    cluster = s.clusters()[0]
+    assert [m.id for m in cluster] == [r["id"], old["id"]]
     assert s.total_records() == 2
 
 

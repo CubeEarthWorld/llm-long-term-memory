@@ -22,11 +22,11 @@ a        = max(0, (cos − cosine_floor) / (1 − cosine_floor))   手がかり�
 
 | 動詞 | 動作 |
 |---|---|
-| `remember(text, salience)` | 同一テキストはリハーサル。それ以外は挿入し、**決して上書きしない**。近傍（cos ≥ θ_related）がある痕跡は*不安定*に生まれ、その近傍も不安定化する（再固定化）。容量超過時は猶予期間（3 日）外で strength 最小の痕跡を忘却。 |
+| `remember(text, salience, cue)` | 同一テキストはリハーサル。それ以外は挿入し、**決して上書きしない**。`cue` が近傍（cos ≥ θ_related）に届く痕跡は*不安定*に生まれる。既存の痕跡には一切手を触れない。容量超過時は猶予期間（3 日）外で strength 最小の痕跡を忘却。 |
 | `recall(query)` | 複数手がかりのコサイン → `score = a·(α + (1−α)·R)` → 絶対・相対閾値 → MMR → `[unix tz] text 《id》` を ≤1024 字で注入。注入は「露出」なので半分だけ強化。 |
 | `cite(reply)` | LLM が引用した《id》の記憶を「使用」として完全に強化。 |
 | `forget(id)` | id 指定の物理削除。 |
-| `dream(budget)` | 不安定な痕跡（安定度順）を種に cos ≥ θ_related の近傍クラスタ（≤8）を作り、LLM が **keep** か **replace [texts]** を判定。要旨は最強成員の安定度＋他の「生きた証拠」を継承。無関係な出力は作話として拒否。整理済みのストアでは LLM を呼ばない。 |
+| `dream(budget)` | 不安定な痕跡（安定度順）を種に、その `cue` が再活性化した**より古い**痕跡のクラスタ（cos ≥ θ_related、≤8）を作り、LLM が **keep** か **replace**（更新される古い記憶の id ＋ 要旨テキスト）を判定。要旨は最強成員の安定度＋他の「生きた証拠」を継承。無関係な出力は作話として拒否。整理済みのストアでは LLM を呼ばない。 |
 
 層・カウンタ・リング・保守呼び出しは存在しません。全状態が有界なので演算コストは経過時間に依存せず、3000 仮想年のシミュレーションがテストに含まれています。
 
@@ -56,15 +56,15 @@ python -m pytest -m slow                     # 3000 仮想年シミュレーシ�
 recall(発話) → LLM（システムプロンプト + 記憶パック + save_memory / delete_memory ツール） → cite(応答)
 ```
 
-LLM は長期的に役立つ事実を代名詞なし・絶対日付の命題として保存し（任意で `salience` 1–10 = 情動的重み）、いま提示された事実は再保存せず、使った記憶の《id》を応答末尾に引用します。保存が無かったターンは抽出呼び出しが 1 回だけ同じ経路で補います。
+LLM は長期的に役立つ事実を代名詞なし・絶対日付の命題として保存します（任意で `salience` 1–10 = 情動的重み）。保存には `cue` が必須で、これは「この事実が後に問われるであろう質問文」です。夢フェーズはこの `cue` で過去を検索するため、更新と被更新が字面として遠くても、更新は自分が置き換えるべき版に到達できます。いま提示された事実は再保存せず、使った記憶の《id》を応答末尾に引用します。保存が無かったターンは抽出呼び出しが 1 回だけ同じ経路で補います。
 
 ## ストレージ
 
-1 テーブル `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector)` ＋ UI 用のターンログ。全件を RAM に持ち（1 万件 × 768 次元で約 35 MB）、SQLite は永続化のみ。毎回の夢の前に 8 世代のスナップショットを回します。埋め込みモデルを替えると本文から全件を再埋め込みします（テキストが正本、ベクトルは索引）。
+1 テーブル `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector, cue)` ＋ UI 用のターンログ。全件を RAM に持ち（1 万件 × 768 次元で約 35 MB）、SQLite は永続化のみ。毎回の夢の前に 8 世代のスナップショットを回します。埋め込みモデルを替えると本文から全件を再埋め込みします（テキストが正本、ベクトルは索引）。
 
 ## パラメータ
 
-19 個のエンジンパラメータは `LongTermMemoryConfig`（`config.py`）にあり UI から編集できます（[`SPEC.md`](SPEC.md) §6）。`cosine_floor = 0.4`・`theta_related = 0.75`・`gist_min_cosine = 0.5` は埋め込みモデルのコサイン分布に依存し、EmbeddingGemma 向けに設定済みです。
+19 個のエンジンパラメータは `LongTermMemoryConfig`（`config.py`）にあり UI から編集できます（[`SPEC.md`](SPEC.md) §6）。`cosine_floor = 0.4`・`theta_related = 0.55`・`gist_min_cosine = 0.5` は埋め込みモデルのコサイン分布に依存し、EmbeddingGemma 向けに設定済みです。
 
 ## 構成
 
@@ -78,7 +78,7 @@ LLM は長期的に役立つ事実を代名詞なし・絶対日付の命題と�
 ├── core/turn.py          # ターン実行（+ core/metrics.py）
 ├── core/session.py       # アプリセッション: 組立・ターンログ・シード再生・夢
 ├── core/seed.py          # 既定シードシナリオ + シード CSV
-├── server.py / web/jobs.py / frontend  # FastAPI ルート・ジョブ状態・ビルド不要の React UI
+├── server.py / jobs.py / frontend  # FastAPI ルート・ジョブ状態・ビルド不要の React UI
 ├── cli.py                # ヘッドレス実行
 ├── tests/                # pytest + 決定論的フェイク（一致テストは ../long-term-memory/test/conformance を読む）
 └── SPEC.md               # 仕様書

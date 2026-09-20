@@ -4,7 +4,9 @@ const { useState, useEffect, useCallback } = React;
 async function api(path, opts) {
   const r = await fetch("/api" + path, opts);
   const data = await r.json().catch(() => ({}));
-  if (!r.ok) throw new Error(data.detail || ("HTTP " + r.status));
+  // FastAPI/pydantic 422 bodies put a list in `detail`; stringify so it is readable.
+  if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail
+    : JSON.stringify(data.detail) || ("HTTP " + r.status));
   return data;
 }
 
@@ -83,9 +85,7 @@ function SystemCard({ detail }) {
 
 function fmtDate(ts) {
   if (!ts) return "";
-  const d = new Date(ts * 1000);
-  const pad = (n) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+  return new Date(ts * 1000).toLocaleString("sv-SE");  // "YYYY-MM-DD HH:MM:SS", local time
 }
 function fmtElapsed(start, current) {
   if (!start || !current) return "";
@@ -114,6 +114,14 @@ function TurnBlock({ t, startTime }) {
     </div>`;
 }
 
+function Progress({ text, sub }) {
+  return html`
+    <div class="seedprogress">
+      <span class="spin"></span>
+      <span>${text}<span class="seedprogress-sub">${sub}</span></span>
+    </div>`;
+}
+
 function DreamPanel({ state, busy }) {
   const [results, setResults] = useState([]);
   const [err, setErr] = useState(null);
@@ -123,7 +131,7 @@ function DreamPanel({ state, busy }) {
   const load = useCallback(async () => {
     try { const d = await api("/dream-log"); setResults(d.results || []); } catch (e) {}
   }, []);
-  useEffect(() => { load(); }, [state.turn, state.running, load]);
+  useEffect(() => { load(); }, [state.running, load]);  // a conversational turn cannot add dream log entries
   // Sync local dreaming latch with server running state.
   // When the server finishes, clear the latch so the UI reflects real backend state.
   useEffect(() => { if (!state.running) setDreaming(false); }, [state.running]);
@@ -153,16 +161,13 @@ function DreamPanel({ state, busy }) {
       <div class="dream-hint">不安定(labile)な記憶を種に近傍クラスタを作り、LLM が維持(keep)か要旨への置換(replace)を判定します。置換元は削除されます（1クラスタ=1トランザクション、置換前にバックアップ）。</div>
       ${err && html`<div class="err">${err}</div>`}
       ${msg && html`<div class="kpi ok block-msg">${msg}</div>`}
-      ${inProgress && html`
-        <div class="seedprogress">
-          <span class="spin"></span>
-          <span>💤 Dream 実行中...<span class="seedprogress-sub">　クラスタの審理（統合/分割）を行っています。完了までお待ちください。</span></span>
-        </div>`}
+      ${inProgress && html`<${Progress} text="💤 Dream 実行中..."
+        sub="　クラスタの審理（統合/分割）を行っています。完了までお待ちください。" />`}
       ${open && (results.length === 0 ? html`<div class="note">まだ Dream のログがありません。</div>` :
         results.map((r, i) => html`
           <div class="dreamcard" key=${i}>
             <div class="metarow">
-              <span class=${"metachip action " + r.action}>${DREAM_LABEL[r.action] || r.action}</span>
+              <span class="metachip action">${DREAM_LABEL[r.action] || r.action}</span>
               ${r.error && html`<span class="metachip ghost">${r.error}</span>`}
             </div>
             <div class="dreamcols">
@@ -195,7 +200,7 @@ function ConversationView({ state, busy }) {
     setStartTime(d.start_time || null);
   }, []);
 
-  useEffect(() => { api("/seed-utterances").then((d) => setSeedUtts(d.utterances)).catch(() => {}); }, [state.turn]);
+  useEffect(() => { api("/seed-utterances").then((d) => setSeedUtts(d.utterances)).catch(() => {}); }, []);
   useEffect(() => { loadTurns(); }, [state.turn, state.running, loadTurns]);
   // Release the local "seeding" latch once the server job has finished, so the
   // progress banner reflects real backend state even across a page reload.
@@ -237,11 +242,8 @@ function ConversationView({ state, busy }) {
           </select>`}
       </div>
       ${err && html`<div class="err">${err}</div>`}
-      ${inProgress && html`
-        <div class="seedprogress">
-          <span class="spin"></span>
-          <span>${state.progress || "処理中..."}<span class="seedprogress-sub">　完了までしばらくお待ちください（シードは ${seedUtts.length} 発話を順に投入します）。</span></span>
-        </div>`}
+      ${inProgress && html`<${Progress} text=${state.progress || "処理中..."}
+        sub=${`　完了までしばらくお待ちください（シードは ${seedUtts.length} 発話を順に投入します）。`} />`}
 
       ${turns.length === 0 && html`
         <div class="empty">
@@ -260,7 +262,8 @@ function ConversationView({ state, busy }) {
       ${turns.length > 0 && html`
         <div class="composer">
           <input placeholder="次のターンの発話を入力..." value=${text} disabled=${busy}
-            onKeyDown=${(e) => e.key === "Enter" && sendTurn()} onChange=${(e) => setText(e.target.value)} />
+            onKeyDown=${(e) => e.key === "Enter" && !e.nativeEvent.isComposing && sendTurn()}
+            onChange=${(e) => setText(e.target.value)} />
           <button class="btn primary" disabled=${busy || !text.trim()} onClick=${sendTurn}>
             <${Icon} name="send" size=${16} /> 送信
           </button>
@@ -290,11 +293,13 @@ function ClusterCard({ cluster }) {
 function DBView() {
   const [data, setData] = useState(null);
   const [clusters, setClusters] = useState(null);
-  useEffect(() => { setData(null); api("/db").then(setData).catch(() => setData(null)); }, []);
-  useEffect(() => { setClusters(null); api("/clusters").then(setClusters).catch(() => setClusters(null)); }, []);
+  const [err, setErr] = useState(null);
+  useEffect(() => { setData(null); api("/db").then(setData).catch((e) => setErr(e.message)); }, []);
+  useEffect(() => { setClusters(null); api("/clusters").then(setClusters).catch((e) => setErr(e.message)); }, []);
   return html`
     <div>
-      ${!data && html`<div class="note">読み込み中...</div>`}
+      ${err && html`<div class="err">${err}</div>`}
+      ${!data && !err && html`<div class="note">読み込み中...</div>`}
       ${data && html`
         <div class="statgrid">${Object.entries(data.stats).map(([k, v]) =>
           html`<div class="statcard" key=${k}><div class="stat-num">${v}</div><div class="stat-label">${k}</div></div>`)}</div>
@@ -345,7 +350,11 @@ function LineChart({ rows, value, title }) {
 
 function MetricsView({ state }) {
   const [data, setData] = useState(null);
-  useEffect(() => { api("/metrics").then(setData).catch(() => {}); }, [state.turn, state.running]);
+  const [err, setErr] = useState(null);
+  useEffect(() => {
+    api("/metrics").then((d) => { setData(d); setErr(null); }).catch((e) => setErr(e.message));
+  }, [state.turn, state.running]);
+  if (err) return html`<div class="err">${err}</div>`;
   if (!data || !data.rows.length) return html`<div class="note">まだ実行データがありません。</div>`;
   return html`
     <div>
@@ -365,7 +374,6 @@ const LABELS = {
   llm_provider: "LLMプロバイダー", deepseek_model: "Deepseekモデル", gemini_model: "Geminiモデル",
   deepseek_base_url: "Deepseek Base URL", temperature: "temperature", max_output_tokens: "最大出力token",
   embedding_model: "埋め込みモデル(GGUF)", default_timezone: "既定タイムゾーン",
-  max_turn_log: "ターンログ上限", max_metrics_history: "メトリクス履歴上限",
   max_writes_per_turn: "1ターン保存上限", tool_fallback: "保存フォールバック(抽出)",
   // ENGRAM v2 parameters (SPEC §6)
   capacity: "容量(件)", initial_stability: "初期安定度 S0(秒/1日)", spacing_gain: "間隔効果ゲイン",
@@ -386,8 +394,8 @@ function SettingsView({ state, busy, onApplied }) {
   const [cfg, setCfg] = useState(null);
   const [err, setErr] = useState(null);
 
-  useEffect(() => { api("/config").then(setCfg).catch(() => {}); }, [state.ready]);
-  if (!cfg) return html`<div class="note">設定を読み込み中...</div>`;
+  useEffect(() => { api("/config").then(setCfg).catch((e) => setErr(e.message)); }, [state.ready]);
+  if (!cfg) return err ? html`<div class="err">${err}</div>` : html`<div class="note">設定を読み込み中...</div>`;
 
   const setField = (sec, key, val) => setCfg((c) => ({ ...c, [sec]: { ...c[sec], [key]: val } }));
   const apply = async () => {
@@ -486,15 +494,13 @@ function SeedEditor({ busy, onChanged }) {
     if (j < 0 || j >= a.length) return a;
     const b = a.slice(); const t = b[i]; b[i] = b[j]; b[j] = t; return b;
   });
-  const clean = () => items.map((r) => ({ text: r.text.trim(), note: (r.note || "").trim(), advance: ((r.advance || "0").trim() || "0") })).filter((r) => r.text);
 
   const save = async (alsoSeed) => {
     setErr(null); setMsg(null);
-    const payload = clean();
-    if (!payload.length) { setErr("少なくとも1件の発話が必要です。"); return; }
+    // The server normalises via core.seed.clean(); only the instant "empty list" check is ours.
+    if (!items.some((r) => r.text.trim())) { setErr("少なくとも1件の発話が必要です。"); return; }
     try {
-      await apiPost("/seed-utterances", { items: payload });
-      setItems(payload);
+      await apiPost("/seed-utterances", { items });
       onChanged && onChanged();
       if (alsoSeed) { await apiPost("/seed"); setMsg("保存し、シードを実行しました（会話タブで確認）。"); }
     } catch (e) { setErr(e.message); }
@@ -575,11 +581,11 @@ function StatusChip({ label, value }) {
 }
 
 const NAV = [
-  ["chat", "会話", "chat"],
-  ["seed", "シード編集", "list"],
-  ["db", "DB閲覧", "database"],
-  ["metrics", "メトリクス", "chart"],
-  ["settings", "設定", "settings"],
+  ["chat", "会話", "chat", "シードを投入し、ターンごとに想起・書き込み・Dream を確認します。"],
+  ["seed", "シード編集", "list", "初期記憶として投入する発話を編集します。CSV 入出力に対応。"],
+  ["db", "DB閲覧", "database", "現在の記憶ストア（SQLite）の中身を一覧します。"],
+  ["metrics", "メトリクス", "chart", "実行ごとのレコード数・ベクトル量と不変条件をモニタします。"],
+  ["settings", "設定", "settings", "LLM・埋め込み・記憶パラメータの調整と、システムのリセット。"],
 ];
 
 function App() {
@@ -598,14 +604,7 @@ function App() {
   if (!state) return html`<div class="boot"><span class="spin"></span> 起動中...</div>`;
 
   const busy = state.running || !state.ready;
-  const titles = { chat: "会話", seed: "シード編集", db: "DB閲覧", metrics: "メトリクス", settings: "設定" };
-  const descs = {
-    chat: "シードを投入し、ターンごとに想起・書き込み・Dream を確認します。",
-    seed: "初期記憶として投入する発話を編集します。CSV 入出力に対応。",
-    db: "現在の記憶ストア（SQLite）の中身を一覧します。",
-    metrics: "実行ごとのレコード数・ベクトル量と不変条件をモニタします。",
-    settings: "LLM・埋め込み・記憶パラメータの調整と、システムのリセット。",
-  };
+  const [, title, , desc] = NAV.find(([k]) => k === tab);
 
   return html`
     <div class="app">
@@ -638,8 +637,8 @@ function App() {
 
         <main class="content">
           <div class="viewhead">
-            <h2 class="view-title">${titles[tab]}</h2>
-            <p class="view-desc">${descs[tab]}</p>
+            <h2 class="view-title">${title}</h2>
+            <p class="view-desc">${desc}</p>
           </div>
           <div class="view">
             ${tab === "chat" && html`<${ConversationView} state=${state} busy=${busy} />`}

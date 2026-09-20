@@ -2,8 +2,8 @@
 
 Every mutation of the session runs under ``LOCK``, so the SQLite store and the
 in-memory engine are never touched concurrently. ``STATE`` / ``APP`` are mutated
-in place (never rebound), so ``from web.jobs import STATE`` stays valid everywhere.
-Only this module writes ``STATE`` flags and ``APP["session"]``.
+in place (never rebound), so ``from jobs import STATE`` stays valid everywhere.
+Only this module writes ``STATE`` and ``APP``; server.py only reads them.
 """
 from __future__ import annotations
 
@@ -22,13 +22,11 @@ LOCK = threading.RLock()
 _CLAIM = threading.Lock()   # guards the running flag only — never held across a job
 
 
-def session(*, idle: bool = False) -> Session:
-    """The ready session, or 503; with ``idle`` also 409 while a job is running."""
+def session() -> Session:
+    """The ready session, or 503."""
     s = APP["session"]
     if not s or not STATE["ready"]:
         raise HTTPException(503, "Engine is still starting.")
-    if idle:
-        require_idle()
     return s
 
 
@@ -38,8 +36,14 @@ def require_idle() -> None:
 
 
 def init_session(cfg: Config | None = None, wipe: bool = False) -> None:
-    """Build or rebuild the session (closing any existing one); sets ready / init_error."""
+    """Build or rebuild the session (closing any existing one); sets ready / init_error.
+
+    The startup call (``cfg is None``) is a no-op once a session exists: a reset is
+    admitted while not ready, and it must not be undone by a slow startup finishing
+    second and rebuilding with the default configuration."""
     with LOCK:
+        if cfg is None and APP["session"] is not None:
+            return
         STATE["ready"] = False
         try:
             if APP["session"]:
@@ -54,33 +58,32 @@ def init_session(cfg: Config | None = None, wipe: bool = False) -> None:
             STATE["progress"] = ""
 
 
-def run_job(fn, *, hold_lock: bool = True, clear_progress: bool = False) -> None:
+def run_job(fn, *, per_step: bool = False) -> None:
     """Run ``fn`` in a daemon thread as *the* running job (409 if one is already running).
 
     ``running`` is claimed before the thread starts (under its own short lock, not
-    LOCK, which a job may hold for minutes), so two requests cannot both pass.
-    ``hold_lock=False`` is for jobs that take LOCK per step themselves (seed
-    replay) so readers can poll between steps. Progress is left in place unless
-    ``clear_progress`` — a dream's result line stays visible."""
+    LOCK, which a job may hold for minutes), so two requests cannot both pass; the
+    previous job's progress line is cleared there, so no job ever shows another's.
+    ``per_step=True`` is for jobs that take LOCK per step themselves (seed replay)
+    so readers can poll between steps."""
     with _CLAIM:
         require_idle()
         STATE["running"] = True
+        STATE["progress"] = ""
     STATE["error"] = None
 
     def worker():
         try:
-            if hold_lock:
+            if per_step:
+                fn()
+            else:
                 with LOCK:
                     fn()
-            else:
-                fn()
         except Exception as exc:  # noqa: BLE001
             STATE["error"] = f"{type(exc).__name__}: {exc}"
             traceback.print_exc()
         finally:
             STATE["running"] = False
-            if clear_progress:
-                STATE["progress"] = ""
 
     threading.Thread(target=worker, daemon=True).start()
 
@@ -98,4 +101,33 @@ def run_seed_job(s: Session, do_reset: bool) -> None:
                 s.reset()
         s.replay(items, on_turn, guard=LOCK)
 
-    run_job(job, hold_lock=False, clear_progress=True)
+    run_job(job, per_step=True)
+
+
+def run_dream_job(s: Session, budget: int | None) -> dict:
+    """Consolidate in the background; the response reports the labile traces the pass
+    will scan (0 = nothing to settle, so no job is started). The count of clusters the
+    pass actually adjudicated is only known when it ends, and lands in ``progress``."""
+    require_idle()              # the read below takes LOCK, which a running job may hold for minutes
+    with LOCK:
+        n = s.memory.stats()["labile"]
+    if not n:
+        return {"ok": True, "n": 0,
+                "message": "Dream 対象のクラスタがありません（不安定な記憶に近傍がない＝整理済み）"}
+
+    def job():
+        results = s.dream(budget)
+        replaced = sum(1 for r in results if r.get("action") == "replace")
+        STATE["progress"] = f"dreamed {len(results)} cluster(s), {replaced} consolidated"
+
+    run_job(job)
+    return {"ok": True, "n": n}
+
+
+def set_seed(items: list[dict[str, str]]) -> dict:
+    """Replace the editable seed list and persist it under LOCK — ``seed.save`` truncates
+    data/seed.csv, so two concurrent saves would interleave into a mixed file."""
+    with LOCK:
+        APP["seed"] = items        # rebound atomically; the CSV is independent of the DB
+        seed.save(SEED_CSV_PATH, items)
+    return {"ok": True, "n": len(items)}

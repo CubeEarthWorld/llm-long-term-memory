@@ -4,12 +4,13 @@ Serves a JSON REST API plus the no-build React frontend in ./frontend.
 The engine is built lazily on startup (or on reset) in a background thread
 so that the UI can poll /api/state while heavy models load.
 
-Thread-safety is handled by a single lock in web.jobs; FastAPI itself runs
+Thread-safety is handled by a single lock in jobs.py; FastAPI itself runs
 handlers concurrently, but all mutating jobs go through run_job(), which admits
 one job at a time and serialises it via the lock.
 """
 from __future__ import annotations
 
+import csv
 import os
 import threading
 import time
@@ -22,8 +23,19 @@ from pydantic import BaseModel
 
 from config import ROOT, SYSTEM_TITLE, Config
 from core import seed
-from core.session import SEED_CSV_PATH
-from web.jobs import APP, LOCK, STATE, init_session, require_idle, run_job, run_seed_job, session
+from core.metrics import final_stats, invariants
+from jobs import (
+    APP,
+    LOCK,
+    STATE,
+    init_session,
+    require_idle,
+    run_dream_job,
+    run_job,
+    run_seed_job,
+    session,
+    set_seed,
+)
 
 app = FastAPI(title=SYSTEM_TITLE)
 
@@ -48,7 +60,7 @@ class NoCacheStaticFiles(StaticFiles):
 
 class ConfigBody(BaseModel):
     """POST /api/reset payload — full Config dict serialised as JSON."""
-    config: dict
+    config: dict[str, dict]
 
 
 class TurnBody(BaseModel):
@@ -72,7 +84,7 @@ class SeedRunBody(BaseModel):
 
 class SeedBody(BaseModel):
     """POST /api/seed-utterances payload — replace the entire seed list."""
-    items: list
+    items: list[dict[str, str]]
 
 
 class CsvBody(BaseModel):
@@ -112,7 +124,6 @@ def get_config():
 def reset(body: ConfigBody):
     """Wipe the DB and rebuild the session with the supplied configuration.
     Allowed while not ready, so a bad configuration (init_error) can be corrected."""
-    require_idle()
     try:
         cfg = Config.from_dict(body.config)
     except ValueError as e:
@@ -156,19 +167,7 @@ def turn(body: TurnBody):
 @app.post("/api/dream")
 def dream(body: DreamBody):
     """Trigger memory consolidation (dreaming): ≤ budget LLM adjudications."""
-    s = session(idle=True)
-    with LOCK:
-        n = len(s.memory.clusters())
-    if not n:
-        return {"ok": True, "n": 0, "message": "Dream 対象のクラスタがありません（不安定な記憶に近傍がない＝整理済み）"}
-    budget = None if body.budget is None else max(1, body.budget)
-
-    def job():
-        results = s.dream(budget)
-        replaced = sum(1 for r in results if r.get("action") == "replace")
-        STATE["progress"] = f"dreamed {len(results)} cluster(s), {replaced} consolidated"
-    run_job(job)
-    return {"ok": True, "n": n}
+    return run_dream_job(session(), None if body.budget is None else max(1, body.budget))
 
 
 @app.get("/api/dream-log")
@@ -192,13 +191,9 @@ def db():
     """Introspection endpoint: DB stats plus raw table snapshots (for the UI DB tab)."""
     with LOCK:
         s = APP["session"]
-        if not s:
+        if not s or not STATE["ready"]:
             return {"stats": {}, "tables": {}}
-        m = s.memory
-        return {
-            "stats": {**m.stats(), "vector_mb": round(m.vector_mb(), 3), "db_kb": round(m.db_size_bytes() / 1024, 1)},
-            "tables": {"memory": m.snapshot()},
-        }
+        return {"stats": final_stats(s.memory), "tables": {"memory": s.memory.snapshot()}}
 
 
 @app.get("/api/clusters")
@@ -207,7 +202,7 @@ def clusters():
     with LOCK:
         s = APP["session"]
         if not s or not STATE["ready"]:
-            return {"clusters": [], "message": "エンジン未起動"}
+            return {"clusters": []}
         m = s.memory
         now = m.now_unix()
         result = [{
@@ -228,15 +223,7 @@ def metrics():
             return {"rows": [], "invariants": {}}
         rows = s.recorder.rows()
         mem = s.cfg.memory
-    return {
-        "budget": mem.budget_chars,
-        "cap": mem.capacity,
-        "invariants": {
-            f"全 pack <= {mem.budget_chars}字 (注入予算)": all(r["pack_chars"] <= mem.budget_chars for r in rows),
-            f"全 records <= {mem.capacity}件 (capacity)": all(r["records"] <= mem.capacity for r in rows),
-        },
-        "rows": rows,
-    }
+    return {"invariants": invariants(rows, mem), "rows": rows}
 
 
 @app.get("/api/seed-utterances")
@@ -245,31 +232,28 @@ def seed_utts():
     return {"utterances": [{"i": i + 1, **item} for i, item in enumerate(list(APP["seed"]))]}
 
 
-def _set_seed(items: list[dict[str, str]]) -> dict:
-    APP["seed"] = items        # rebound atomically; the CSV is independent of the DB
-    seed.save(SEED_CSV_PATH, items)
-    return {"ok": True, "n": len(items)}
-
-
 @app.post("/api/seed-utterances")
 def save_seed_utts(body: SeedBody):
     """Replace the seed utterances list and persist it to CSV."""
     items = seed.clean(body.items)
     if not items:
         raise HTTPException(400, "少なくとも1件の発話が必要です。")
-    return _set_seed(items)
+    return set_seed(items)
 
 
 @app.post("/api/seed-utterances/reset")
 def reset_seed_utts():
     """Restore the built-in default seed scenario."""
-    return _set_seed(seed.clean(seed.DEFAULT_SEED))
+    return set_seed(seed.clean(seed.DEFAULT_SEED))
 
 
 @app.post("/api/seed-utterances/import")
 def import_seed_utts(body: CsvBody):
     """Parse raw CSV text and return cleaned seed items (preview before save)."""
-    items = seed.parse_csv(body.csv or "")
+    try:
+        items = seed.parse_csv(body.csv or "")
+    except csv.Error:
+        items = []
     if not items:
         raise HTTPException(400, "CSVから有効な発話を読み取れませんでした（text列が必要です）。")
     return {"items": items, "n": len(items)}

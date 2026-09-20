@@ -12,8 +12,12 @@ REM This app owns the port; a leftover listener there is its own stale process a
 REM would make the server fail to bind, which looks like "start.bat does not launch".
 echo [cleanup] checking for a previous instance on port %PORT% ...
 for /f "tokens=5" %%P in ('netstat -aon ^| findstr ":%PORT%" ^| findstr "LISTENING"') do (
-  echo   stopping old process PID %%P
-  taskkill /F /PID %%P >nul 2>&1
+  REM 8501 is also Streamlit's default: only reclaim it from a python process.
+  tasklist /FI "PID eq %%P" | findstr /i "python.exe" >nul
+  if not errorlevel 1 (
+    echo   stopping old process PID %%P
+    taskkill /F /PID %%P >nul 2>&1
+  )
 )
 
 if not exist ".venv\Scripts\python.exe" (
@@ -28,7 +32,10 @@ if not exist ".venv\Scripts\python.exe" (
 
 call ".venv\Scripts\activate.bat"
 
-if not exist ".venv\.deps_ok" (
+REM fc compares requirements.txt with the copy saved beside the venv: a missing or
+REM stale copy re-runs the install, so editing requirements.txt is picked up.
+fc /b requirements.txt ".venv\.deps_req" >nul 2>&1
+if errorlevel 1 (
   echo [setup] installing dependencies; first run, please wait ...
   python -m pip install --upgrade pip
   pip install -r requirements.txt
@@ -37,7 +44,7 @@ if not exist ".venv\.deps_ok" (
     pause
     exit /b 1
   )
-  echo ok> ".venv\.deps_ok"
+  copy /y requirements.txt ".venv\.deps_req" >nul
 )
 
 echo.

@@ -6,7 +6,7 @@ from dataclasses import dataclass, replace
 import numpy as np
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, eq=False)   # a generated __eq__ would raise on the ndarray field
 class Memory:
     """One trace. Text is canonical; ``vector`` is a derived index under ``model_id``."""
 
@@ -19,6 +19,7 @@ class Memory:
     consolidated: bool       # integrated by the dream phase
     model_id: str            # embedding model of ``vector`` ('' = not indexed yet)
     vector: np.ndarray       # unit-norm float32
+    cue: str = ""            # the question this fact answers; what the dream searches the past with
 
     def with_(self, **changes) -> "Memory":
         return replace(self, **changes)
