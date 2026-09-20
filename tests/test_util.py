@@ -40,6 +40,21 @@ def test_ulid_sorts_by_time_and_survives_50_bits():
     assert far > b and not far.startswith("0")
 
 
+def test_store_skips_unreadable_rows(tmp_path):
+    """SQLite is dynamically typed: one hand-edited row must not abort the whole load."""
+    path = str(tmp_path / "corrupt.db")
+    st = Store(path)
+    good = Memory("a", "t", 1, "UTC;+00:00", 1, 2.0, True, "m", np.array([1, 0], dtype=np.float32))
+    st.put(good)
+    st.put(good.with_(id="b"))
+    st.put(good.with_(id="c"))
+    st.conn.execute("UPDATE memory SET stability='not-a-number' WHERE id='b'")
+    st.conn.execute("UPDATE memory SET vector=X'010203' WHERE id='c'")   # not a whole float32
+    st.conn.commit()
+    assert [r.id for r in st.load_all()] == ["a"]
+    st.close()
+
+
 def test_store_round_trip_and_transaction(tmp_path):
     st = Store(str(tmp_path / "s.db"))
     m = Memory("a", "t", 1, "UTC;+00:00", 1, 2.0, True, "m", np.array([1, 0], dtype=np.float32))

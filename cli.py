@@ -23,12 +23,12 @@ except Exception:
 
 from config import SYSTEM_TITLE, Config
 from core import seed
+from core.metrics import final_stats, invariants
 from core.session import DATA_DIR, SEED_CSV_PATH, Session
 
 
-def _print_turn(session: Session, turn: int) -> None:
+def _print_turn(session: Session, turn: int, utt: str) -> None:
     """Pretty-print a single turn's metrics to the console."""
-    utt = next((r["utterance"] for r in session.log if r["turn"] == turn), "")
     print("\n" + "=" * 78)
     print(f"TURN {turn}  {utt}")
     print("=" * 78)
@@ -74,13 +74,10 @@ def _summary(session: Session) -> None:
     """Print high-level invariants and final DB statistics."""
     print("\n" + "#" * 78 + "\n# サマリ\n" + "#" * 78)
     rows = session.recorder.rows()
-    cfg = session.cfg
     if rows:
-        print(f"  全 pack <= {cfg.memory.budget_chars}字 : {all(r['pack_chars'] <= cfg.memory.budget_chars for r in rows)}")
-        print(f"  全 records <= {cfg.memory.capacity}件 : {all(r['records'] <= cfg.memory.capacity for r in rows)}")
-    s = session.memory
-    print(f"  {SYSTEM_TITLE}: records={s.total_records()}  {s.stats()}  "
-          f"vec={s.vector_mb():.3f}MB  db={s.db_size_bytes() / 1024:.1f}KB")
+        for label, ok in invariants(rows, session.cfg.memory).items():
+            print(f"  {label} : {ok}")
+    print(f"  {SYSTEM_TITLE}: {final_stats(session.memory)}")
 
 
 def _dump_json(session: Session, path: str) -> None:
@@ -88,9 +85,7 @@ def _dump_json(session: Session, path: str) -> None:
     keys = ("response", "write_note", "records", "pack_chars", "times", "recalled")
     out = {"turns": [{"turn": r["turn"], "utterance": r["utterance"], "note": r["note"],
                       "system": {k: r["system"][k] for k in keys if k in r["system"]}} for r in session.log],
-           "final": {}}
-    system = session.memory
-    out["final"] = {"records": system.total_records(), "stats": system.stats(), "vector_mb": system.vector_mb()}
+           "final": final_stats(session.memory)}
     os.makedirs(os.path.dirname(path), exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:
         json.dump(out, f, ensure_ascii=False, indent=2)
@@ -100,10 +95,8 @@ def _dump_json(session: Session, path: str) -> None:
 def main() -> int:
     """Parse CLI arguments, build the engine, run the pipeline, and dump results."""
     ap = argparse.ArgumentParser(description="LLM Long-Term Memory CLI runner")
-    ap.add_argument("--reset", dest="reset", action="store_true", default=True)
-    ap.add_argument("--no-reset", dest="reset", action="store_false")
-    ap.add_argument("--seed", dest="seed", action="store_true", default=True)
-    ap.add_argument("--no-seed", dest="seed", action="store_false")
+    ap.add_argument("--reset", action=argparse.BooleanOptionalAction, default=True)
+    ap.add_argument("--seed", action=argparse.BooleanOptionalAction, default=True)
     ap.add_argument("--say", action="append", default=[], help="run an extra turn with this text")
     ap.add_argument("--dream", nargs="?", type=int, const=5, default=0,
                     help="run a dreaming (consolidation) pass with this LLM budget after seeding")
@@ -116,8 +109,7 @@ def main() -> int:
     if args.provider:
         cfg.glob.llm_provider = args.provider
 
-    model = cfg.glob.deepseek_model if cfg.glob.llm_provider == "deepseek" else cfg.glob.gemini_model
-    print(f"[init] provider={cfg.glob.llm_provider} model={model}")
+    print(f"[init] provider={cfg.glob.llm_provider}")
     print(f"[init] embedding={cfg.glob.embedding_model} -> ./model")
     try:
         session = Session(cfg, wipe=args.reset)
@@ -126,14 +118,16 @@ def main() -> int:
         return 2
 
     try:
+        print(f"[init] model={session.llm.model}")
         print(f"[init] embedding: {session.provider.status}")
         print(f"[init] llm: {session.llm.status}")
 
         if args.seed:
-            session.replay(seed.load(SEED_CSV_PATH), lambda t, _item: _print_turn(session, t), restore_clock=False)
+            session.replay(seed.load(SEED_CSV_PATH),
+                           lambda t, item: _print_turn(session, t, item["text"]), restore_clock=False)
 
         for text in args.say:
-            _print_turn(session, session.run_turn(text))
+            _print_turn(session, session.run_turn(text), text)
 
         if args.dream:
             _print_dream(session.dream(args.dream))

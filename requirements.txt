@@ -13,3 +13,4 @@ llama-cpp-python>=0.3
 # data / env
 numpy>=1.26
 python-dotenv>=1.0
+tzdata                  # zoneinfo has no system tz database on Windows

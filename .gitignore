@@ -30,3 +30,9 @@ Thumbs.db
 
 # Log files
 *.log
+
+# Benchmark artefacts (regenerate: python bench/forget_bench.py --build-cache; python bench/sweep.py)
+bench/embeddings*.npz
+bench/results/
+bench/generality_*.json
+bench/supersede_result*.json

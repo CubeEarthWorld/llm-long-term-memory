@@ -28,7 +28,7 @@ class Session:
         """Assemble the runtime. ``wipe`` starts from an empty DB (file delete, then a
         clear in case the file was locked); otherwise the persisted turn log is restored."""
         self.cfg = cfg
-        self.provider = get_provider(cfg.glob.embedding_model)
+        self.provider = get_provider(cfg.glob)
         self.llm = LLMClient(cfg.glob)
         if wipe:
             Store.delete_files(DB_PATH)

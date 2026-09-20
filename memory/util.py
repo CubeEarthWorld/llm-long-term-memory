@@ -12,6 +12,10 @@ except Exception:  # pragma: no cover
 
 _CROCKFORD32 = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
 
+# The whitespace class, spelled out so it is identical to Dart's: Python's ``\s``
+# omits U+FEFF, Dart's omits U+001C-U+001F and U+0085.
+_WS = r"[\s﻿]"
+
 
 def ulid(millis: int) -> str:
     """26-char ULID-shaped id: 10 chars = 50-bit ms timestamp (valid past year
@@ -39,10 +43,10 @@ def shorten(text: str, max_chars: int) -> str:
 
 def clean_text(text: str, max_chars: int) -> str:
     """Strip the pack delimiters ``《》``, collapse whitespace, trim, shorten."""
-    return shorten(re.sub(r"\s+", " ", re.sub("[《》]", "", text or "")).strip(), max_chars)
+    return shorten(re.sub(_WS + "+", " ", re.sub("[《》]", "", text or "")).strip(), max_chars).strip()
 
 
-_CUE_BREAK = re.compile(r"\n+|(?<=[。！？])|(?<=[.!?])\s+")
+_CUE_BREAK = re.compile(r"\n+|(?<=[。！？])|(?<=[.!?])" + _WS + "+")
 
 
 def cues(text: str, max_cues: int) -> list[str]:
@@ -57,9 +61,10 @@ def cues(text: str, max_cues: int) -> list[str]:
 def tz_field(name: str, now: float) -> str:
     """'IANA;+HH:MM' for timezone ``name`` at ``now`` (offset frozen into the field)."""
     try:
-        off = (datetime(1970, 1, 1, tzinfo=dt_timezone.utc) + timedelta(seconds=float(now))) \
+        at = min(max(float(now), -62135596800.0), 253370764800.0)  # keep inside datetime's range
+        off = (datetime(1970, 1, 1, tzinfo=dt_timezone.utc) + timedelta(seconds=at)) \
             .astimezone(ZoneInfo(name)).strftime("%z") or "+0000"
-        return f"{name};{off[:3]}:{off[3:]}"
+        return f"{name};{off[:3]}:{off[3:5]}"   # %z is 7 chars for sub-minute offsets
     except Exception:
         return f"{name};+00:00"
 

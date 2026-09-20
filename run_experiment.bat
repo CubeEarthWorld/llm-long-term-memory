@@ -9,7 +9,10 @@ if not exist ".venv\Scripts\python.exe" (
 )
 call ".venv\Scripts\activate.bat"
 
-if not exist ".venv\.deps_ok" (
+REM fc compares requirements.txt with the copy saved beside the venv: a missing or
+REM stale copy re-runs the install, so editing requirements.txt is picked up.
+fc /b requirements.txt ".venv\.deps_req" >nul 2>&1
+if errorlevel 1 (
   python -m pip install --upgrade pip
   pip install -r requirements.txt
   if errorlevel 1 (
@@ -17,7 +20,7 @@ if not exist ".venv\.deps_ok" (
     pause
     exit /b 1
   )
-  echo ok> ".venv\.deps_ok"
+  copy /y requirements.txt ".venv\.deps_req" >nul
 )
 
 echo [run] running the LLM Long-Term Memory seed experiment ...

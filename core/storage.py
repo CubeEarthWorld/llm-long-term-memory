@@ -3,6 +3,7 @@ turn log. The engine keeps every trace in RAM; the store only persists."""
 from __future__ import annotations
 
 import glob as _glob
+import logging
 import os
 import sqlite3
 import time
@@ -11,6 +12,8 @@ from contextlib import contextmanager
 import numpy as np
 
 from memory.model import Memory
+
+logger = logging.getLogger(__name__)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS memory (
@@ -22,7 +25,8 @@ CREATE TABLE IF NOT EXISTS memory (
   stability REAL NOT NULL,
   consolidated INTEGER NOT NULL,
   model_id TEXT NOT NULL,
-  vector BLOB NOT NULL
+  vector BLOB NOT NULL,
+  cue TEXT NOT NULL DEFAULT ''
 );
 CREATE TABLE IF NOT EXISTS turn_log (
   turn INTEGER PRIMARY KEY,
@@ -47,19 +51,33 @@ class Store:
         self.conn.execute("PRAGMA synchronous=NORMAL;")   # WAL-safe; one fsync per checkpoint, not per commit
         self.conn.executescript(_SCHEMA)
         self._in_txn = False
+        self._snap_n = 0
 
     # -- MemoryStore contract ------------------------------------------- #
     def load_all(self) -> list[Memory]:
-        return [Memory(r["id"], r["text"], int(r["created_at"]), r["tz"], int(r["last_recall"]),
-                       float(r["stability"]), bool(r["consolidated"]), r["model_id"],
-                       np.frombuffer(r["vector"], dtype=np.float32).copy())
-                for r in self.conn.execute("SELECT * FROM memory ORDER BY rowid")]
+        """Insertion order — the engine tie-breaks seeds and candidates on it. Ordered by
+        id (ULIDs are lexicographically time-ordered) because ``INSERT OR REPLACE``
+        re-inserts the row and would give a rehearsed trace a fresh rowid.
+
+        Every row is validated (SPEC §2). SQLite is dynamically typed, so a hand-edited
+        or legacy row can hold a non-numeric stability or a vector blob that is not a
+        whole number of float32s; such a row is skipped rather than allowed to abort
+        startup for the whole store."""
+        out = []
+        for r in self.conn.execute("SELECT * FROM memory ORDER BY id"):
+            try:
+                out.append(Memory(r["id"], r["text"], int(r["created_at"]), r["tz"], int(r["last_recall"]),
+                                  float(r["stability"]), bool(r["consolidated"]), r["model_id"],
+                                  np.frombuffer(r["vector"], dtype=np.float32).copy(), r["cue"] or ""))
+            except (TypeError, ValueError) as e:
+                logger.warning("skipping unreadable memory row %r: %s", r["id"], e)
+        return out
 
     def put(self, m: Memory) -> None:
-        self._exec("INSERT OR REPLACE INTO memory(id,text,created_at,tz,last_recall,stability,consolidated,model_id,vector) "
-                   "VALUES(?,?,?,?,?,?,?,?,?)",
+        self._exec("INSERT OR REPLACE INTO memory(id,text,created_at,tz,last_recall,stability,consolidated,model_id,vector,cue) "
+                   "VALUES(?,?,?,?,?,?,?,?,?,?)",
                    (m.id, m.text, m.created_at, m.tz, m.last_recall, m.stability, int(m.consolidated),
-                    m.model_id, np.asarray(m.vector, dtype=np.float32).tobytes()))
+                    m.model_id, np.asarray(m.vector, dtype=np.float32).tobytes(), m.cue))
 
     def remove(self, mid: str) -> None:
         self._exec("DELETE FROM memory WHERE id=?", (mid,))
@@ -91,7 +109,8 @@ class Store:
         try:
             snap_dir = os.path.join(os.path.dirname(self.path), "snapshots")
             os.makedirs(snap_dir, exist_ok=True)
-            dst = os.path.join(snap_dir, f"snap_{int(time.time() * 1000)}.db")
+            self._snap_n += 1
+            dst = os.path.join(snap_dir, f"snap_{int(time.time() * 1000)}_{self._snap_n:04d}.db")
             bck = sqlite3.connect(dst)
             try:
                 with bck:
@@ -105,6 +124,7 @@ class Store:
                     pass
             return dst
         except Exception:
+            logger.warning("pre-dream backup failed", exc_info=True)   # dream is the only deleter
             return None
 
     # -- app-level turn log ---------------------------------------------- #

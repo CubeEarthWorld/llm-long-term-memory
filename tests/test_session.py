@@ -55,7 +55,7 @@ def test_replay_runs_on_a_virtual_clock_and_restores_it(make_session):
     assert seen == [1, 2] and s.turn == 2 and s.seeded and s.memory._clock is None
     assert [e["note"] for e in s.log] == ["重要", ""]
     assert s.log[1]["timestamp"] - s.log[0]["timestamp"] >= 5 * 31536000
-    assert s.start_time == s.log[0]["timestamp"]
+    t0 = s.start_time
 
     def boom(turn, item):
         raise RuntimeError("stop")
@@ -64,6 +64,17 @@ def test_replay_runs_on_a_virtual_clock_and_restores_it(make_session):
     assert s.memory._clock is None                                      # restored even on failure
     s.replay([{"text": "kept virtual", "advance": "1d"}], restore_clock=False)
     assert s.memory._clock is not None
+    s.close()
+    assert make_session().start_time == t0                              # survives a restart
+
+
+def test_turn_log_window_drops_the_oldest(make_session):
+    s = make_session(wipe=True)
+    s.cfg.glob.max_turn_log = 2
+    for i in range(3):
+        s.run_turn(f"turn {i} fact about cats")
+    assert [e["turn"] for e in s.log] == [2, 3]                          # RAM window
+    assert [r["turn"] for r in s.store.load_turn_log(1000)] == [2, 3]    # DB window
 
 
 def test_turn_log_survives_restart_and_reset_clears_it(make_session):

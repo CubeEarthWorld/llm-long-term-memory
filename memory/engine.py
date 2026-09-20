@@ -14,7 +14,7 @@ import time
 
 import numpy as np
 
-from config import LongTermMemoryConfig
+from memory.config import LongTermMemoryConfig
 from memory.model import Memory
 from memory.util import clean_text, cues, fmt_local, tz_field, ulid
 
@@ -65,10 +65,12 @@ class LongTermMemory:
         return m.stability * self.retrievability(m, now)
 
     def _clamp_stability(self, s: float) -> float:
-        return min(max(s, 1.0), self.cfg.max_stability)
+        return min(max(s if s == s else 1.0, 1.0), self.cfg.max_stability)   # s != s → NaN
 
-    def _activation(self, cos: float) -> float:
-        return max(0.0, (cos - self.cfg.cosine_floor) / (1.0 - self.cfg.cosine_floor))
+    def _activation(self, cos):
+        """Cue activation: the cosine rescaled above the model's baseline. Elementwise,
+        so the vectorised recall path and the per-trace paths share one definition."""
+        return np.maximum(0.0, (cos - self.cfg.cosine_floor) / (1.0 - self.cfg.cosine_floor))
 
     def _retrieved(self, m: Memory, now: float, a: float) -> Memory:
         s = m.stability * (1 + self.cfg.spacing_gain * a * (1 - self.retrievability(m, now)))
@@ -86,12 +88,18 @@ class LongTermMemory:
             m = raw.with_(stability=self._clamp_stability(raw.stability),
                           last_recall=min(raw.last_recall, now), created_at=min(raw.created_at, now))
             self._traces[m.id] = m
-            if m != raw:
+            if (m.stability, m.last_recall, m.created_at) != (raw.stability, raw.last_recall, raw.created_at):
                 self.store.put(m)
         self._reindex()
 
+    def _is_indexed(self, m: Memory) -> bool:
+        """One ``model_id`` means one dimension (SPEC §7): a vector of any other length —
+        a provider glitch, or a model file swapped under the same basename — is treated as
+        stale and re-embedded, so the index can never mix dimensions."""
+        return m.model_id == self.provider.model_id and m.vector.shape == (self.provider.dimension,)
+
     def _reindex(self) -> None:
-        stale = [m for m in self._traces.values() if m.model_id != self.provider.model_id]
+        stale = [m for m in self._traces.values() if not self._is_indexed(m)]
         for i in range(0, len(stale), 64):
             batch = stale[i:i + 64]
             try:
@@ -106,7 +114,7 @@ class LongTermMemory:
         """Indexed traces and their vector matrix. The matrix is cached and rebuilt only
         when a trace is inserted, removed or re-embedded (not on strength updates)."""
         if self._index is None:
-            rows = [m for m in self._traces.values() if m.model_id == self.provider.model_id]
+            rows = [m for m in self._traces.values() if self._is_indexed(m)]
             self._index = ([m.id for m in rows],
                            np.stack([m.vector for m in rows]) if rows else np.zeros((0, 1), dtype=np.float32))
         ids, M = self._index
@@ -116,6 +124,7 @@ class LongTermMemory:
         self.store.clear()
         self._traces.clear()
         self._write_times.clear()
+        self._last_recall.clear()
         self._index = None
 
     def memories(self) -> list[Memory]:
@@ -126,7 +135,7 @@ class LongTermMemory:
 
     def _put(self, m: Memory) -> None:
         old = self._traces.get(m.id)
-        if old is None or old.vector is not m.vector:
+        if old is None or old.vector is not m.vector or old.model_id != m.model_id:
             self._index = None
         self._traces[m.id] = m
         self.store.put(m)
@@ -139,11 +148,18 @@ class LongTermMemory:
     # ------------------------------------------------------------------ #
     # wake phase (SPEC §4)
     # ------------------------------------------------------------------ #
-    def remember(self, text: str, salience: float = 1.0, now: float | None = None) -> dict:
+    def remember(self, text: str, salience: float = 1.0, cue: str = "", now: float | None = None) -> dict:
         """Store one proposition. Exact duplicates are rehearsed; everything else is
-        inserted (never overwritten). Over capacity the weakest old trace is forgotten."""
+        inserted (never overwritten). Over capacity the weakest old trace is forgotten.
+
+        ``cue`` is the question this fact would later be asked with; it is what the dream
+        searches the past with, so an update reaches the version it supersedes even when
+        the two sentences are far apart (SPEC §4)."""
         now = self.now_unix() if now is None else now
+        sal = float(salience)
+        sal = min(max(sal, 0.0), 10.0) if sal == sal else 1.0   # NaN → the default salience
         text = clean_text(text, self.cfg.text_max)
+        cue = clean_text(cue, self.cfg.text_max)
         if not text:
             return {"action": "rejected", "error": "empty text", "text": ""}
         for m in self._traces.values():
@@ -160,33 +176,53 @@ class LongTermMemory:
             v = self.provider.encode_document([text])[0]
         except Exception:
             v = None                                     # embedder offline: index later
-        best, nearest = 0.0, None
-        if v is not None:
-            rows, M = self._search()
-            if rows:
-                sims = M @ v
-                i = int(sims.argmax())
-                if float(sims[i]) > best:
-                    best, nearest = float(sims[i]), rows[i]
-        related = best >= self.cfg.theta_related
+        q = None if v is None else self._cue_vector(cue, v)
+        candidates = [] if q is None else self._candidates(q, None)
         m = Memory(
             id=ulid(int(now * 1000)), text=text, created_at=int(now),
             tz=tz_field(self.timezone, now), last_recall=int(now),
-            stability=self._clamp_stability(self.cfg.initial_stability * min(max(float(salience), 0.0), 10.0)),
-            consolidated=v is not None and not related and not self._stale(),
+            stability=self._clamp_stability(self.cfg.initial_stability * sal),
+            consolidated=v is not None and not candidates and not self._stale(),
             model_id=self.provider.model_id if v is not None else "",
             vector=v if v is not None else np.zeros(0, dtype=np.float32),
+            cue=cue,
         )
+        best = 0.0 if not candidates else float(q @ candidates[0].vector)
         with self.store.transaction():                     # one operation = one commit
             self._put(m)
-            if related and nearest.consolidated:
-                self._put(nearest.with_(consolidated=False))   # reconsolidation: old trace labile too
             evicted = self._enforce_capacity(now)
         return self._event("inserted", m, now, cos=round(best, 3),
                            evicted=None if evicted is None else evicted.text)
 
     def _stale(self) -> bool:
-        return any(m.model_id != self.provider.model_id for m in self._traces.values())
+        return any(not self._is_indexed(m) for m in self._traces.values())
+
+    # ------------------------------------------------------------------ #
+    # candidates: what a new piece of evidence reactivates in the past
+    # ------------------------------------------------------------------ #
+    def _cue_vector(self, cue: str, own: np.ndarray) -> np.ndarray:
+        """The cue's query vector; the trace's own vector when it has no cue."""
+        if not cue:
+            return own
+        try:
+            return self.provider.encode_query([cue])[0]
+        except Exception:
+            return own                                   # embedder offline: fall back to the text
+
+    def _candidates(self, q: np.ndarray, seed: Memory | None) -> list[Memory]:
+        """Traces the cue ``q`` reactivates, strongest first: cos ≥ θ_related and not written
+        after the seed, so evidence only ever rewrites its own past (SPEC §5). Ties break on
+        insertion order — ULID tails are random, so ids would not agree across languages.
+        At most ``dream_max_members − 1``."""
+        rows, M = self._search()
+        if not rows:
+            return []
+        sims = M @ q
+        near = [(float(sims[i]), i) for i in range(len(rows))
+                if float(sims[i]) >= self.cfg.theta_related
+                and (seed is None or (rows[i].id != seed.id and rows[i].created_at <= seed.created_at))]
+        near.sort(key=lambda t: (-t[0], t[1]))
+        return [rows[i] for _, i in near[: self.cfg.dream_max_members - 1]]
 
     def recall(self, query: str, now: float | None = None) -> dict:
         """Inject ≤inject_n relevant traces (half-activation strengthening; ``cite`` completes it)."""
@@ -202,7 +238,7 @@ class LongTermMemory:
             return {"pack_text": "", "recalled": []}
         cos = (M @ qs.T).max(axis=1)
         R = self._retrievabilities(rows, now)
-        act = np.maximum(0.0, (cos - self.cfg.cosine_floor) / (1.0 - self.cfg.cosine_floor))
+        act = self._activation(cos)
         score = act * (self.cfg.alpha + (1 - self.cfg.alpha) * R)
         floor = max(self.cfg.min_score, self.cfg.relative_score * float(score.max()))
         pool = sorted((i for i in range(len(rows)) if score[i] >= floor), key=lambda i: -score[i])
@@ -298,28 +334,20 @@ class LongTermMemory:
     # sleep phase (SPEC §5)
     # ------------------------------------------------------------------ #
     def _seeds(self) -> list[Memory]:
-        """Labile traces, most stable first (what carries the most evidence integrates first)."""
-        return sorted((m for m in self._search()[0] if not m.consolidated), key=lambda m: -m.stability)
+        """Labile traces, most stable first (what carries the most evidence integrates first);
+        ties by insertion order, which is the one order both languages agree on."""
+        labile = [(i, m) for i, m in enumerate(self._search()[0]) if not m.consolidated]
+        labile.sort(key=lambda t: (-t[1].stability, t[0]))
+        return [m for _, m in labile]
 
     def _cluster(self, seed: Memory) -> list[Memory]:
-        rows, M = self._search()
-        sims = M @ seed.vector if rows else []
-        near = sorted(((float(sims[i]), i) for i in range(len(rows))
-                       if sims[i] >= self.cfg.theta_related and rows[i].id != seed.id), key=lambda t: -t[0])
-        return [seed] + [rows[i] for _, i in near[: self.cfg.dream_max_members - 1]]
+        """The seed (newest evidence) followed by the older traces its cue reactivates."""
+        return [seed] + self._candidates(self._cue_vector(seed.cue, seed.vector), seed)
 
     def clusters(self) -> list[list[Memory]]:
-        """The clusters the next dream would hand to the LLM (no LLM call)."""
-        out, taken = [], set()
-        for seed in self._seeds():
-            if seed.id in taken:
-                continue
-            cluster = self._cluster(seed)
-            if len(cluster) < 2:
-                continue
-            out.append(cluster)
-            taken.update(m.id for m in cluster)
-        return out
+        """The clusters the next dream would hand to the LLM (no LLM call). Clusters may
+        overlap: a settled trace is a candidate for every later piece of evidence."""
+        return [c for c in (self._cluster(s) for s in self._seeds()) if len(c) >= 2]
 
     def dream(self, budget: int | None = None, now: float | None = None) -> list[dict]:
         """Offline consolidation — the only place traces are rewritten."""
@@ -327,10 +355,10 @@ class LongTermMemory:
         self.store.backup()
         self._reindex()
         left = self.cfg.dream_budget if budget is None else int(budget)
-        reports, failed = [], set()
+        reports = []
         for s in self._seeds()[: _SEEDS_PER_BUDGET * max(left, 0)]:
             seed = self._traces.get(s.id)
-            if seed is None or seed.consolidated or s.id in failed:
+            if seed is None or seed.consolidated:
                 continue
             if left <= 0:
                 break
@@ -339,64 +367,73 @@ class LongTermMemory:
                 self._put(seed.with_(consolidated=True))
                 continue
             left -= 1
-            report = self._adjudicate(cluster, now)
-            if report["action"] == "error":
-                failed.update(m.id for m in cluster)
-            reports.append(report)
+            reports.append(self._adjudicate(cluster, now))  # an error leaves the seed labile for the next dream
         return reports
 
     def _adjudicate(self, cluster: list[Memory], now: float) -> dict:
-        before = [{"id": m.id, "text": m.text, "R": round(self.retrievability(m, now), 2)} for m in cluster]
+        """The seed is cluster[0]; the rest are older candidates. The verdict names the
+        candidates the seed supersedes — only those are rewritten, the others are left
+        untouched (they were merely offered, and exposure is not recall)."""
+        seed, candidates = cluster[0], cluster[1:]
+        # R is rounded half-up (not round()'s half-to-even) so the prompt the LLM sees
+        # is character-identical to the Dart twin's.
         members = [{"id": m.id, "text": m.text, "local_time": fmt_local(m.created_at, m.tz),
-                    "timezone": m.tz, "R": round(self.retrievability(m, now), 2)} for m in cluster]
+                    "timezone": m.tz, "R": int(self.retrievability(m, now) * 100 + 0.5) / 100}
+                   for m in cluster]
+        before = [{k: d[k] for k in ("id", "text", "R")} for d in members]
         try:
-            decision = self.llm.dream_cluster(members, current_time=self.now_local(now)) or {}
+            decision = self.llm.dream_cluster(members, current_time=self.now_local(now))
+            if not decision:
+                raise ValueError("empty verdict")   # SPEC §5: silence must never settle a seed
+            picked = {str(i) for i in decision.get("ids") or ()}
+            absorbed = [seed] + [m for m in candidates if m.id in picked]  # unnamed candidates are untouched
+            texts: list[str] = []
+            for t in decision.get("memories") or []:
+                c = clean_text(t, self.cfg.text_max)
+                if c and c not in texts:
+                    texts.append(c)
+            gists = [] if len(texts) > len(absorbed) else self._gists(texts, absorbed, now)
         except Exception as e:  # noqa: BLE001
             return {"action": "error", "before": before, "after": [], "error": f"{type(e).__name__}: {e}"}
-        texts: list[str] = []
-        for t in decision.get("memories") or []:
-            c = clean_text(t, self.cfg.text_max)
-            if c and c not in texts:
-                texts.append(c)
-        gists = [] if len(texts) > len(cluster) else self._gists(texts, cluster, now)
         if not gists:
-            with self.store.transaction():
-                for m in cluster:
-                    self._put(m.with_(consolidated=True))
+            self._put(seed.with_(consolidated=True))       # settled; the candidates are untouched
             return {"action": "keep", "before": before, "after": []}
         with self.store.transaction():
-            for m in cluster:
+            for m in absorbed:
                 self.store.remove(m.id)
             for g in gists:
                 self.store.put(g)
-        for m in cluster:
+        for m in absorbed:
             self._traces.pop(m.id, None)
         for g in gists:
             self._traces[g.id] = g
         self._index = None
         self._enforce_capacity(now)
-        return {"action": "replace", "before": before,
+        return {"action": "replace", "before": before, "absorbed": [m.id for m in absorbed],
                 "after": [{"id": g.id, "text": g.text, "stability": round(g.stability)} for g in gists]}
 
-    def _gists(self, texts: list[str], cluster: list[Memory], now: float) -> list[Memory]:
-        """Replacement traces: rejected wholesale if any text is unrelated to every member
-        (confabulation guard). Stability = strongest member + live evidence of the others;
-        R conserves the cluster's total strength (encoded into last_recall)."""
+    def _gists(self, texts: list[str], absorbed: list[Memory], now: float) -> list[Memory]:
+        """Replacement traces: rejected wholesale if any text is unrelated to every absorbed
+        member (confabulation guard). Stability = strongest member + live evidence of the
+        others; R conserves their total strength (encoded into last_recall). The gist was
+        stated when its newest member was, not when the dream ran — so a later update can
+        still reach it as an older candidate."""
         if not texts:
             return []
         vecs = self.provider.encode_document(texts)
-        M = np.stack([m.vector for m in cluster])
+        M = np.stack([m.vector for m in absorbed])
         if float((M @ vecs.T).max(axis=0).min()) < self.cfg.gist_min_cosine:
             return []
-        strongest = max(cluster, key=lambda m: m.stability)
-        sum_sr = sum(self.strength(m, now) for m in cluster)
+        strongest = max(absorbed, key=lambda m: m.stability)
+        sum_sr = sum(self.strength(m, now) for m in absorbed)
         stability = self._clamp_stability(strongest.stability + sum_sr - self.strength(strongest, now))
         r = min(1.0, sum_sr / stability)
         elapsed = min(64.0, -math.log2(r)) if r > 0 else 64.0
-        last_recall = int(round(now - stability * elapsed))
-        tz = tz_field(self.timezone, now)
-        return [Memory(id=ulid(int(now * 1000)), text=t, created_at=int(now), tz=tz, last_recall=last_recall,
-                       stability=stability, consolidated=True, model_id=self.provider.model_id, vector=v)
+        last_recall = int(now) - round(stability * elapsed)   # never above now (SPEC §7)
+        newest = max(absorbed, key=lambda m: m.created_at)   # = the seed; candidates are no newer
+        return [Memory(id=ulid(int(now * 1000)), text=t, created_at=newest.created_at, tz=newest.tz,
+                       last_recall=last_recall, stability=stability, consolidated=True,
+                       model_id=self.provider.model_id, vector=v, cue=newest.cue)
                 for t, v in zip(texts, vecs)]
 
     # ------------------------------------------------------------------ #
@@ -409,7 +446,7 @@ class LongTermMemory:
     def stats(self) -> dict[str, int]:
         rows = list(self._traces.values())
         return {"records": len(rows), "labile": sum(1 for m in rows if not m.consolidated),
-                "unindexed": sum(1 for m in rows if m.model_id != self.provider.model_id)}
+                "unindexed": sum(1 for m in rows if not self._is_indexed(m))}
 
     def total_records(self) -> int:
         return len(self._traces)
@@ -424,6 +461,3 @@ class LongTermMemory:
 
     def vector_mb(self) -> float:
         return sum(m.vector.nbytes for m in self._traces.values()) / (1024 * 1024)
-
-    def db_size_bytes(self) -> int:
-        return self.store.db_size_bytes()

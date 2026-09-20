@@ -24,11 +24,11 @@ new      : stability = clamp(S0 · salience, 1 s, S_max)
 
 | verb | what happens |
 |---|---|
-| `remember(text, salience)` | exact duplicate → rehearsal; otherwise insert, **never overwrite**. A trace with a neighbour (cos ≥ θ_related) is born *labile* and reactivates that neighbour (reconsolidation). Over `capacity`, the lowest-strength trace outside the 3-day grace period is forgotten. |
+| `remember(text, salience, cue)` | exact duplicate → rehearsal; otherwise insert, **never overwrite**. A trace whose `cue` reaches a neighbour (cos ≥ θ_related) is born *labile*; no existing trace is touched. Over `capacity`, the lowest-strength trace outside the 3-day grace period is forgotten. |
 | `recall(query)` | multi-cue cosine → `score = a·(α + (1−α)·R)` → absolute + relative cut → MMR → `[unix tz] text 《id》` pack ≤ 1024 chars. Injection is exposure: half-activation strengthening. |
 | `cite(reply)` | the `《id》`s the LLM quoted are strengthened as *used* (full activation). |
 | `forget(id)` | id-only physical delete. |
-| `dream(budget)` | labile traces (most stable first) seed clusters of cos ≥ θ_related neighbours (≤ 8); your LLM answers **keep** or **replace [texts]**. Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. A settled store makes no LLM calls. |
+| `dream(budget)` | labile traces (most stable first) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace** (the ids it supersedes + the gist texts). Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. A settled store makes no LLM calls. |
 
 No tiers, no counters, no rings, no maintenance call. Everything is bounded, so cost does not depend on elapsed time; a 3000-virtual-year simulation is part of the test suite.
 
@@ -58,15 +58,15 @@ python -m pytest -m slow                     # the 3000-virtual-year simulation 
 recall(utterance) → LLM (system prompt + memory pack + save_memory / delete_memory tools) → cite(reply)
 ```
 
-The LLM saves durable facts as pronoun-free propositions with absolute dates and an optional `salience` (1–10, emotional weight), never re-saves facts it was just shown, and quotes the `《id》` of memories it used so the engine can strengthen them. If a turn saved nothing, one extraction call proposes propositions through the same path.
+The LLM saves durable facts as pronoun-free propositions with absolute dates and an optional `salience` (1–10, emotional weight). Every save also carries a required `cue`: the question this fact would later be asked with. The cue is what the dream phase searches the past with, so an update can reach the version it supersedes even when the two sentences are textually far apart. The LLM never re-saves facts it was just shown, and quotes the `《id》` of memories it used so the engine can strengthen them. If a turn saved nothing, one extraction call proposes propositions through the same path.
 
 ## Storage
 
-One table: `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector)` plus the UI's turn log. The whole store lives in RAM (≈35 MB at 10k traces × 768 dims); SQLite only persists. A rotating ring of 8 snapshots is written before every dream. Switching the embedding model re-embeds every trace from its text (text is canonical; vectors are an index).
+One table: `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector, cue)` plus the UI's turn log. The whole store lives in RAM (≈35 MB at 10k traces × 768 dims); SQLite only persists. A rotating ring of 8 snapshots is written before every dream. Switching the embedding model re-embeds every trace from its text (text is canonical; vectors are an index).
 
 ## Parameters
 
-All 19 engine parameters live in `LongTermMemoryConfig` (`config.py`) and are editable in the UI; see [`SPEC.md`](SPEC.md) §6. Three of them depend on the embedding model's cosine distribution and are pre-set for EmbeddingGemma: `cosine_floor = 0.4`, `theta_related = 0.75`, `gist_min_cosine = 0.5`.
+All 19 engine parameters live in `LongTermMemoryConfig` (`config.py`) and are editable in the UI; see [`SPEC.md`](SPEC.md) §6. Three of them depend on the embedding model's cosine distribution and are pre-set for EmbeddingGemma: `cosine_floor = 0.4`, `theta_related = 0.55`, `gist_min_cosine = 0.5`.
 
 ## Project structure
 
@@ -80,7 +80,7 @@ All 19 engine parameters live in `LongTermMemoryConfig` (`config.py`) and are ed
 ├── core/turn.py          # per-turn runner (+ core/metrics.py)
 ├── core/session.py       # app session: assembly, turn log, seed replay, dream
 ├── core/seed.py          # built-in seed scenario + seed CSV
-├── server.py / web/jobs.py / frontend  # FastAPI routes, job state, no-build React UI
+├── server.py / jobs.py / frontend  # FastAPI routes, job state, no-build React UI
 ├── cli.py                # headless runner
 ├── tests/                # pytest suite + deterministic fakes (conformance test reads ../long-term-memory/test/conformance)
 └── SPEC.md               # the specification

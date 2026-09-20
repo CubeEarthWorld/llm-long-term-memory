@@ -53,15 +53,22 @@ _SAVE_TOOL = {
             "長期的に役立つ事実を1命題=1呼び出しで長期記憶に保存する。"
             "text は代名詞・指示語を含まない自己完結文・170字以内。"
             "日付・予定は「来週」などの相対表現でなく絶対日付(YYYY-MM-DD)で記述する。"
-            "salience は重要度・情動的な重み(1=通常、最大10)。通常は省略。"
+            "salience は重要度・情動的な重み(1=通常、最大10)。"
+            "cue はこの事実を後で問い直すときの質問文。"
         ),
         "parameters": {
             "type": "object",
             "properties": {
                 "text": {"type": "string", "description": "保存する自己完結した1命題（≤170字）"},
                 "salience": {"type": "number", "description": "重要度・情動的な重み 1(通常)〜10(極めて重要)"},
+                "cue": {"type": "string", "description": (
+                    "この事実を後で問い直すときユーザーが打つであろう質問文。"
+                    "具体的な値・固有名詞・日付は含めず、誰の何についての事実かだけを書く"
+                    "（例『ユーザーは抹茶味のアイスクリームが好き』→『ユーザーの好きなデザートは何か？』、"
+                    "『ユーザーは2026年4月に横浜へ引っ越した』→『ユーザーは今どこに住んでいるか？』）。"
+                    "同じ事柄を後で更新したとき、古い版を見つけて忘却するために使われる。")},
             },
-            "required": ["text"],
+            "required": ["text", "cue"],
         },
     },
 }
@@ -88,7 +95,7 @@ _EXTRACT_INSTRUCTION = (
     "日付や予定は「今日」「明日」「来週」「再来週」などの相対表現を使わず、"
     "現在日時を基準に絶対日付(YYYY-MM-DD、できれば曜日も)へ変換して記述してください。\n"
     "「# 既に記憶している事実」にある内容は抽出しないでください(変更・訂正がある場合だけ抽出)。\n"
-    'JSON オブジェクト {{"memories": ["文1", "文2"]}} のみを返してください。該当なしは {{"memories": []}}。\n\n'
+    'JSON オブジェクト {"memories": ["文1", "文2"]} のみを返してください。該当なしは {"memories": []}。\n\n'
     "# 既に記憶している事実\n{known}\n\n# ユーザー発話\n{user_text}\n\n# アシスタント応答\n{assistant_text}"
 )
 
@@ -97,20 +104,23 @@ _EXTRACT_SYSTEM_PROMPT = "You are a memory extraction engine. Return JSON only."
 _DREAM_INSTRUCTION = (
     "あなたは長期記憶を睡眠中に整理する統合エンジンです(夢フェーズ)。\n"
     "現在時刻: {current_time}\n"
-    "以下は意味的に近い記憶のクラスタです。各記憶には id・内容時刻(local_time/timezone)・想起可能性 R があります。"
-    "local_time はその記憶が述べられた時点の時刻です。\n\n"
+    "**先頭の記憶が新しく符号化された痕跡**で、続く記憶はそれが再活性化した、より古い記憶です。"
+    "各記憶には id・内容時刻(local_time/timezone)・想起可能性 R があります。"
+    "local_time はその記憶が述べられた時点の時刻です。話題が近いだけの無関係な記憶も混ざります。\n\n"
     "厳守: 入力に存在しない事実を書かないこと(作話禁止)。\n"
     "厳守: 「今日」「明日」「来週」などの相対時間表現は、その記憶の local_time を基準に"
     "絶対日付(YYYY-MM-DD、できれば曜日も)へ変換し、新しい text に相対表現を残さないこと。\n\n"
-    "次のいずれかを選んでください:\n"
-    "- replace: 重複・言い換え・更新・矛盾を整理し、より少数の要点(gist)へ統合する。"
+    "先頭の記憶が、古い記憶のうち**同じ主体の同じ事柄**を更新・訂正・重複しているものを選んでください:\n"
+    "- replace: 選んだ古い記憶の id を ids に挙げ、先頭の記憶とそれらを統合した新しい記憶を memories に書く。"
     "矛盾は local_time が新しい記憶を優先し、変化は命題に書き込む(例『2025年は東京、2026年に大阪へ転居』)。"
     "現在時刻より前に終わった予定は過去の事実として書き直す(例『2026年7月に旅行予定』→『2026年7月に旅行した』)。"
-    "1つの記憶に複数の事実が詰まっていれば独立した記憶へ分ける。異なる事実を無理に1つへまとめない。\n"
-    "- keep: 整理が不要なら何もしない。\n\n"
+    "1つの記憶に複数の事実が詰まっていれば独立した記憶へ分ける。異なる事柄を無理に1つへまとめない。"
+    "該当する古い記憶が無くても、先頭の記憶自身を書き直すべきなら ids を空にして replace してよい。\n"
+    "- keep: 先頭の記憶はそのままでよく、更新する古い記憶も無い場合。\n\n"
+    "話題が近いだけで別の事柄を述べている記憶は ids に挙げないこと(挙げなければ一切変更されません)。\n"
     "各新記憶 text は代名詞を含まない自己完結文・170字以内。「〜時点で確認」のような確認時刻のメタ情報は書かない(事実が変化した場合の日付だけを書く)。出力は JSON オブジェクトのみ:\n"
-    '{"action": "replace", "memories": ["...", "..."]} または {"action": "keep"}\n\n'
-    "# クラスタ内の記憶\n{listing}\n"
+    '{"action": "replace", "ids": ["...", "..."], "memories": ["...", "..."]} または {"action": "keep"}\n\n'
+    "# 記憶(先頭が新しい痕跡)\n{listing}\n"
 )
 
 _DREAM_SYSTEM_PROMPT = "You are a memory consolidation engine. Return JSON only."
@@ -134,7 +144,14 @@ _RETRIABLE_PATTERNS = (
 _MAX_TOOL_ROUNDS = 3
 
 
+class EmptyResponse(RuntimeError):
+    """The model returned no body. Reasoning models do this intermittently (the same
+    prompt succeeds on the next call), so it is transient, not a verdict."""
+
+
 def _is_retriable(exc: Exception) -> bool:
+    if isinstance(exc, EmptyResponse):
+        return True
     msg = str(exc).lower()
     return any(p in msg for p in _RETRIABLE_PATTERNS)
 
@@ -197,7 +214,7 @@ class LLMClient:
                     raise
                 wait = min(_RETRY_BASE_SECONDS * (2 ** attempt), _RETRY_MAX_SECONDS)
                 logger.warning("%s attempt %d/%d failed (%s), retrying in %.1fs",
-                               label, attempt + 1, _MAX_RETRIES, type(e).__name__, wait)
+                               label, attempt + 1, _MAX_RETRIES + 1, type(e).__name__, wait)
                 time.sleep(wait)
 
     # ================================================================== #
@@ -219,16 +236,25 @@ class LLMClient:
             logger.error("converse failed after retries: %s: %s", type(e).__name__, e)
             return ConverseResult(f"[LLM error] {type(e).__name__}: {e}", prompt)
 
+    @staticmethod
+    def _nonempty(resp):
+        """A body with neither text nor a tool call is the transient empty response —
+        raise so ``_retry`` gets another attempt instead of answering the user with ""."""
+        choice = resp.choices[0]
+        if not getattr(choice.message, "tool_calls", None) and not (choice.message.content or "").strip():
+            raise EmptyResponse(f"empty body (finish_reason={choice.finish_reason})")
+        return resp
+
     def _deepseek_converse(self, system: str, user: str, tools: dict[str, Callable]) -> str:
         messages = [{"role": "system", "content": system}, {"role": "user", "content": user}]
         tool_specs = [_SAVE_TOOL, _DELETE_TOOL]
         for _ in range(_MAX_TOOL_ROUNDS):
             resp = self._retry(
-                lambda: self._client.chat.completions.create(
+                lambda: self._nonempty(self._client.chat.completions.create(
                     model=self.deepseek_model, messages=messages, tools=tool_specs,
                     tool_choice="auto", temperature=self.temperature,
                     max_tokens=self.max_output_tokens,
-                ),
+                )),
                 "deepseek_converse",
             )
             msg = resp.choices[0].message
@@ -254,28 +280,17 @@ class LLMClient:
                                  "content": json.dumps(result, ensure_ascii=False)})
         # Tool rounds exhausted without a plain-text answer → one final text-only call.
         resp = self._retry(
-            lambda: self._client.chat.completions.create(
+            lambda: self._nonempty(self._client.chat.completions.create(
                 model=self.deepseek_model, messages=messages, temperature=self.temperature,
                 max_tokens=self.max_output_tokens,
-            ),
+            )),
             "deepseek_converse_final",
         )
         return resp.choices[0].message.content or ""
 
     def _gemini_converse(self, system: str, user: str) -> str:
         """Gemini path: plain text answer (no FC); saves are handled by the soft-side fallback."""
-        from google.genai import types
-
-        resp = self._retry(
-            lambda: self._client.models.generate_content(
-                model=self.gemini_model, contents=user,
-                config=types.GenerateContentConfig(
-                    system_instruction=system, temperature=self.temperature,
-                    max_output_tokens=self.max_output_tokens),
-            ),
-            "gemini_converse",
-        )
-        return resp.text or ""
+        return self._retry(lambda: self._gemini_chat(system, user, False, self.temperature), "gemini_converse")
 
     # ================================================================== #
     # extraction fallback (soft side) and dream consolidation
@@ -311,7 +326,11 @@ class LLMClient:
                        .replace("{listing}", listing)
                        .replace("{current_time}", current_time or "(不明)"))
         raw = self._chat(_DREAM_SYSTEM_PROMPT, instruction, json_mode=True, temperature=0.2, label="dream_cluster")
-        return _parse_dream(raw)
+        verdict = _parse_dream(raw)
+        if verdict is None:                     # unparsable: leave the cluster for the next dream
+            logger.warning("unparsable dream verdict, body was: %s", raw[:300])
+            raise ValueError("unparsable dream verdict")
+        return verdict
 
     def _chat(self, system: str, user: str, *, json_mode: bool = False,
               temperature: float | None = None, label: str = "chat") -> str:
@@ -330,7 +349,11 @@ class LLMClient:
         if json_mode:
             kwargs["response_format"] = {"type": "json_object"}
         resp = self._client.chat.completions.create(**kwargs)
-        return resp.choices[0].message.content or ""
+        choice = resp.choices[0]
+        text = choice.message.content or ""
+        if not text.strip():
+            raise EmptyResponse(f"empty body (finish_reason={choice.finish_reason})")
+        return text
 
     def _gemini_chat(self, system: str, user: str, json_mode: bool, temperature: float) -> str:
         from google.genai import types
@@ -343,7 +366,10 @@ class LLMClient:
             model=self.gemini_model, contents=user,
             config=types.GenerateContentConfig(**cfg),
         )
-        return resp.text or ""
+        text = resp.text or ""
+        if not text.strip():
+            raise EmptyResponse("empty body")
+        return text
 
 
 # ---------------------------------------------------------------------- #
@@ -381,15 +407,22 @@ def _parse_texts(text: str | None) -> list[str]:
     return [s for s in (_text_of(item) for item in data) if s]
 
 
-def _parse_dream(text: str | None) -> dict:
-    """Parse a dream verdict: {"action": "keep"} or {"action": "replace", "memories": [...]}.
-    Lenient: strings or {text} objects; unknown action with memories ⇒ replace; garbage ⇒ keep."""
+def _parse_dream(text: str | None) -> dict | None:
+    """Parse a dream verdict: {"action": "keep"} or {"action": "replace", "ids": [...], "memories": [...]}.
+    Lenient about shape (strings or {text} objects), but ``None`` for an empty or unparsable
+    answer — a truncated reasoning model must retry, not be read as "keep"."""
     obj = _loads_relaxed(text)
     if not isinstance(obj, dict):
-        return {"action": "keep", "memories": []}
+        return None
     action = str(obj.get("action", "")).strip().lower()
     mems = obj.get("memories")
-    if action == "keep" or not isinstance(mems, list):
-        return {"action": "keep", "memories": []}
+    if action == "keep":
+        return {"action": "keep", "ids": [], "memories": []}
+    if not isinstance(mems, list):
+        return None
     texts = [t for t in (_text_of(m) for m in mems) if t]
-    return {"action": "replace" if texts else "keep", "memories": texts}
+    ids = obj.get("ids")
+    ids = [str(i) for i in ids if str(i)] if isinstance(ids, list) else None
+    if not texts:
+        return {"action": "keep", "ids": [], "memories": []}
+    return {"action": "replace", "ids": ids, "memories": texts}
