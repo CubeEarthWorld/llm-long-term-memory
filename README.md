@@ -2,8 +2,6 @@
 
 A long-term memory layer for LLMs implementing **ENGRAM v2.1** ([`SPEC.md`](SPEC.md), Japanese): a memory *trace* model derived from the principles of human memory, running on a **local embedding model** (EmbeddingGemma as a GGUF via llama.cpp) and a **single-file SQLite DB**. The LLM generates only at three points: write, use (with citation), and the offline **dream** (consolidation).
 
-> Generation only at the moment of verbalization. All judgement is distance. All forgetting is arithmetic. All consolidation happens inside the dream.
-
 The same algorithm ships as a Dart package ([`../long-term-memory`](../long-term-memory)); a cross-language conformance test replays one scripted scenario in both and requires identical traces.
 
 日本語版は [README.ja.md](README.ja.md)、中文版は [README.zh.md](README.zh.md)。

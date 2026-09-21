@@ -459,7 +459,6 @@ function ExplanationBox() {
     <details class="explain">
       <summary><${Icon} name="sparkle" size=${15} /> ENGRAM v2 概要</summary>
       <div class="explain-body">
-        <p><b>生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。統合はすべて夢の中。</b></p>
         <p>記憶は<b>痕跡</b>: 最後に想起した時刻と安定度(半減期)の2つの数を持ちます。想起可能性 <code>R = 2^(−Δt/S)</code>。想起のたびに <code>S ← S·(1 + gain·a·(1−R))</code>（間隔効果・手がかりの活性化 a に比例）。層もカウンタもリングもありません。</p>
         <p>書込み(remember)は上書きしません。同一テキストはリハーサル、近い記憶は「不安定(labile)」な対として夢で審理されます。容量超過は強度 <code>S·R</code> 最小の古い痕跡を忘却（猶予期間内の新規記憶は保護）。</p>
         <p>想起(recall)は <code>score = a·(α + (1−α)·R)</code> で選び、MMR で多様化して ≤予算字数を注入。注入は「露出」なので半分だけ強化し、回答が《id》を引用した記憶は cite で完全に強化します。</p>
