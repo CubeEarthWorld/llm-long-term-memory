@@ -331,20 +331,25 @@ class LongTermMemory:
         """Forget the lowest-ranked trace while over capacity. Traces inside the grace
         period are protected unless they exceed a tenth of the capacity or nothing
         older exists (ties: old before young, then insertion order)."""
+        excess = len(self._traces) - self.cfg.capacity
+        if excess <= 0:
+            return None
+        rows = list(self._traces.values())
+        S = self._column(rows, "stability")
+        rank = np.log2(S) - np.maximum(0.0, now - self._column(rows, "last_recall")) / S
+        age = now - self._column(rows, "created_at")
+        young = (age >= 0) & (age < self.cfg.grace_period)
+        # Ranks cannot change while evicting: order each age group once (weakest first,
+        # ties by insertion order) instead of rescanning the survivors per victim.
+        order = np.argsort(rank, kind="stable")
+        old, yng = order[~young[order]].tolist(), order[young[order]].tolist()
+        o = y = 0
         victim = None
-        while len(self._traces) > self.cfg.capacity:
-            rows = list(self._traces.values())
-            S = self._column(rows, "stability")
-            rank = np.log2(S) - np.maximum(0.0, now - self._column(rows, "last_recall")) / S
-            age = now - self._column(rows, "created_at")
-            young = (age >= 0) & (age < self.cfg.grace_period)
-            old_i = int(np.where(young, np.inf, rank).argmin()) if not young.all() else -1
-            pick = old_i
-            if old_i < 0 or int(young.sum()) > self.cfg.capacity // 10:
-                young_i = int(np.where(young, rank, np.inf).argmin())
-                if old_i < 0 or rank[young_i] < rank[old_i]:
-                    pick = young_i
-            victim = rows[pick]
+        for _ in range(excess):
+            if o == len(old) or (len(yng) - y > self.cfg.capacity // 10 and rank[yng[y]] < rank[old[o]]):
+                victim, y = rows[yng[y]], y + 1
+            else:
+                victim, o = rows[old[o]], o + 1
             self._remove(victim.id)
         return victim
 
@@ -362,10 +367,13 @@ class LongTermMemory:
         """The seed (newest evidence) followed by the older traces its cue reactivates."""
         return [seed] + self._candidates(self._cue_vector(seed.cue, seed.vector), seed)
 
-    def clusters(self) -> list[list[Memory]]:
+    def clusters(self, budget: int | None = None) -> list[list[Memory]]:
         """The clusters the next dream would hand to the LLM (no LLM call). Clusters may
-        overlap: a settled trace is a candidate for every later piece of evidence."""
-        return [c for c in (self._cluster(s) for s in self._seeds()) if len(c) >= 2]
+        overlap: a settled trace is a candidate for every later piece of evidence.
+        With ``budget``, only the seeds ``dream(budget)`` scans — one search each, so the
+        unbounded call costs O(labile·N·dim)."""
+        seeds = self._seeds() if budget is None else self._seeds()[: _SEEDS_PER_BUDGET * max(budget, 0)]
+        return [c for c in (self._cluster(s) for s in seeds) if len(c) >= 2]
 
     def dream(self, budget: int | None = None, now: float | None = None) -> list[dict]:
         """Offline consolidation — the only place traces are rewritten."""

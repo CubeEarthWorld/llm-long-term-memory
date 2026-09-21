@@ -1,6 +1,6 @@
 [project]
 name = "llm-long-term-memory"
-version = "1.0.0"
+version = "1.0.1"
 description = "ENGRAM v2: a trace-based long-term memory engine for LLM applications, with a local FastAPI app."
 requires-python = ">=3.10"
 
