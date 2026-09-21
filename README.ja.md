@@ -1,6 +1,6 @@
 # LLM Long-Term Memory
 
-LLM に長期記憶を与えるレイヤー。**ENGRAM v2**（[`SPEC.md`](SPEC.md)）を実装しています。人間の記憶の原理から導いた**痕跡（trace）モデル**で、**ローカルの埋め込みモデル**（EmbeddingGemma の GGUF を llama.cpp で実行）と**単一ファイルの SQLite** だけで動きます。LLM が生成するのは 書込み・利用（引用）・オフラインの**夢**（統合）の 3 点だけです。
+LLM に長期記憶を与えるレイヤー。**ENGRAM v2.1**（[`SPEC.md`](SPEC.md)）を実装しています。人間の記憶の原理から導いた**痕跡（trace）モデル**で、**ローカルの埋め込みモデル**（EmbeddingGemma の GGUF を llama.cpp で実行）と**単一ファイルの SQLite** だけで動きます。LLM が生成するのは 書込み・利用（引用）・オフラインの**夢**（統合）の 3 点だけです。
 
 > 生成は言語化の瞬間だけ。判断はすべて距離。忘却はすべて算術。統合はすべて夢の中。
 
@@ -26,7 +26,7 @@ a        = max(0, (cos − cosine_floor) / (1 − cosine_floor))   手がかり�
 | `recall(query)` | 複数手がかりのコサイン → `score = a·(α + (1−α)·R)` → 絶対・相対閾値 → MMR → `[unix tz] text 《id》` を ≤1024 字で注入。注入は「露出」なので半分だけ強化。 |
 | `cite(reply)` | LLM が引用した《id》の記憶を「使用」として完全に強化。 |
 | `forget(id)` | id 指定の物理削除。 |
-| `dream(budget)` | 不安定な痕跡（安定度順）を種に、その `cue` が再活性化した**より古い**痕跡のクラスタ（cos ≥ θ_related、≤8）を作り、LLM が **keep** か **replace**（更新される古い記憶の id ＋ 要旨テキスト）を判定。要旨は最強成員の安定度＋他の「生きた証拠」を継承。無関係な出力は作話として拒否。整理済みのストアでは LLM を呼ばない。 |
+| `dream(budget)` | 不安定な痕跡（先入れ先出し、≤ 8·budget）を種に、その `cue` が再活性化した**より古い**痕跡のクラスタ（cos ≥ θ_related、≤8）を作り、LLM が **keep** か **replace**（更新される古い記憶の id ＋ 要旨テキスト）を判定。要旨は最強成員の安定度＋他の「生きた証拠」を継承。無関係な出力は作話として拒否。整理済みのストアでは LLM を呼ばない。 |
 
 層・カウンタ・リング・保守呼び出しは存在しません。全状態が有界なので演算コストは経過時間に依存せず、3000 仮想年のシミュレーションがテストに含まれています。
 
@@ -69,7 +69,7 @@ LLM は長期的に役立つ事実を代名詞なし・絶対日付の命題と�
 ## 構成
 
 ```
-├── memory/engine.py      # ENGRAM v2 エンジン（remember / recall / cite / forget / dream）
+├── memory/engine.py      # ENGRAM v2.1 エンジン（remember / recall / cite / forget / dream）
 ├── memory/model.py       # 痕跡 Memory
 ├── memory/util.py        # id・本文の清浄化・手がかり分割・任意の年のローカル時刻
 ├── core/embedding.py     # EmbeddingGemma GGUF（llama.cpp、オフライン）

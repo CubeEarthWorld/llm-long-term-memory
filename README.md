@@ -1,6 +1,6 @@
 # LLM Long-Term Memory
 
-A long-term memory layer for LLMs implementing **ENGRAM v2** ([`SPEC.md`](SPEC.md), Japanese): a memory *trace* model derived from the principles of human memory, running on a **local embedding model** (EmbeddingGemma as a GGUF via llama.cpp) and a **single-file SQLite DB**. The LLM generates only at three points: write, use (with citation), and the offline **dream** (consolidation).
+A long-term memory layer for LLMs implementing **ENGRAM v2.1** ([`SPEC.md`](SPEC.md), Japanese): a memory *trace* model derived from the principles of human memory, running on a **local embedding model** (EmbeddingGemma as a GGUF via llama.cpp) and a **single-file SQLite DB**. The LLM generates only at three points: write, use (with citation), and the offline **dream** (consolidation).
 
 > Generation only at the moment of verbalization. All judgement is distance. All forgetting is arithmetic. All consolidation happens inside the dream.
 
@@ -28,7 +28,7 @@ new      : stability = clamp(S0 · salience, 1 s, S_max)
 | `recall(query)` | multi-cue cosine → `score = a·(α + (1−α)·R)` → absolute + relative cut → MMR → `[unix tz] text 《id》` pack ≤ 1024 chars. Injection is exposure: half-activation strengthening. |
 | `cite(reply)` | the `《id》`s the LLM quoted are strengthened as *used* (full activation). |
 | `forget(id)` | id-only physical delete. |
-| `dream(budget)` | labile traces (most stable first) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace** (the ids it supersedes + the gist texts). Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. A settled store makes no LLM calls. |
+| `dream(budget)` | labile traces (first in, first out; ≤ 8·budget) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace** (the ids it supersedes + the gist texts). Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. A settled store makes no LLM calls. |
 
 No tiers, no counters, no rings, no maintenance call. Everything is bounded, so cost does not depend on elapsed time; a 3000-virtual-year simulation is part of the test suite.
 
@@ -71,7 +71,7 @@ All 19 engine parameters live in `LongTermMemoryConfig` (`config.py`) and are ed
 ## Project structure
 
 ```
-├── memory/engine.py      # the ENGRAM v2 engine (remember / recall / cite / forget / dream)
+├── memory/engine.py      # the ENGRAM v2.1 engine (remember / recall / cite / forget / dream)
 ├── memory/model.py       # the Memory trace
 ├── memory/util.py        # ids, text hygiene, cues, local time (any year)
 ├── core/embedding.py     # EmbeddingGemma GGUF via llama.cpp (offline)

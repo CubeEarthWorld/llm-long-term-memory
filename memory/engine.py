@@ -1,4 +1,4 @@
-"""ENGRAM v2 engine (SPEC.md): traces with a forgetting curve, the wake-phase
+"""ENGRAM v2.1 engine (SPEC.md): traces with a forgetting curve, the wake-phase
 verbs remember / recall / forget, and the sleep-phase dream.
 
 Every trace is held in RAM (numpy matrix for brute-force cosine); the injected
@@ -8,6 +8,7 @@ operation for operation (see the cross-language conformance test).
 """
 from __future__ import annotations
 
+import itertools
 import math
 import re
 import time
@@ -259,7 +260,7 @@ class LongTermMemory:
         act = self._activation(cos)
         score = act * (self.cfg.alpha + (1 - self.cfg.alpha) * R)
         floor = max(self.cfg.min_score, self.cfg.relative_score * float(score.max()))
-        pool = sorted((i for i in range(len(rows)) if score[i] >= floor), key=lambda i: -score[i])
+        pool = [i for i in range(len(rows)) if score[i] >= floor]   # insertion order; MMR ties keep it
         lines, recalled = [], []
         with self.store.transaction():                     # one operation = one commit
             self._pack(self._mmr(pool, score, M), rows, score, cos, R, now, lines, recalled)
@@ -356,23 +357,20 @@ class LongTermMemory:
     # ------------------------------------------------------------------ #
     # sleep phase (SPEC §5)
     # ------------------------------------------------------------------ #
-    def _seeds(self) -> list[Memory]:
-        """Labile traces, most stable first (what carries the most evidence integrates first);
-        ties by insertion order, which is the one order both languages agree on."""
-        labile = [(i, m) for i, m in enumerate(self._search()[0]) if not m.consolidated]
-        labile.sort(key=lambda t: (-t[1].stability, t[0]))
-        return [m for _, m in labile]
+    def _seeds(self, budget: int) -> list[Memory]:
+        """The labile traces a dream of ``budget`` scans: first in, first out (insertion
+        order), at most 8·budget. FIFO needs no ranking and never starves a seed."""
+        labile = (m for m in self._search()[0] if not m.consolidated)
+        return list(itertools.islice(labile, _SEEDS_PER_BUDGET * max(budget, 0)))
 
     def _cluster(self, seed: Memory) -> list[Memory]:
         """The seed (newest evidence) followed by the older traces its cue reactivates."""
         return [seed] + self._candidates(self._cue_vector(seed.cue, seed.vector), seed)
 
     def clusters(self, budget: int | None = None) -> list[list[Memory]]:
-        """The clusters the next dream would hand to the LLM (no LLM call). Clusters may
-        overlap: a settled trace is a candidate for every later piece of evidence.
-        With ``budget``, only the seeds ``dream(budget)`` scans — one search each, so the
-        unbounded call costs O(labile·N·dim)."""
-        seeds = self._seeds() if budget is None else self._seeds()[: _SEEDS_PER_BUDGET * max(budget, 0)]
+        """The clusters the next ``dream(budget)`` would hand to the LLM (no LLM call).
+        Clusters may overlap: a settled trace is a candidate for every later piece of evidence."""
+        seeds = self._seeds(self.cfg.dream_budget if budget is None else int(budget))
         return [c for c in (self._cluster(s) for s in seeds) if len(c) >= 2]
 
     def dream(self, budget: int | None = None, now: float | None = None) -> list[dict]:
@@ -382,7 +380,7 @@ class LongTermMemory:
         self._reindex()
         left = self.cfg.dream_budget if budget is None else int(budget)
         reports = []
-        for s in self._seeds()[: _SEEDS_PER_BUDGET * max(left, 0)]:
+        for s in self._seeds(left):
             seed = self._traces.get(s.id)
             if seed is None or seed.consolidated:
                 continue
@@ -434,7 +432,6 @@ class LongTermMemory:
         for g in gists:
             self._traces[g.id] = g
         self._index = None
-        self._enforce_capacity(now)
         return {"action": "replace", "before": before, "absorbed": [m.id for m in absorbed],
                 "after": [{"id": g.id, "text": g.text, "stability": round(g.stability)} for g in gists]}
 

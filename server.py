@@ -210,7 +210,7 @@ def clusters():
             "member_count": len(members),
             "members": [{"id": x.id, "text": x.text, "R": round(m.retrievability(x, now), 2),
                          "stability_days": round(x.stability / 86400, 1)} for x in members],
-        } for members in m.clusters(s.cfg.memory.dream_budget)]
+        } for members in m.clusters()]
     return {"clusters": result, "total_clusters": len(result)}
 
 

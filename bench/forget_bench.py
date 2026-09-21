@@ -321,7 +321,7 @@ class _KeepLLM:
 
 
 def main() -> None:
-    ap = argparse.ArgumentParser(description="ENGRAM v2 forgetting benchmark")
+    ap = argparse.ArgumentParser(description="ENGRAM v2.1 forgetting benchmark")
     ap.add_argument("--build-cache", action="store_true")
     ap.add_argument("--corpus", default=CORPUS_DIR)
     ap.add_argument("--arm", default="engram", choices=["engram", "fifo", "lru", "random", "none"])

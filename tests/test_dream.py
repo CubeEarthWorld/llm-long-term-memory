@@ -58,12 +58,12 @@ def test_confabulation_guard(make_system):
     assert s2.dream()[0]["action"] == "keep"
 
 
-def test_budget_and_priority(make_system):
+def test_budget_and_fifo_seeds(make_system):
     s, _ = make_system()
     s.remember("weak pair one alpha x"); s.remember("weak pair one alpha y")
     s.remember("strong pair two beta x", salience=5); s.remember("strong pair two beta y", salience=5)
     reports = s.dream(budget=1)
-    assert len(reports) == 1 and reports[0]["before"][0]["text"].startswith("strong")
+    assert len(reports) == 1 and reports[0]["before"][0]["text"].startswith("weak")
     assert len(s.clusters()) == 1
 
 

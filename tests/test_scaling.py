@@ -47,15 +47,15 @@ def test_bulk_eviction_matches_repeated_scan(make_system, cfg, capacity, mode):
     assert [m.text for m in s.memories()] == [m.text for m in rows]
 
 
-def test_clusters_budget_previews_exactly_the_seeds_dream_scans(make_system):
+def test_clusters_preview_the_seeds_dream_scans_first_in_first_out(make_system):
     s, _ = make_system()
     v = s.provider.encode_document(["same vector"])[0]
     for i in range(100):
         s._put(Memory(str(i), f"row {i}", 1_700_000_000 - i % 7, "UTC;+00:00", 1_700_000_000,
                       86400.0 + i % 3, False, s.provider.model_id, np.asarray(v, dtype=np.float32)))
     seeds = lambda cs: [c[0].id for c in cs]  # noqa: E731
-    everything = seeds(s.clusters())
-    assert len(everything) == 100
+    fifo = [str(i) for i in range(100)]
+    assert s.cfg.dream_budget == 5 and seeds(s.clusters()) == fifo[:40]
     assert seeds(s.clusters(0)) == []
-    assert seeds(s.clusters(2)) == everything[:16]
-    assert seeds(s.clusters(100)) == everything
+    assert seeds(s.clusters(2)) == fifo[:16]
+    assert seeds(s.clusters(100)) == fifo

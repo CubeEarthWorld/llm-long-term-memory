@@ -1,4 +1,4 @@
-"""Unified LLM client (ENGRAM v2). Generation is confined to three points:
+"""Unified LLM client (ENGRAM v2.1). Generation is confined to three points:
 
 * **converse** — the conversation turn: answer the user and decide, via the
   ``save_memory`` / ``delete_memory`` tools, what durable facts to write; cite the

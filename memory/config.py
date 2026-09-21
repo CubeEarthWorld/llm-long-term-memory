@@ -1,4 +1,4 @@
-"""The ENGRAM v2 engine parameters (SPEC §6) — mirrors the Dart ``EngramConfig``
+"""The ENGRAM v2.1 engine parameters (SPEC §6) — mirrors the Dart ``EngramConfig``
 one to one. Lives beside the engine so importing ``memory`` never pulls in the
 app's root ``config`` module (which reads ``secrets/.env`` at import time)."""
 from __future__ import annotations
@@ -11,7 +11,7 @@ _YEAR = 365 * _DAY        # would make Config._coerce() truncate 0.5 to 0
 
 @dataclass
 class LongTermMemoryConfig:
-    """ENGRAM v2 parameters (SPEC §6)."""
+    """ENGRAM v2.1 parameters (SPEC §6)."""
 
     capacity: int = 10000
     initial_stability: float = _DAY          # S0

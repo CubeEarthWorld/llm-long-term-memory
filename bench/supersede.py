@@ -49,7 +49,7 @@ def scenario(pairs: list[dict], llm, cfg: Config, provider=None):
 def cluster_capture(pairs: list[dict], cfg: Config, provider=None) -> dict:
     """cue で引き直した夢のクラスタが old と new を同席させた割合（generality.py と共用）。"""
     s, _ = scenario(pairs, None, cfg, provider=provider)
-    clusters = [{m.text for m in c} for c in s.clusters()]
+    clusters = [{m.text for m in c} for c in s.clusters(budget=len(pairs))]   # every labile seed
     got = sum(1 for x in pairs if any({x["old"], x["new"]} <= c for c in clusters))
     s.store.close()
     return {"captured": got, "pairs": len(pairs), "rate": round(got / len(pairs), 3),
