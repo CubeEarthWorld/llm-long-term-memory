@@ -26,7 +26,7 @@ new      : stability = clamp(S0 · salience, 1 s, S_max)
 | `recall(query)` | multi-cue cosine → `score = a·(α + (1−α)·R)` → absolute + relative cut → MMR → `[unix tz] text 《id》` pack ≤ 1024 chars. Injection is exposure: half-activation strengthening. |
 | `cite(reply)` | the `《id》`s the LLM quoted are strengthened as *used* (full activation). |
 | `forget(id)` | id-only physical delete. |
-| `dream(budget)` | labile traces (first in, first out; ≤ 8·budget) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace** (the ids it supersedes + the gist texts). Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. A settled store makes no LLM calls. |
+| `dream(budget)` | labile traces (first in, first out; ≤ 8·budget) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace** (the ids it supersedes + the gist texts). Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. A settled store makes no LLM calls; the cues of all seeds are embedded in one call. |
 
 No tiers, no counters, no rings, no maintenance call. Everything is bounded, so cost does not depend on elapsed time; a 3000-virtual-year simulation is part of the test suite.
 

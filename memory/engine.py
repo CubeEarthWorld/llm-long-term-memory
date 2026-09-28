@@ -192,7 +192,7 @@ class LongTermMemory:
             v = self._vector(self.provider.encode_document([text])[0])
         except Exception:
             v = None                                     # embedder offline: index later
-        q = None if v is None else self._cue_vector(cue, v)
+        q = None if v is None else self._cue_vectors([(cue, v)])[0]
         candidates = [] if q is None else self._candidates(q, None)
         m = Memory(
             id=ulid(int(now * 1000)), text=text, created_at=int(now),
@@ -216,30 +216,46 @@ class LongTermMemory:
     # ------------------------------------------------------------------ #
     # candidates: what a new piece of evidence reactivates in the past
     # ------------------------------------------------------------------ #
-    def _cue_vector(self, cue: str, own: np.ndarray) -> np.ndarray:
-        """The cue's query vector; the trace's own vector when it has no cue."""
-        if not cue:
-            return own
-        try:
-            v = self._vector(self.provider.encode_query([cue])[0])
-            return own if v is None else v
-        except Exception:
-            return own                                   # embedder offline: fall back to the text
+    def _cue_vectors(self, pairs: list[tuple[str, np.ndarray]]) -> list[np.ndarray]:
+        """Each (cue, own vector) pair's query vector: the cue's, or the trace's own vector
+        when it has no cue. The distinct non-empty cues are embedded in a single
+        ``encode_query`` call. When that call fails (embedder offline) every pair falls back
+        to its own vector; a missing or wrong-dimension result falls back for its own pairs."""
+        slot: dict[str, int] = {}
+        for cue, _ in pairs:
+            if cue and cue not in slot:
+                slot[cue] = len(slot)
+        embedded: list[np.ndarray | None] = []
+        if slot:
+            try:
+                raw = self.provider.encode_query(list(slot))
+                embedded = [self._vector(raw[i]) if i < len(raw) else None for i in range(len(slot))]
+            except Exception:
+                embedded = []                            # embedder offline: fall back to the text
+        out = []
+        for cue, own in pairs:
+            i = slot.get(cue)
+            v = embedded[i] if i is not None and i < len(embedded) else None
+            out.append(own if v is None else v)
+        return out
 
     def _candidates(self, q: np.ndarray, seed: Memory | None) -> list[Memory]:
-        """Traces the cue ``q`` reactivates, strongest first: cos ≥ θ_related and not written
-        after the seed, so evidence only ever rewrites its own past (SPEC §5). Ties break on
-        insertion order — ULID tails are random, so ids would not agree across languages.
-        At most ``dream_max_members − 1``."""
+        """Traces the cue ``q`` reactivates (see ``_near``)."""
         rows, M = self._search()
         if not rows:
             return []
-        sims = M @ q
+        return [rows[i] for _, i in self._near(rows, M @ q, seed)]
+
+    def _near(self, rows: list[Memory], sims: np.ndarray, seed: Memory | None) -> list[tuple[float, int]]:
+        """(cos, row) of the traces a cue reactivates, strongest first: cos ≥ θ_related and not
+        written after the seed, so evidence only ever rewrites its own past (SPEC §5). Ties
+        break on insertion order — ULID tails are random, so ids would not agree across
+        languages. At most ``dream_max_members − 1``. ``sims`` holds one cosine per row."""
         near = [(float(sims[i]), i) for i in range(len(rows))
                 if float(sims[i]) >= self.cfg.theta_related
                 and (seed is None or (rows[i].id != seed.id and rows[i].created_at <= seed.created_at))]
         near.sort(key=lambda t: (-t[0], t[1]))
-        return [rows[i] for _, i in near[: self.cfg.dream_max_members - 1]]
+        return near[: self.cfg.dream_max_members - 1]
 
     def recall(self, query: str, now: float | None = None) -> dict:
         """Inject ≤inject_n relevant traces (half-activation strengthening; ``cite`` completes it)."""
@@ -363,15 +379,23 @@ class LongTermMemory:
         labile = (m for m in self._search()[0] if not m.consolidated)
         return list(itertools.islice(labile, _SEEDS_PER_BUDGET * max(budget, 0)))
 
-    def _cluster(self, seed: Memory) -> list[Memory]:
-        """The seed (newest evidence) followed by the older traces its cue reactivates."""
-        return [seed] + self._candidates(self._cue_vector(seed.cue, seed.vector), seed)
-
     def clusters(self, budget: int | None = None) -> list[list[Memory]]:
         """The clusters the next ``dream(budget)`` would hand to the LLM (no LLM call).
-        Clusters may overlap: a settled trace is a candidate for every later piece of evidence."""
+        Clusters may overlap: a settled trace is a candidate for every later piece of evidence.
+        Nothing changes while previewing, so every seed's cue is embedded in one
+        ``encode_query`` call and all of them are scored against one snapshot of the index.
+        Each column is the same float32 matrix-vector product ``dream`` computes per seed: a
+        single ``M @ Q.T`` would round differently (BLAS gemm vs gemv, ~1e-7), and the
+        preview must be exactly what the dream adjudicates."""
         seeds = self._seeds(self.cfg.dream_budget if budget is None else int(budget))
-        return [c for c in (self._cluster(s) for s in seeds) if len(c) >= 2]
+        if not seeds:
+            return []
+        rows, M = self._search()
+        qs = self._cue_vectors([(s.cue, s.vector) for s in seeds])
+        sims = np.stack([M @ q for q in qs], axis=1)     # rows × seeds
+        clusters = ([seed] + [rows[i] for _, i in self._near(rows, sims[:, j], seed)]
+                    for j, seed in enumerate(seeds))
+        return [c for c in clusters if len(c) >= 2]
 
     def dream(self, budget: int | None = None, now: float | None = None) -> list[dict]:
         """Offline consolidation — the only place traces are rewritten."""
@@ -380,13 +404,18 @@ class LongTermMemory:
         self._reindex()
         left = self.cfg.dream_budget if budget is None else int(budget)
         reports = []
-        for s in self._seeds(left):
+        seeds = self._seeds(left)
+        # A seed's cue and vector never change during a dream (a seed is only settled or
+        # absorbed), so every cue is embedded up front in one call. The candidates are still
+        # searched per seed: each verdict rewrites the store the next seed searches.
+        qs = self._cue_vectors([(s.cue, s.vector) for s in seeds])
+        for s, q in zip(seeds, qs):
             seed = self._traces.get(s.id)
             if seed is None or seed.consolidated:
                 continue
             if left <= 0:
                 break
-            cluster = self._cluster(seed)
+            cluster = [seed] + self._candidates(q, seed)   # the seed (newest evidence) first
             if len(cluster) < 2:
                 self._put(seed.with_(consolidated=True))
                 continue
