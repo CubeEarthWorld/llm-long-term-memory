@@ -9,11 +9,9 @@ data/*.db
 data/*.db-*
 data/*.log
 data/*.json
+data/snapshots/
 model/
-.venv/
-venv/
-__pycache__/
-*.pyc
+target/
 *.db
 *.sqlite
 *.sqlite3
@@ -31,8 +29,13 @@ Thumbs.db
 # Log files
 *.log
 
-# Benchmark artefacts (regenerate: python bench/forget_bench.py --build-cache; python bench/sweep.py)
+# Benchmark artefacts (regenerate: ltm bench cache; ltm bench sweep)
+bench/embeddings*.bin
 bench/embeddings*.npz
 bench/results/
 bench/generality_*.json
 bench/supersede_result*.json
+
+# Prompts the Claude provider could not answer yet (answer them, then they move to the cache)
+*.pending.json
+.venv/

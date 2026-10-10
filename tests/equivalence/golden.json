@@ -14,7 +14,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -24,19 +24,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -46,13 +46,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -60,8 +60,8 @@
   "recalled": [
    [
     "train kyoto train autumn n30",
-    "0.1150510163532229",
-    "0.19473129510879517",
+    "0.11505101509354443",
+    "0.19473129297670777",
     "0.3704913009957931"
    ]
   ],
@@ -74,7 +74,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -84,25 +84,25 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.553,
+  "cosine": "0.552868078777868",
   "evicted": null
  },
  {
@@ -110,26 +110,26 @@
   "recalled": [
    [
     "chopin practice recital chopin n8",
-    "0.2903623348991419",
-    "0.7169973850250244",
+    "0.29036232111083415",
+    "0.7169973509772868",
     "0.08456902453643869"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.25039971613401407",
-    "0.3754800856113434",
+    "0.25039971237185527",
+    "0.37548007996990046",
     "0.48750587572675164"
    ],
    [
     "engine memory vector medicine n27",
-    "0.21133227992044143",
-    "0.2391652911901474",
+    "0.21133226056802648",
+    "0.23916526928896903",
     "0.8209605703029654"
    ],
    [
     "doctor spring allergy savings n3",
-    "0.14176861528833776",
-    "0.18709233403205872",
+    "0.14176861216133257",
+    "0.1870923299053435",
     "0.6273027517241043"
    ]
   ],
@@ -140,15 +140,15 @@
   "recalled": [
    [
     "salary budget rent rent n37",
-    "0.24757421873308386",
-    "0.3653316795825958",
+    "0.24757421791560927",
+    "0.3653316783762935",
     "0.504107268795161"
    ],
    [
     "doctor spring allergy savings n3",
-    "0.10546183766693551",
-    "0.10849131643772125",
-    "0.9570404644032955"
+    "0.10546184072532781",
+    "0.10849131959033562",
+    "0.9570404643155268"
    ]
   ],
   "pack": "[1700171465 Asia/Tokyo;+09:00] salary budget rent rent n37　《id》\n[1700256295 Asia/Tokyo;+09:00] doctor spring allergy savings n3　《id》\n"
@@ -158,26 +158,26 @@
   "recalled": [
    [
     "kitten cat litter vet n28",
-    "0.5292045205060161",
-    "0.6451455354690552",
+    "0.5292045661874945",
+    "0.6451455911586812",
     "0.7235185203271315"
    ],
    [
     "train hotel autumn vet n6",
-    "0.3259979638603288",
-    "0.42194533348083496",
+    "0.32599796923887164",
+    "0.42194534044238474",
     "0.6501647816318215"
    ],
    [
     "doctor spring allergy savings n3",
-    "0.26718408161968354",
-    "0.27667272090911865",
-    "0.9472376367602715"
+    "0.26718407806340705",
+    "0.2766727172444521",
+    "0.94723763666412"
    ],
    [
     "train hotel autumn vet n24",
-    "0.17264199198561503",
-    "0.3835558295249939",
+    "0.17264199483525514",
+    "0.3835558358559917",
     "0.1540140912849422"
    ]
   ],
@@ -195,19 +195,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -215,32 +215,32 @@
   "recalled": [
    [
     "train hotel autumn vet n6",
-    "0.36513060546093173",
-    "0.44025301933288574",
-    "0.737485174789901"
+    "0.36513061659760077",
+    "0.4402530325290762",
+    "0.7374851754615628"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.16333997554670987",
-    "0.2080262154340744",
-    "0.6695221262295032"
+    "0.1633399869868229",
+    "0.20802623015962343",
+    "0.6695221253255363"
    ],
    [
     "train kyoto train autumn n30",
-    "0.17399063950637172",
-    "0.4452311396598816",
-    "0.0627495698570813"
+    "0.17399063269758963",
+    "0.4452311224554219",
+    "0.06274956956164575"
    ],
    [
     "train hotel autumn vet n24",
-    "0.27132727261679873",
-    "0.41305309534072876",
-    "0.47212663522658493"
+    "0.2713272652499851",
+    "0.4130530833433106",
+    "0.47212663714132563"
    ],
    [
     "vet food vet chopin n22",
-    "0.1302225500461394",
-    "0.14231212437152863",
+    "0.13022253865896763",
+    "0.14231211192719695",
     "0.8693059695502341"
    ]
   ],
@@ -249,13 +249,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.66,
+  "cosine": "0.6595355379138377",
   "evicted": null
  },
  {
@@ -270,7 +270,7 @@
     "after": [
      [
       "salary bank salary salary n3 / salary budget rent rent n37",
-      "np.float64(633446.4273488729)",
+      "633446.4270387677",
       1700526100
      ]
     ]
@@ -284,7 +284,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -307,7 +307,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -317,7 +317,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -325,27 +325,27 @@
   "recalled": [
    [
     "kitten toy kitten autumn n12",
-    "0.2601511558505579",
-    "0.38861769437789917",
+    "0.26015111810988595",
+    "0.3886176380003179",
     "0.4914260689545128"
    ],
    [
     "kitten cat litter vet n28",
-    "0.24134056850495644",
-    "0.3810479938983917",
-    "0.4359385063116266"
+    "0.24134055053952655",
+    "0.38104796295416865",
+    "0.43593851290641156"
    ],
    [
     "allergy pollen doctor engine n31",
-    "0.12416142327493837",
-    "0.1657598465681076",
+    "0.12416142626473133",
+    "0.16575985055958586",
     "0.6139138903528846"
    ],
    [
     "train kyoto train autumn n30",
-    "0.15220742087678435",
-    "0.1993607133626938",
-    "0.6361192449716918"
+    "0.15220742101854604",
+    "0.19936071362007374",
+    "0.6361192445492482"
    ]
   ],
   "pack": "[1700848031 Asia/Tokyo;+09:00] kitten toy kitten autumn n12　《id》\n[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1700693322 Asia/Tokyo;+09:00] allergy pollen doctor engine n31　《id》\n[1700149804 Asia/Tokyo;+09:00] train kyoto train autumn n30　《id》\n"
@@ -353,25 +353,25 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.732,
+  "cosine": "0.7318636776344641",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -379,20 +379,20 @@
   "recalled": [
    [
     "vector test vector python n29",
-    "0.39765939824633323",
-    "0.5139471888542175",
+    "0.39765939415254303",
+    "0.5139471835632776",
     "0.6519014071431265"
    ],
    [
     "engine memory vector medicine n27",
-    "0.25381008240903485",
-    "0.43652281165122986",
-    "0.35605540186284135"
+    "0.25381007463001143",
+    "0.43652279926391935",
+    "0.35605539983071544"
    ],
    [
     "allergy spring allergy medicine n33",
-    "0.17341569979841132",
-    "0.1767154484987259",
+    "0.1734156818904335",
+    "0.17671543024999561",
     "0.9712728202024792"
    ]
   ],
@@ -401,7 +401,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -409,33 +409,33 @@
   "recalled": [
    [
     "allergy spring allergy medicine n33",
-    "0.6710226565538957",
-    "0.7204268574714661",
-    "0.8944980157779325"
+    "0.6710227007630333",
+    "0.7204269049746412",
+    "0.8944980157001023"
    ],
    [
     "allergy pollen doctor engine n31",
-    "0.4141555641414671",
-    "0.4939756393432617",
-    "0.751404510841201"
+    "0.4141555509688016",
+    "0.49397562345836654",
+    "0.751404511294154"
    ],
    [
     "allergy pollen medicine savings n3",
-    "0.34517344021301044",
-    "0.5600751638412476",
+    "0.3451734301552261",
+    "0.5600751475215817",
     "0.4096898814730389"
    ],
    [
     "allergy spring doctor allergy n29",
-    "0.28579630949261453",
-    "0.646406888961792",
+    "0.2857963212144945",
+    "0.6464069154740446",
     "0.14173948893596952"
    ],
    [
     "doctor spring allergy savings n3",
-    "0.24406229676266494",
-    "0.4092189073562622",
-    "0.3790924889995052"
+    "0.24406228039083608",
+    "0.40921888025288516",
+    "0.379092488220909"
    ]
   ],
   "pack": "[1701022225 Asia/Tokyo;+09:00] allergy spring allergy medicine n33　《id》\n[1700693322 Asia/Tokyo;+09:00] allergy pollen doctor engine n31　《id》\n[1700647847 Asia/Tokyo;+09:00] allergy pollen medicine savings n3　《id》\n[1700605702 Asia/Tokyo;+09:00] allergy spring doctor allergy n29　《id》\n[1700256295 Asia/Tokyo;+09:00] doctor spring allergy savings n3　《id》\n"
@@ -443,13 +443,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.805,
+  "cosine": "0.8049338446267783",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.833,
+  "cosine": "0.833125908338987",
   "evicted": null
  },
  {
@@ -457,32 +457,32 @@
   "recalled": [
    [
     "recital practice recital train n28",
-    "0.48934713370950544",
-    "0.8501874208450317",
+    "0.4893471383190633",
+    "0.8501874288536372",
     "0.3470393825238527"
    ],
    [
     "engine memory vector medicine n27",
-    "0.3051434181038281",
-    "0.33242279291152954",
-    "0.8737503269034425"
+    "0.30514340428000847",
+    "0.33242277821293215",
+    "0.8737503253696087"
    ],
    [
     "allergy spring doctor allergy n29",
-    "0.1949805238506634",
-    "0.20787039399147034",
-    "0.9046012803140739"
+    "0.19498050469154382",
+    "0.2078703733223895",
+    "0.9046012820036531"
    ],
    [
     "chopin practice recital chopin n8",
-    "0.21960603354500277",
-    "0.5531539916992188",
-    "0.07231853597168082"
+    "0.21960602967655277",
+    "0.5531539860080475",
+    "0.07231853149660221"
    ],
    [
     "lesson practice recital lesson n24",
-    "0.14771568867028015",
-    "0.3975423574447632",
+    "0.1477156869441932",
+    "0.3975423527994024",
     "0.03318800124357577"
    ]
   ],
@@ -509,7 +509,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.638,
+  "cosine": "0.6379584152233639",
   "evicted": null
  },
  {
@@ -528,7 +528,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.75,
+  "cosine": "0.7503581207740312",
   "evicted": null
  },
  {
@@ -536,33 +536,33 @@
   "recalled": [
    [
     "kitten cat litter vet n28",
-    "0.335412846584273",
-    "0.4535328149795532",
-    "0.599316692644117"
+    "0.335412862866826",
+    "0.45353283753782747",
+    "0.5993166912853801"
    ],
    [
     "train hotel autumn vet n6",
-    "0.25013429459417036",
-    "0.3726324737071991",
-    "0.49425036626021157"
+    "0.2501343228602771",
+    "0.3726325155818383",
+    "0.49425036690932195"
    ],
    [
     "kitten toy kitten autumn n12",
-    "0.21013609670298164",
-    "0.4784224033355713",
-    "0.13727249984020637"
+    "0.21013607267917267",
+    "0.47842235504235114",
+    "0.13727249079728993"
    ],
    [
     "allergy spring doctor allergy n29",
-    "0.12571794297246125",
-    "0.14707684516906738",
-    "0.7765804026088048"
+    "0.1257179358738265",
+    "0.14707683652960077",
+    "0.7765804056023716"
    ],
    [
     "vet food vet chopin n22",
-    "0.2144715743412449",
-    "0.37944191694259644",
-    "0.3311215346895942"
+    "0.21447157282812937",
+    "0.3794419142656008",
+    "0.3311215346895943"
    ]
   ],
   "pack": "[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1700848031 Asia/Tokyo;+09:00] kitten toy kitten autumn n12　《id》\n[1700605702 Asia/Tokyo;+09:00] allergy spring doctor allergy n29　《id》\n[1700629756 Asia/Tokyo;+09:00] vet food vet chopin n22　《id》\n"
@@ -572,27 +572,27 @@
   "recalled": [
    [
     "engine memory vector medicine n27",
-    "0.3942786082950151",
-    "0.43652281165122986",
-    "0.8511164128155337"
+    "0.39427859652616415",
+    "0.43652279926391935",
+    "0.8511164107703004"
    ],
    [
     "vector test vector python n29",
-    "0.3407459709690851",
-    "0.5139471888542175",
-    "0.4815354224915198"
+    "0.3407459672051499",
+    "0.5139471835632776",
+    "0.4815354217250462"
    ],
    [
     "vector test engine python n11",
-    "0.3291549628956266",
-    "0.39815667271614075",
+    "0.32915496279019857",
+    "0.3981566725886115",
     "0.7333801392231662"
    ],
    [
     "allergy spring allergy medicine n33",
-    "0.14586338706214577",
-    "0.1767154186964035",
-    "0.7314062100362145"
+    "0.14586339675744814",
+    "0.17671543024999561",
+    "0.7314062114187526"
    ]
   ],
   "pack": "[1700390440 Asia/Tokyo;+09:00] engine memory vector medicine n27　《id》\n[1700930093 Asia/Tokyo;+09:00] vector test vector python n29　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11　《id》\n[1701022225 Asia/Tokyo;+09:00] allergy spring allergy medicine n33　《id》\n"
@@ -602,32 +602,32 @@
   "recalled": [
    [
     "vet food vet chopin n22",
-    "0.5012559766006873",
-    "0.5168020725250244",
-    "0.9537210241128277"
+    "0.5012559605468357",
+    "0.516802056003721",
+    "0.9537210240249172"
    ],
    [
     "kitten cat litter vet n28",
-    "0.44424650138745986",
-    "0.45665276050567627",
-    "0.9582033568166145"
+    "0.44424652231035927",
+    "0.45665278192610154",
+    "0.9582033571010266"
    ],
    [
     "train hotel autumn vet n6",
-    "0.30359563353678065",
-    "0.31004399061203003",
-    "0.9680027684879354"
+    "0.30359565063201505",
+    "0.31004400789967",
+    "0.9680027693173274"
    ],
    [
     "doctor spring allergy savings n3",
-    "0.17539575793040987",
-    "0.20532798767089844",
-    "0.7757267056552224"
+    "0.17539575684080203",
+    "0.20532798701241697",
+    "0.7757267017056821"
    ],
    [
     "savings loan savings allergy n1",
-    "0.15091015004957653",
-    "0.17275086045265198",
+    "0.15091013958677915",
+    "0.17275084847560968",
     "0.8054939185844584"
    ]
   ],
@@ -636,13 +636,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.65,
+  "cosine": "0.6498270355551963",
   "evicted": null
  },
  {
@@ -672,7 +672,7 @@
     "after": [
      [
       "vector test engine python n11 / vector test vector python n29",
-      "np.float64(641397.0388674717)",
+      "641397.0374453536",
       1701271615
      ]
     ]
@@ -686,7 +686,7 @@
     "after": [
      [
       "medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-      "np.float64(647599.9471528733)",
+      "647599.9513277647",
       1701271319
      ]
     ]
@@ -698,32 +698,32 @@
   "recalled": [
    [
     "chopin piano lesson trip n38",
-    "0.46667653607791615",
-    "0.7019889950752258",
-    "0.484295095467452"
+    "0.4666765477203804",
+    "0.701989013071073",
+    "0.484295094763896"
    ],
    [
     "chopin practice recital chopin n8",
-    "0.3695798072749639",
-    "0.5089012384414673",
-    "0.578816777908598"
+    "0.36957983485817064",
+    "0.508901280161359",
+    "0.5788167697006645"
    ],
    [
     "lesson practice recital lesson n24",
-    "0.33720212047801473",
-    "0.6218327283859253",
-    "0.29580219414974374"
+    "0.33720213228629736",
+    "0.6218327513091295",
+    "0.29580219261008656"
    ],
    [
     "vet food vet chopin n22",
-    "0.19303277700390062",
-    "0.2078305035829544",
-    "0.8904600970210446"
+    "0.1930327837597934",
+    "0.20783051090162522",
+    "0.8904600967124957"
    ],
    [
     "trip kyoto train lesson n8",
-    "0.1464542811144125",
-    "0.17992699146270752",
+    "0.14645428995981988",
+    "0.17992700232976805",
     "0.7137923718933032"
    ]
   ],
@@ -741,7 +741,7 @@
     "after": [
      [
       "savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-      "np.float64(756863.2182541878)",
+      "756863.2173751318",
       1700607716
      ]
     ]
@@ -753,14 +753,14 @@
   "recalled": [
    [
     "kitten cat litter vet n28",
-    "0.6480954746843146",
-    "0.7040399312973022",
-    "0.877750691454933"
+    "0.6480954531474673",
+    "0.7040399074423055",
+    "0.8777506923783561"
    ],
    [
     "kitten cat kitten kitten n16",
-    "0.22224063729575944",
-    "0.5646680593490601",
+    "0.22224065848143026",
+    "0.5646681131775217",
     "0.06704229180088767"
    ]
   ],
@@ -769,7 +769,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.79,
+  "cosine": "0.7898689018609097",
   "evicted": null
  },
  {
@@ -789,7 +789,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -810,33 +810,33 @@
   "recalled": [
    [
     "medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-    "0.6658263299609436",
-    "0.787906289100647",
-    "0.7616273351901138"
+    "0.665826322972127",
+    "0.7879062800201592",
+    "0.7616273365270947"
    ],
    [
     "doctor clinic medicine vector n35",
-    "0.5769167906612778",
-    "0.6377451419830322",
+    "0.5769167893342704",
+    "0.6377451405161092",
     "0.8532610085189247"
    ],
    [
     "allergy pollen medicine savings n3",
-    "0.465520211369757",
-    "0.6522066593170166",
-    "0.55963356734256"
+    "0.4655202042771077",
+    "0.6522066512438369",
+    "0.5596335642045223"
    ],
    [
     "engine memory vector medicine n27",
-    "0.375223365375327",
-    "0.44943106174468994",
-    "0.7459773112278756"
+    "0.37522336903561143",
+    "0.4494310673686029",
+    "0.7459773076848063"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.2062343643533417",
-    "0.2443784773349762",
-    "0.7598673525552029"
+    "0.2062343745999551",
+    "0.24437848956383879",
+    "0.7598673520925396"
    ]
   ],
   "pack": "[1701176448 Asia/Tokyo;+09:00] medicine pollen doctor medicine n11 / allergy spring allergy medicine n33　《id》\n[1701486163 Asia/Tokyo;+09:00] doctor clinic medicine vector n35　《id》\n[1700647847 Asia/Tokyo;+09:00] allergy pollen medicine savings n3　《id》\n[1700390440 Asia/Tokyo;+09:00] engine memory vector medicine n27　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n"
@@ -844,13 +844,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.728,
+  "cosine": "0.7281953612995544",
   "evicted": null
  },
  {
@@ -869,7 +869,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.786,
+  "cosine": "0.7864880827457077",
   "evicted": null
  },
  {
@@ -907,13 +907,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.74,
+  "cosine": "0.739988437635129",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -928,7 +928,7 @@
     "after": [
      [
       "allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-      "np.float64(1142307.1435276344)",
+      "1142307.1457527666",
       1701534979
      ]
     ]
@@ -942,13 +942,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.618,
+  "cosine": "0.6182239417257236",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.718,
+  "cosine": "0.7181512127029781",
   "evicted": null
  },
  {
@@ -956,33 +956,33 @@
   "recalled": [
    [
     "savings bank savings rent n25",
-    "0.35889327887472494",
-    "0.7987674474716187",
+    "0.358893254096931",
+    "0.7987673923251548",
     "0.15278283774438323"
    ],
    [
     "rent bank salary engine n1",
-    "0.25358582852058137",
-    "0.26181721687316895",
+    "0.2535858210290772",
+    "0.26181720913849077",
     "0.9516316209459559"
    ],
    [
     "allergy pollen medicine savings n3",
-    "0.22968659632839933",
-    "0.2852998375892639",
-    "0.7001090732052976"
+    "0.2296865904505634",
+    "0.28529983093456723",
+    "0.7001090703994326"
    ],
    [
     "salary loan rent savings n31",
-    "0.16465302044655877",
-    "0.2880721092224121",
+    "0.16465303410504434",
+    "0.288072133118899",
     "0.3408750270682292"
    ],
    [
     "savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-    "0.16180828787682294",
-    "0.29532018303871155",
-    "0.30447383067363915"
+    "0.1618082865000952",
+    "0.29532018067334304",
+    "0.3044738302531129"
    ]
   ],
   "pack": "[1700969468 Asia/Tokyo;+09:00] savings bank savings rent n25　《id》\n[1701881479 Asia/Tokyo;+09:00] rent bank salary engine n1　《id》\n[1700647847 Asia/Tokyo;+09:00] allergy pollen medicine savings n3　《id》\n[1701637894 Asia/Tokyo;+09:00] salary loan rent savings n31　《id》\n[1701237629 Asia/Tokyo;+09:00] savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37　《id》\n"
@@ -990,25 +990,25 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.789,
+  "cosine": "0.7892802626583199",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.769,
+  "cosine": "0.768839604025633",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.667,
+  "cosine": "0.6671925004114708",
   "evicted": null
  },
  {
@@ -1018,13 +1018,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.749,
+  "cosine": "0.7486995527512978",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.759,
+  "cosine": "0.7586622427830703",
   "evicted": null
  },
  {
@@ -1070,7 +1070,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -1080,7 +1080,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -1088,32 +1088,32 @@
   "recalled": [
    [
     "kitten cat litter vet n28",
-    "0.3961019133747584",
-    "0.6451455950737",
-    "0.40611215729232436"
+    "0.39610191148211865",
+    "0.6451455911586812",
+    "0.406112158511073"
    ],
    [
     "train hotel autumn vet n6",
-    "0.2607436645153108",
-    "0.42194533348083496",
-    "0.41224005111426965"
+    "0.2607436715007786",
+    "0.42194534044238474",
+    "0.4122400608987531"
    ],
    [
     "vet food vet chopin n22",
-    "0.29577196168446135",
-    "0.5244283080101013",
-    "0.32921432925325117"
+    "0.2957719628931401",
+    "0.5244283105358349",
+    "0.3292143286201572"
    ],
    [
     "allergy pollen medicine savings n3",
-    "0.15635275777304342",
-    "0.17312422394752502",
-    "0.8509610321148965"
+    "0.15635274561647367",
+    "0.17312421060349742",
+    "0.8509610311796036"
    ],
    [
     "recital piano recital litter n16",
-    "0.12994051217963046",
-    "0.2677633762359619",
+    "0.12994050502174695",
+    "0.2677633614859889",
     "0.20812480611826917"
    ]
   ],
@@ -1124,32 +1124,32 @@
   "recalled": [
    [
     "rent budget salary savings n15",
-    "0.5461851365617147",
-    "0.730453372001648",
+    "0.546185167174795",
+    "0.7304534129427616",
     "0.6118991247755196"
    ],
    [
     "savings bank savings rent n25",
-    "0.30006686929974297",
-    "0.3405689299106598",
+    "0.3000668603952137",
+    "0.34056891980422577",
     "0.8170389104646765"
    ],
    [
     "savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-    "0.34012147513226887",
-    "0.363882839679718",
-    "0.8995392432086387"
+    "0.34012146776567276",
+    "0.3638828318166211",
+    "0.8995392431369527"
    ],
    [
     "allergy pollen medicine savings n3",
-    "0.18039985937127767",
-    "0.18205365538597107",
-    "0.9860244412249091"
+    "0.18039986770624838",
+    "0.18205366381301008",
+    "0.9860244410937888"
    ],
    [
     "salary loan rent savings n31",
-    "0.19417841750029421",
-    "0.25824490189552307",
+    "0.19417842182939818",
+    "0.25824490765295505",
     "0.618331973165606"
    ]
   ],
@@ -1158,7 +1158,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.757,
+  "cosine": "0.7574527481017052",
   "evicted": null
  },
  {
@@ -1209,13 +1209,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.699,
+  "cosine": "0.6991180867612465",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.737,
+  "cosine": "0.7371763158279677",
   "evicted": null
  },
  {
@@ -1225,7 +1225,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.658,
+  "cosine": "0.6580403457192837",
   "evicted": null
  },
  {
@@ -1233,33 +1233,33 @@
   "recalled": [
    [
     "allergy pollen medicine savings n3",
-    "0.705454130031285",
-    "0.736284613609314",
-    "0.9355799206987971"
+    "0.7054541486493504",
+    "0.7362846333233177",
+    "0.9355799201336876"
    ],
    [
     "allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-    "0.575259894180526",
-    "0.7854123711585999",
-    "0.5883544556775214"
+    "0.5752599156561904",
+    "0.7854124000559768",
+    "0.5883544562854276"
    ],
    [
     "python test engine medicine n37",
-    "0.30449274920553365",
-    "0.3486137390136719",
+    "0.30449272380433545",
+    "0.3486137099318408",
     "0.8052903880073065"
    ],
    [
     "medicine pollen medicine medicine n31",
-    "0.37721481517401273",
-    "0.6217352151870728",
+    "0.3772147948960976",
+    "0.6217351817644885",
     "0.3949430214015892"
    ],
    [
     "allergy spring doctor allergy n29",
-    "0.24826618423130045",
-    "0.6010939478874207",
-    "0.09695989122152594"
+    "0.2482661828096015",
+    "0.6010939419076401",
+    "0.09695989390405434"
    ]
   ],
   "pack": "[1700647847 Asia/Tokyo;+09:00] allergy pollen medicine savings n3　《id》\n[1701755147 Asia/Tokyo;+09:00] allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33　《id》\n[1702355135 Asia/Tokyo;+09:00] python test engine medicine n37　《id》\n[1701945919 Asia/Tokyo;+09:00] medicine pollen medicine medicine n31　《id》\n[1700605702 Asia/Tokyo;+09:00] allergy spring doctor allergy n29　《id》\n"
@@ -1267,7 +1267,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -1275,33 +1275,33 @@
   "recalled": [
    [
     "engine memory vector medicine n27",
-    "0.42804924706560166",
-    "0.6991180777549744",
-    "0.4034927953364951"
+    "0.4280492505266632",
+    "0.6991180867612465",
+    "0.40349279081824985"
    ],
    [
     "vector dart vector rent n33",
-    "0.2954894894951074",
-    "0.51341313123703",
+    "0.29548948922168294",
+    "0.5134131307619549",
     "0.34698370426635033"
    ],
    [
     "train hotel autumn recital n30",
-    "0.21554244113600868",
-    "0.25316092371940613",
+    "0.21554244776568493",
+    "0.2531609315061555",
     "0.7713920942475774"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.2150948100797061",
-    "0.354546457529068",
-    "0.394886081866008"
+    "0.21509481089523505",
+    "0.35454645859636763",
+    "0.39488608259510355"
    ],
    [
     "recital piano recital litter n16",
-    "0.15227760273212074",
-    "0.2971559762954712",
-    "0.24992319434137336"
+    "0.1522776044987258",
+    "0.2971559814790861",
+    "0.24992318973494101"
    ]
   ],
   "pack": "[1700390440 Asia/Tokyo;+09:00] engine memory vector medicine n27　《id》\n[1702197318 Asia/Tokyo;+09:00] vector dart vector rent n33　《id》\n[1702364133 Asia/Tokyo;+09:00] train hotel autumn recital n30　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n[1702037733 Asia/Tokyo;+09:00] recital piano recital litter n16　《id》\n"
@@ -1311,33 +1311,33 @@
   "recalled": [
    [
     "autumn kyoto trip trip n6",
-    "0.7052487917861046",
-    "0.8225352168083191",
+    "0.7052488014370831",
+    "0.822535228064304",
     "0.7806286585752603"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.37968552981954584",
-    "0.5748107433319092",
-    "0.4777539570106322"
+    "0.3796855461921332",
+    "0.5748107666218326",
+    "0.4777539596567463"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.2629083954703576",
-    "0.26425960659980774",
-    "0.9921335448131945"
+    "0.2629083874042451",
+    "0.26425959848895686",
+    "0.9921335448322085"
    ],
    [
     "train hotel trip trip n8",
-    "0.3577542187339456",
-    "0.6932945251464844",
+    "0.3577542179637653",
+    "0.6932945236539463",
     "0.2554162231264981"
    ],
    [
     "allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-    "0.21949099266370287",
-    "0.22315332293510437",
-    "0.9747511971160153"
+    "0.21949097875154963",
+    "0.2231533087412605",
+    "0.9747511974520742"
    ]
   ],
   "pack": "[1702379094 Asia/Tokyo;+09:00] autumn kyoto trip trip n6　《id》\n[1700220140 Asia/Tokyo;+09:00] chopin piano lesson trip n38　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n[1701961319 Asia/Tokyo;+09:00] train hotel trip trip n8　《id》\n[1701755147 Asia/Tokyo;+09:00] allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33　《id》\n"
@@ -1400,7 +1400,7 @@
     "after": [
      [
       "rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-      "np.float64(3180338.104026234)",
+      "3180338.1022402407",
       1702263307
      ]
     ]
@@ -1410,37 +1410,37 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.749,
+  "cosine": "0.7486504024593501",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.749,
+  "cosine": "0.7486504024593501",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.723,
+  "cosine": "0.7228708692519543",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.809,
+  "cosine": "0.8094644621163298",
   "evicted": "trip kyoto train lesson n8"
  },
  {
@@ -1448,32 +1448,32 @@
   "recalled": [
    [
     "autumn kyoto trip trip n6",
-    "0.4489088564848756",
-    "0.5609163045883179",
-    "0.6927899055192458"
+    "0.4489088754166642",
+    "0.5609163279061269",
+    "0.6927899062604302"
    ],
    [
     "recital piano lesson train n22",
-    "0.2431134046067249",
-    "0.29704734683036804",
+    "0.24311341222037852",
+    "0.2970473561330867",
     "0.7206664304055689"
    ],
    [
     "train hotel trip trip n8",
-    "0.4292299088902056",
-    "0.5051186084747314",
-    "0.7688625135644835"
+    "0.42922989636305514",
+    "0.5051185938061149",
+    "0.7688625133746195"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.33911865289378107",
-    "0.3572298586368561",
-    "0.9220014990986258"
+    "0.33911865713974915",
+    "0.3572298627706799",
+    "0.9220015004841807"
    ],
    [
     "autumn kyoto train litter n36",
-    "0.19227790341824413",
-    "0.4404095709323883",
+    "0.19227789438942033",
+    "0.4404095502520067",
     "0.13321359902180221"
    ]
   ],
@@ -1618,7 +1618,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.651,
+  "cosine": "0.6506849834772411",
   "evicted": "recital practice recital train n28"
  },
  {
@@ -1626,33 +1626,33 @@
   "recalled": [
    [
     "autumn kyoto train litter n36",
-    "0.3902377261896439",
-    "0.42966461181640625",
-    "0.8588276868749567"
+    "0.3902377339743588",
+    "0.429664621074809",
+    "0.8588276846402323"
    ],
    [
     "recital piano lesson train n22",
-    "0.30536620790434293",
-    "0.3488363027572632",
-    "0.8082852372993159"
+    "0.30536620475543386",
+    "0.34883629900562824",
+    "0.8082852378956608"
    ],
    [
     "train hotel autumn vet n6",
-    "0.3302001661278788",
-    "0.40734368562698364",
-    "0.708643236955411"
+    "0.33020014671170095",
+    "0.40734365954270385",
+    "0.7086432434825463"
    ],
    [
     "autumn temple trip litter n10",
-    "0.24036526500779548",
-    "0.5643720626831055",
+    "0.24036525180058013",
+    "0.5643720316728704",
     "0.11676705956395737"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.17135490696926328",
-    "0.19396987557411194",
-    "0.8206306041641943"
+    "0.1713549076234581",
+    "0.19396987626084472",
+    "0.8206306045411624"
    ]
   ],
   "pack": "[1701892299 Asia/Tokyo;+09:00] autumn kyoto train litter n36　《id》\n[1702523604 Asia/Tokyo;+09:00] recital piano lesson train n22　《id》\n[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1701932520 Asia/Tokyo;+09:00] autumn temple trip litter n10　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n"
@@ -1662,33 +1662,33 @@
   "recalled": [
    [
     "allergy spring doctor allergy n29",
-    "0.3025262821249032",
-    "0.3843711316585541",
-    "0.6724125649463523"
+    "0.3025262930418997",
+    "0.38437114501577996",
+    "0.6724125665631758"
    ],
    [
     "kitten cat litter vet n28",
-    "0.23238492939093097",
-    "0.2898792028427124",
-    "0.6948634896193288"
+    "0.2323849272932321",
+    "0.28987920020422825",
+    "0.6948634897120551"
    ],
    [
     "savings bank rent doctor n11",
-    "0.18268468341737737",
-    "0.19004815816879272",
+    "0.1826846889012551",
+    "0.1900481638737092",
     "0.9403918311882628"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.16202921669135698",
-    "0.16764497756958008",
-    "0.9484647124799346"
+    "0.16202921861819103",
+    "0.16764497945989926",
+    "0.9484647133961259"
    ],
    [
     "allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-    "0.27247437172169686",
-    "0.293840229511261",
-    "0.8881346148546226"
+    "0.2724743729228957",
+    "0.2938402305280697",
+    "0.8881346162071361"
    ]
   ],
   "pack": "[1700605702 Asia/Tokyo;+09:00] allergy spring doctor allergy n29　《id》\n[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1702733834 Asia/Tokyo;+09:00] savings bank rent doctor n11　《id》\n[1700220140 Asia/Tokyo;+09:00] chopin piano lesson trip n38　《id》\n[1701755147 Asia/Tokyo;+09:00] allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33　《id》\n"
@@ -1696,7 +1696,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": "kitten cat kitten kitten n16"
  },
  {
@@ -1704,33 +1704,33 @@
   "recalled": [
    [
     "allergy spring doctor allergy n29",
-    "0.3678343211122068",
-    "0.3843711316585541",
-    "0.9338107238059166"
+    "0.36783433406723903",
+    "0.38437114501577996",
+    "0.9338107244962536"
    ],
    [
     "kitten cat litter vet n28",
-    "0.2817477632822056",
-    "0.2898792028427124",
-    "0.9568444134884965"
+    "0.2817477607118864",
+    "0.28987920020422825",
+    "0.9568444134574625"
    ],
    [
     "savings bank rent doctor n11",
-    "0.1735065762676901",
-    "0.19004815816879272",
-    "0.8660940059331932"
+    "0.17350658148377154",
+    "0.1900481638737092",
+    "0.8660940059956439"
    ],
    [
     "litter toy litter recital n38",
-    "0.23397219220714305",
-    "0.24630619585514069",
+    "0.23397220214889364",
+    "0.24630620632097744",
     "0.9229601587495241"
    ],
    [
     "allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-    "0.2885386596194445",
-    "0.293840229511261",
-    "0.9722425299435975"
+    "0.28853866068289036",
+    "0.2938402305280697",
+    "0.972242530283828"
    ]
   ],
   "pack": "[1700605702 Asia/Tokyo;+09:00] allergy spring doctor allergy n29　《id》\n[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1702733834 Asia/Tokyo;+09:00] savings bank rent doctor n11　《id》\n[1702807395 Asia/Tokyo;+09:00] litter toy litter recital n38　《id》\n[1701755147 Asia/Tokyo;+09:00] allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33　《id》\n"
@@ -1738,13 +1738,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.831,
+  "cosine": "0.8305312325745822",
   "evicted": "kitten toy kitten autumn n12"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.648,
+  "cosine": "0.6479459882685688",
   "evicted": "allergy spring doctor doctor n37"
  },
  {
@@ -1752,32 +1752,32 @@
   "recalled": [
    [
     "autumn kyoto trip trip n6",
-    "0.6216738913534252",
-    "0.7981504201889038",
-    "0.6598356084429248"
+    "0.6216739117826575",
+    "0.7981504444151898",
+    "0.6598356114489982"
    ],
    [
     "train hotel trip trip n8",
-    "0.45813521776577665",
-    "0.5569806098937988",
-    "0.7269746354866706"
+    "0.45813523386314775",
+    "0.5569806299891997",
+    "0.7269746342940601"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.38236139295143773",
-    "0.3967648148536682",
-    "0.9441505148913251"
+    "0.3823614097956056",
+    "0.3967648320684596",
+    "0.9441505158774187"
    ],
    [
     "savings bank rent doctor n11",
-    "0.2509973396376742",
-    "0.2690466642379761",
-    "0.8967904256630712"
+    "0.2509973528695336",
+    "0.2690466783922606",
+    "0.8967904258182195"
    ],
    [
     "chopin practice recital trip n10",
-    "0.26323307429323356",
-    "0.27165311574935913",
+    "0.2632330912587416",
+    "0.2716531332575432",
     "0.9523145173698181"
    ]
   ],
@@ -1786,13 +1786,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": "kitten food litter vet n28"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.898,
+  "cosine": "0.8978295429694776",
   "evicted": "python test python vector n23"
  },
  {
@@ -1800,32 +1800,32 @@
   "recalled": [
    [
     "allergy pollen doctor savings n11 / medicine pollen doctor medicine n11 / allergy spring allergy medicine n33",
-    "0.7700960266122876",
-    "0.7978013753890991",
-    "0.9465736525184619"
+    "0.7700960308964722",
+    "0.7978013794832808",
+    "0.9465736531590341"
    ],
    [
     "medicine clinic allergy medicine n23",
-    "0.6828514795799631",
-    "0.7674456834793091",
+    "0.6828514482795427",
+    "0.7674456483012752",
     "0.8304180584013595"
    ],
    [
     "allergy pollen medicine savings n3",
-    "0.6345788849692308",
-    "0.7382767200469971",
-    "0.7839087613669904"
+    "0.6345789004429568",
+    "0.7382767387642644",
+    "0.7839087600864056"
    ],
    [
     "medicine pollen medicine medicine n31",
-    "0.46277597500927076",
-    "0.6989411115646362",
-    "0.4801693972434944"
+    "0.4627759812048299",
+    "0.6989411256089944",
+    "0.4801693904126069"
    ],
    [
     "doctor clinic medicine allergy n27",
-    "0.44134191832026853",
-    "0.7089270949363708",
+    "0.4413419195825028",
+    "0.7089270969638964",
     "0.41930629337384795"
    ]
   ],
@@ -1834,7 +1834,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": "doctor clinic medicine vector n35"
  },
  {
@@ -1849,7 +1849,7 @@
     "after": [
      [
       "autumn kyoto train litter n36 / train kyoto train autumn n30",
-      "np.float64(460317.863027242)",
+      "460317.8567271558",
       1702737844
      ]
     ]
@@ -1863,7 +1863,7 @@
     "after": [
      [
       "medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-      "np.float64(909821.6303938502)",
+      "909821.6196387917",
       1702981324
      ]
     ]
@@ -1877,7 +1877,7 @@
     "after": [
      [
       "train hotel trip trip n8 / trip temple trip litter n12 / trip temple trip train n30 / trip temple trip autumn n36",
-      "np.float64(665949.3727987161)",
+      "665949.3743702188",
       1702894742
      ]
     ]
@@ -1887,13 +1887,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.555,
+  "cosine": "0.5553535688349013",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.829,
+  "cosine": "0.8294316510766243",
   "evicted": null
  },
  {
@@ -1994,7 +1994,7 @@
     "after": [
      [
       "medicine clinic doctor savings n7 / allergy pollen medicine savings n3 / allergy spring doctor allergy n29 / allergy pollen doctor engine n31 / allergy pollen doctor",
-      "np.float64(5350465.638279155)",
+      "5350465.657443911",
       1702982490
      ]
     ]
@@ -2009,7 +2009,7 @@
     "after": [
      [
       "recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24",
-      "np.float64(267895.33494012285)",
+      "267895.33479233517",
       1701933583
      ]
     ]
@@ -2023,7 +2023,7 @@
     "after": [
      [
       "python test engine medicine n37 / engine memory vector medicine n27",
-      "np.float64(1175791.8638937061)",
+      "1175791.8583089614",
       1702462994
      ]
     ]
@@ -2035,33 +2035,33 @@
   "recalled": [
    [
     "chopin piano lesson trip n38",
-    "0.5529369696006742",
-    "0.5898430347442627",
-    "0.9037395401575193"
+    "0.5529369461821642",
+    "0.5898430090518235",
+    "0.9037395418955861"
    ],
    [
     "recital piano lesson train n22",
-    "0.41246800455780563",
-    "0.6587774753570557",
-    "0.4247865758037972"
+    "0.4124679987340815",
+    "0.6587774655078527",
+    "0.42478657660475155"
    ],
    [
     "chopin teacher lesson trip n2",
-    "0.4161082716692746",
-    "0.5072513222694397",
+    "0.4161082839767522",
+    "0.5072513372727085",
     "0.7235688273436846"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.19275701241748697",
-    "0.22939905524253845",
-    "0.7542606550083606"
+    "0.1927570178719952",
+    "0.22939906164351004",
+    "0.7542606555178358"
    ],
    [
     "recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24",
-    "0.25446484074588427",
-    "0.6709141731262207",
-    "0.04504733057025746"
+    "0.2544648486005184",
+    "0.670914193924086",
+    "0.04504733049321864"
    ]
   ],
   "pack": "[1700220140 Asia/Tokyo;+09:00] chopin piano lesson trip n38　《id》\n[1702523604 Asia/Tokyo;+09:00] recital piano lesson train n22　《id》\n[1703010728 Asia/Tokyo;+09:00] chopin teacher lesson trip n2　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n[1702037733 Asia/Tokyo;+09:00] recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24　《id》\n"
@@ -2069,19 +2069,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.798,
+  "cosine": "0.7981504444151898",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
@@ -2100,7 +2100,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.604,
+  "cosine": "0.6036309161346779",
   "evicted": null
  },
  {
@@ -2108,33 +2108,33 @@
   "recalled": [
    [
     "kitten cat litter vet n28",
-    "0.3944503244081246",
-    "0.45665276050567627",
-    "0.7904402123207895"
+    "0.39445034286170627",
+    "0.45665278192610154",
+    "0.7904402121554231"
    ],
    [
     "litter toy litter recital n38",
-    "0.3353132473803907",
-    "0.5759441256523132",
-    "0.3572269692510819"
+    "0.335313237983852",
+    "0.5759441092344766",
+    "0.35722696968350953"
    ],
    [
     "vet food vet chopin n22",
-    "0.3244484765422195",
-    "0.5168020725250244",
-    "0.427385018487932"
+    "0.32444846620171314",
+    "0.516802056003721",
+    "0.4273850185819191"
    ],
    [
     "vet toy litter train n2",
-    "0.32801415080124335",
-    "0.7671625018119812",
+    "0.3280141556994841",
+    "0.7671625132680315",
     "0.1193354131450902"
    ],
    [
     "train hotel autumn vet n6",
-    "0.259355678793506",
-    "0.31004399061203003",
-    "0.7484807945207798"
+    "0.25935569385271784",
+    "0.31004400789967",
+    "0.7484807974875279"
    ]
   ],
   "pack": "[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1702807395 Asia/Tokyo;+09:00] litter toy litter recital n38　《id》\n[1700629756 Asia/Tokyo;+09:00] vet food vet chopin n22　《id》\n[1702438323 Asia/Tokyo;+09:00] vet toy litter train n2　《id》\n[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n"
@@ -2142,7 +2142,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.794,
+  "cosine": "0.7935822545085346",
   "evicted": null
  },
  {
@@ -2150,33 +2150,33 @@
   "recalled": [
    [
     "train hotel trip trip n8 / trip temple trip litter n12 / trip temple trip train n30 / trip temple trip autumn n36",
-    "0.5198071425160031",
-    "0.6587775945663452",
-    "0.6754584593867317"
+    "0.5198071536455122",
+    "0.6587776083319303",
+    "0.6754584600121365"
    ],
    [
     "recital piano lesson train n22",
-    "0.2655914722328946",
-    "0.2997781038284302",
-    "0.8245541713433922"
+    "0.2655914895315404",
+    "0.2997781234839031",
+    "0.8245541707515641"
    ],
    [
     "autumn temple trip litter n10",
-    "0.41361880789560435",
-    "0.6501474380493164",
-    "0.4402958791496806"
+    "0.41361880214926744",
+    "0.6501474346566949",
+    "0.44029587065935294"
    ],
    [
     "chopin piano lesson trip n38",
-    "0.35373836690080096",
-    "0.36650773882865906",
-    "0.9463989828861317"
+    "0.35373836345879256",
+    "0.3665077350800998",
+    "0.9463989836246975"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.2503552854268117",
-    "0.265507310628891",
-    "0.9122027640294195"
+    "0.25035528827193865",
+    "0.2655073135785684",
+    "0.9122027643990015"
    ]
   ],
   "pack": "[1701961319 Asia/Tokyo;+09:00] train hotel trip trip n8 / trip temple trip litter n12 / trip temple trip train n30 / trip temple trip autumn n36　《id》\n[1702523604 Asia/Tokyo;+09:00] recital piano lesson train n22　《id》\n[1701932520 Asia/Tokyo;+09:00] autumn temple trip litter n10　《id》\n[1700220140 Asia/Tokyo;+09:00] chopin piano lesson trip n38　《id》\n[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n"
@@ -2184,31 +2184,31 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.739,
+  "cosine": "0.7391747605601919",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.681,
+  "cosine": "0.6808821719859783",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.654,
+  "cosine": "0.6538963099739133",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.714,
+  "cosine": "0.7143522257444679",
   "evicted": "chopin piano recital recital n20"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.676,
+  "cosine": "0.6762365761990454",
   "evicted": "python test engine engine n33"
  },
  {
@@ -2216,33 +2216,33 @@
   "recalled": [
    [
     "vet toy litter train n2",
-    "0.6337427311050994",
-    "0.7253233194351196",
-    "0.8057511608407365"
+    "0.6337427819651289",
+    "0.7253233769390063",
+    "0.8057511621487662"
    ],
    [
     "kitten cat litter vet n28",
-    "0.6111783499516114",
-    "0.6451455950737",
-    "0.918999214151251"
+    "0.6111783464086592",
+    "0.6451455911586812",
+    "0.9189992145469609"
    ],
    [
     "vet food vet chopin n22",
-    "0.49330374334600774",
-    "0.5244283080101013",
-    "0.9086930569809272"
+    "0.4933037454365359",
+    "0.5244283105358349",
+    "0.908693056143959"
    ],
    [
     "train hotel autumn vet n6",
-    "0.3996591459478624",
-    "0.42194533348083496",
-    "0.9187419799726815"
+    "0.39965915293221044",
+    "0.42194534044238474",
+    "0.9187419813964584"
    ],
    [
     "litter toy litter recital n38",
-    "0.40148445023656454",
-    "0.4749751091003418",
-    "0.7619611008411102"
+    "0.4014844534898157",
+    "0.47497511364833434",
+    "0.7619610989266719"
    ]
   ],
   "pack": "[1702438323 Asia/Tokyo;+09:00] vet toy litter train n2　《id》\n[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1700629756 Asia/Tokyo;+09:00] vet food vet chopin n22　《id》\n[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1702807395 Asia/Tokyo;+09:00] litter toy litter recital n38　《id》\n"
@@ -2252,33 +2252,33 @@
   "recalled": [
    [
     "allergy spring medicine medicine n37",
-    "0.6644022089561539",
-    "0.7962767481803894",
+    "0.6644022172191806",
+    "0.7962767580835113",
     "0.7452093044755561"
    ],
    [
     "medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-    "0.5799457764124806",
-    "0.7105730772018433",
-    "0.7171788735243687"
+    "0.5799458081674461",
+    "0.7105731177041932",
+    "0.7171788707060883"
    ],
    [
     "doctor spring medicine savings n39",
-    "0.43831905723984305",
-    "0.6093121767044067",
+    "0.43831907066798964",
+    "0.6093121953710221",
     "0.5682568842450515"
    ],
    [
     "medicine clinic allergy medicine n23",
-    "0.4253981512976571",
-    "0.5958766341209412",
+    "0.42539814691191047",
+    "0.5958766279776048",
     "0.5598508584821159"
    ],
    [
     "python test engine medicine n37 / engine memory vector medicine n27",
-    "0.36062474672273526",
-    "0.5006943941116333",
-    "0.569614184324892"
+    "0.3606247201090915",
+    "0.5006943578490601",
+    "0.5696141828022259"
    ]
   ],
   "pack": "[1703344354 Asia/Tokyo;+09:00] allergy spring medicine medicine n37　《id》\n[1701945919 Asia/Tokyo;+09:00] medicine pollen medicine medicine n31 / doctor spring allergy savings n3　《id》\n[1703135873 Asia/Tokyo;+09:00] doctor spring medicine savings n39　《id》\n[1702888647 Asia/Tokyo;+09:00] medicine clinic allergy medicine n23　《id》\n[1702355135 Asia/Tokyo;+09:00] python test engine medicine n37 / engine memory vector medicine n27　《id》\n"
@@ -2301,7 +2301,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.554,
+  "cosine": "0.5540196819476076",
   "evicted": "train hotel autumn vet n24"
  },
  {
@@ -2309,33 +2309,33 @@
   "recalled": [
    [
     "train hotel autumn vet n6",
-    "0.4268879087633576",
-    "0.44025301933288574",
-    "0.9532957011864177"
+    "0.4268879217968788",
+    "0.4402530325290762",
+    "0.9532957020178906"
    ],
    [
     "autumn temple trip litter n10",
-    "0.3752742570793626",
-    "0.4301318824291229",
-    "0.8037896046781751"
+    "0.3752742518840694",
+    "0.4301318775992151",
+    "0.8037896011680666"
    ],
    [
     "autumn temple autumn chopin n16",
-    "0.3487200404473956",
-    "0.8723359107971191",
+    "0.34872003935144763",
+    "0.8723359080555653",
     "0.07654509290462481"
    ],
    [
     "autumn kyoto trip trip n6",
-    "0.3118042622723154",
-    "0.46572795510292053",
-    "0.4915364674093426"
+    "0.3118042676903559",
+    "0.46572796048307386",
+    "0.4915364734083378"
    ],
    [
     "autumn kyoto train litter n36 / train kyoto train autumn n30",
-    "0.26597989398677596",
-    "0.4760863482952118",
-    "0.3210460663416882"
+    "0.26597989557680723",
+    "0.47608635390651993",
+    "0.32104606134940067"
    ]
   ],
   "pack": "[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1701932520 Asia/Tokyo;+09:00] autumn temple trip litter n10　《id》\n[1703172041 Asia/Tokyo;+09:00] autumn temple autumn chopin n16　《id》\n[1702379094 Asia/Tokyo;+09:00] autumn kyoto trip trip n6　《id》\n[1701892299 Asia/Tokyo;+09:00] autumn kyoto train litter n36 / train kyoto train autumn n30　《id》\n"
@@ -2343,7 +2343,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.618,
+  "cosine": "0.6178425678334667",
   "evicted": "autumn kyoto autumn lesson n10"
  },
  {
@@ -2353,7 +2353,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.765,
+  "cosine": "0.7646093579033041",
   "evicted": "kitten cat litter autumn n20"
  },
  {
@@ -2361,33 +2361,33 @@
   "recalled": [
    [
     "train hotel autumn vet n6",
-    "0.6814108161605834",
-    "0.6955122947692871",
-    "0.9688077656741853"
+    "0.6814108036911527",
+    "0.6955122818144687",
+    "0.9688077661668589"
    ],
    [
     "autumn temple autumn chopin n16",
-    "0.5953795151552295",
-    "0.6567026376724243",
+    "0.5953794948893011",
+    "0.6567026153191382",
     "0.8563379222208497"
    ],
    [
     "autumn kyoto train litter n36 / train kyoto train autumn n30",
-    "0.4987268722431052",
-    "0.5105053186416626",
-    "0.9645044114031439"
+    "0.4987268323028187",
+    "0.5105052778617614",
+    "0.9645044110979726"
    ],
    [
     "autumn temple trip litter n10",
-    "0.4374182789458538",
-    "0.45041683316230774",
-    "0.9556016244392552"
+    "0.4374182966736142",
+    "0.45041685159173284",
+    "0.9556016238592423"
    ],
    [
     "vet toy litter train n2",
-    "0.29093408353189093",
-    "0.3269549608230591",
-    "0.8305065194465877"
+    "0.2909340845658562",
+    "0.3269549612418977",
+    "0.8305065225581448"
    ]
   ],
   "pack": "[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1703172041 Asia/Tokyo;+09:00] autumn temple autumn chopin n16　《id》\n[1701892299 Asia/Tokyo;+09:00] autumn kyoto train litter n36 / train kyoto train autumn n30　《id》\n[1701932520 Asia/Tokyo;+09:00] autumn temple trip litter n10　《id》\n[1702438323 Asia/Tokyo;+09:00] vet toy litter train n2　《id》\n"
@@ -2395,19 +2395,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.622,
+  "cosine": "0.6215018391290852",
   "evicted": "salary loan savings savings n33"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.714,
+  "cosine": "0.7143522257444679",
   "evicted": "savings loan rent salary n15"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.732,
+  "cosine": "0.7323968954142135",
   "evicted": "recital practice chopin lesson n24"
  },
  {
@@ -2415,33 +2415,33 @@
   "recalled": [
    [
     "chopin piano lesson trip n38",
-    "0.6583861628025635",
-    "0.7245243787765503",
-    "0.8595615213524481"
+    "0.6583861560936272",
+    "0.7245243704850376",
+    "0.8595615231057165"
    ],
    [
     "recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24",
-    "0.363065131153392",
-    "0.5414639115333557",
-    "0.4931155035876965"
+    "0.3630651453293645",
+    "0.5414639299886437",
+    "0.4931155087055575"
    ],
    [
     "chopin teacher chopin litter n30",
-    "0.34156768209892163",
-    "0.5346395969390869",
+    "0.3415677146918381",
+    "0.5346396479552241",
     "0.4444225290470625"
    ],
    [
     "chopin teacher lesson trip n2",
-    "0.4335528325654804",
-    "0.7897987961769104",
-    "0.30606286575601566"
+    "0.43355284370471564",
+    "0.7897988147272791",
+    "0.30606286761857343"
    ],
    [
     "vet food vet chopin n22",
-    "0.2609474173294374",
-    "0.2867949903011322",
-    "0.8613452179280501"
+    "0.26094743209552707",
+    "0.2867950067585511",
+    "0.8613452168117647"
    ]
   ],
   "pack": "[1700220140 Asia/Tokyo;+09:00] chopin piano lesson trip n38　《id》\n[1702037733 Asia/Tokyo;+09:00] recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24　《id》\n[1703364320 Asia/Tokyo;+09:00] chopin teacher chopin litter n30　《id》\n[1703010728 Asia/Tokyo;+09:00] chopin teacher lesson trip n2　《id》\n[1700629756 Asia/Tokyo;+09:00] vet food vet chopin n22　《id》\n"
@@ -2491,7 +2491,7 @@
     "after": [
      [
       "engine test engine medicine n7 / vector dart vector rent n33",
-      "np.float64(354553.224558641)",
+      "354553.2245465333",
       1702706295
      ]
     ]
@@ -2505,7 +2505,7 @@
     "after": [
      [
       "chopin practice recital trip n10 / chopin practice recital chopin n8",
-      "np.float64(431100.837359915)",
+      "431100.83697638055",
       1702196732
      ]
     ]
@@ -2519,7 +2519,7 @@
     "after": [
      [
       "medicine clinic allergy medicine n23 / medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-      "np.float64(1727091.2730464744)",
+      "1727091.2753743785",
       1703426426
      ]
     ]
@@ -2529,25 +2529,25 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.679,
+  "cosine": "0.6792699217121596",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.677,
+  "cosine": "0.6773749604411796",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.908,
+  "cosine": "0.9078810198403326",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.661,
+  "cosine": "0.6606723295738748",
   "evicted": "python memory engine salary n19"
  },
  {
@@ -2555,32 +2555,32 @@
   "recalled": [
    [
     "autumn kyoto trip trip n6",
-    "0.49315718531597913",
-    "0.5411173105239868",
-    "0.8636436007917201"
+    "0.4931571727194514",
+    "0.5411172962109935",
+    "0.8636436020651004"
    ],
    [
     "autumn kyoto train litter n36 / train kyoto train autumn n30",
-    "0.46959884552772907",
-    "0.5053402781486511",
-    "0.891188528216569"
+    "0.4695988448615555",
+    "0.5053402778179243",
+    "0.8911885271241192"
    ],
    [
     "autumn temple autumn chopin n16",
-    "0.45386871935615386",
-    "0.5920513272285461",
-    "0.6409287206716727"
+    "0.4538687327274522",
+    "0.5920513452747599",
+    "0.6409287194685668"
    ],
    [
     "train hotel autumn vet n6",
-    "0.281612433543636",
-    "0.30027151107788086",
-    "0.9043989453859246"
+    "0.2816124490003808",
+    "0.3002715272757731",
+    "0.9043989467457227"
    ],
    [
     "savings bank savings rent n25",
-    "0.1617586882801398",
-    "0.22465397417545319",
+    "0.1617586841982987",
+    "0.2246539685065037",
     "0.5692843687469705"
    ]
   ],
@@ -2589,7 +2589,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.731,
+  "cosine": "0.7308708477477178",
   "evicted": "train hotel autumn recital n30"
  },
  {
@@ -2714,49 +2714,49 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.66,
+  "cosine": "0.6599707098744783",
   "evicted": "kitten toy vet vet n26"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.709,
+  "cosine": "0.7093595055854316",
   "evicted": "vector test vector engine n13"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": "autumn kyoto train vet n14"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.701,
+  "cosine": "0.7010709612991066",
   "evicted": "recital piano lesson litter n34"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.785,
+  "cosine": "0.7845807593324385",
   "evicted": "doctor spring medicine salary n27"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.862,
+  "cosine": "0.8623359949363205",
   "evicted": "chopin practice recital trip n10 / chopin practice recital chopin n8"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.858,
+  "cosine": "0.8577236697886713",
   "evicted": "engine test vector python n25"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.685,
+  "cosine": "0.6851419080477803",
   "evicted": "engine test engine medicine n7 / vector dart vector rent n33"
  },
  {
@@ -2771,7 +2771,7 @@
     "after": [
      [
       "python dart python doctor n23 / python test engine medicine n37 / engine memory vector medicine n27",
-      "np.float64(1601435.8142184396)",
+      "1601435.78064742",
       1703420536
      ]
     ]
@@ -2783,33 +2783,33 @@
   "recalled": [
    [
     "recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24",
-    "0.5197329893388626",
-    "0.6575696468353271",
-    "0.6775149261086383"
+    "0.5197329807581583",
+    "0.6575696328872098",
+    "0.677514931825902"
    ],
    [
     "recital teacher chopin litter n18",
-    "0.32900947412724585",
-    "0.6183720231056213",
+    "0.32900947798043073",
+    "0.6183720303476673",
     "0.28008846513034147"
    ],
    [
     "recital piano lesson recital n20",
-    "0.28351622658833325",
-    "0.5663779377937317",
+    "0.28351624365249467",
+    "0.5663779718826608",
     "0.23165816612121418"
    ],
    [
     "chopin teacher lesson trip n2",
-    "0.17817719421710604",
-    "0.2400551736354828",
-    "0.6034374516025172"
+    "0.17817718260348311",
+    "0.2400551570578456",
+    "0.6034374560301452"
    ],
    [
     "litter toy litter recital n38",
-    "0.19249072178777096",
-    "0.3245898485183716",
-    "0.37388853450885756"
+    "0.19249072449398097",
+    "0.324589853956885",
+    "0.3738885320490514"
    ]
   ],
   "pack": "[1702037733 Asia/Tokyo;+09:00] recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24　《id》\n[1703608238 Asia/Tokyo;+09:00] recital teacher chopin litter n18　《id》\n[1703901843 Asia/Tokyo;+09:00] recital piano lesson recital n20　《id》\n[1703010728 Asia/Tokyo;+09:00] chopin teacher lesson trip n2　《id》\n[1702807395 Asia/Tokyo;+09:00] litter toy litter recital n38　《id》\n"
@@ -2819,33 +2819,33 @@
   "recalled": [
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.5322900446841345",
-    "0.7296772003173828",
-    "0.5838261809523609"
+    "0.5322900794157185",
+    "0.7296772469800897",
+    "0.5838261824108458"
    ],
    [
     "medicine clinic doctor vector n25",
-    "0.3531520570707032",
-    "0.5003888010978699",
+    "0.3531520584334679",
+    "0.5003888030288007",
     "0.5473158727031574"
    ],
    [
     "vector test python doctor n17",
-    "0.3680366052528952",
-    "0.5506350994110107",
+    "0.36803662569340395",
+    "0.5506351299929186",
     "0.48982409486111084"
    ],
    [
     "train hotel autumn vet n6",
-    "0.18395672468485297",
-    "0.19949966669082642",
-    "0.8801390555314248"
+    "0.18395672123590126",
+    "0.19949966268809333",
+    "0.8801390573970922"
    ],
    [
     "autumn temple trip litter n10",
-    "0.17534495798846653",
-    "0.21523943543434143",
-    "0.7148472396629075"
+    "0.17534496001990482",
+    "0.2152394384139688",
+    "0.7148472368330197"
    ]
   ],
   "pack": "[1701113218 Asia/Tokyo;+09:00] vector test engine python n11 / vector test vector python n29　《id》\n[1703969927 Asia/Tokyo;+09:00] medicine clinic doctor vector n25　《id》\n[1703942260 Asia/Tokyo;+09:00] vector test python doctor n17　《id》\n[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1701932520 Asia/Tokyo;+09:00] autumn temple trip litter n10　《id》\n"
@@ -2853,7 +2853,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.558,
+  "cosine": "0.558121371315597",
   "evicted": null
  },
  {
@@ -2861,33 +2861,33 @@
   "recalled": [
    [
     "rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-    "0.496630777272285",
-    "0.6368931531906128",
-    "0.6611860724792579"
+    "0.49663078699424507",
+    "0.6368931657398802",
+    "0.6611860723256417"
    ],
    [
     "savings loan savings salary n9",
-    "0.45709794543891236",
-    "0.7134501338005066",
+    "0.45709793686054423",
+    "0.7134501204111707",
     "0.4472101645087948"
    ],
    [
     "salary budget salary medicine n33",
-    "0.4329970987080101",
-    "0.6009849309921265",
+    "0.43299711967071414",
+    "0.6009849600876314",
     "0.5699678884260971"
    ],
    [
     "savings budget rent allergy n23",
-    "0.3414435691144958",
-    "0.49437618255615234",
+    "0.3414435835859839",
+    "0.4943762035094217",
     "0.524085196540246"
    ],
    [
     "salary loan rent savings n31",
-    "0.36758230149891546",
-    "0.6716774702072144",
-    "0.303477127280507"
+    "0.3675822937393312",
+    "0.6716774560282459",
+    "0.3034771272805069"
    ]
   ],
   "pack": "[1701881479 Asia/Tokyo;+09:00] rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37　《id》\n[1703760328 Asia/Tokyo;+09:00] savings loan savings salary n9　《id》\n[1703881263 Asia/Tokyo;+09:00] salary budget salary medicine n33　《id》\n[1703839418 Asia/Tokyo;+09:00] savings budget rent allergy n23　《id》\n[1701637894 Asia/Tokyo;+09:00] salary loan rent savings n31　《id》\n"
@@ -2897,33 +2897,33 @@
   "recalled": [
    [
     "litter toy litter recital n38",
-    "0.5452235423554572",
-    "0.5787220001220703",
-    "0.9109484539021466"
+    "0.5452235298513193",
+    "0.5787219869126126",
+    "0.9109484537445316"
    ],
    [
     "kitten cat litter vet n28",
-    "0.5190375308045154",
-    "0.6505559682846069",
-    "0.688979784175678"
+    "0.5190375494640552",
+    "0.650555991087118",
+    "0.6889797852797181"
    ],
    [
     "vet toy litter train n2",
-    "0.366949885409117",
-    "0.5222262144088745",
-    "0.5425609565195212"
+    "0.36694987629792264",
+    "0.5222261984192185",
+    "0.5425609627772614"
    ],
    [
     "autumn kyoto train kitten n34",
-    "0.23341678956130443",
-    "0.3121849000453949",
+    "0.2334167861366571",
+    "0.3121848954650766",
     "0.6118271305901047"
    ],
    [
     "recital teacher chopin litter n18",
-    "0.281014974926794",
-    "0.3064329922199249",
-    "0.8723876247588671"
+    "0.28101496396025205",
+    "0.3064329801401503",
+    "0.8723876253173481"
    ]
   ],
   "pack": "[1702807395 Asia/Tokyo;+09:00] litter toy litter recital n38　《id》\n[1700422028 Asia/Tokyo;+09:00] kitten cat litter vet n28　《id》\n[1702438323 Asia/Tokyo;+09:00] vet toy litter train n2　《id》\n[1703985561 Asia/Tokyo;+09:00] autumn kyoto train kitten n34　《id》\n[1703608238 Asia/Tokyo;+09:00] recital teacher chopin litter n18　《id》\n"
@@ -2931,31 +2931,31 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.788,
+  "cosine": "0.7875596282369385",
   "evicted": "autumn kyoto trip lesson n10"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.591,
+  "cosine": "0.5907966951782555",
   "evicted": "engine test vector salary n23"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": "trip kyoto trip litter n26"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.64,
+  "cosine": "0.6402585733572306",
   "evicted": "engine test engine allergy n39"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.617,
+  "cosine": "0.6174661007087549",
   "evicted": "allergy spring medicine medicine n37"
  },
  {
@@ -2963,33 +2963,33 @@
   "recalled": [
    [
     "autumn kyoto trip trip n6",
-    "0.6667944651524893",
-    "0.7736283540725708",
-    "0.7875467874948134"
+    "0.6667944764661144",
+    "0.7736283664865076",
+    "0.7875467887158047"
    ],
    [
     "train hotel autumn vet n6",
-    "0.3825358581684984",
-    "0.4068458378314972",
-    "0.9080733653030616"
+    "0.38253586464951783",
+    "0.40684584434587295",
+    "0.9080733666488472"
    ],
    [
     "trip hotel trip recital n8",
-    "0.4406172998315447",
-    "0.597990095615387",
+    "0.44061730608196864",
+    "0.5979901040982396",
     "0.5951237398598584"
    ],
    [
     "chopin teacher lesson trip n2",
-    "0.3201425263221225",
-    "0.38518261909484863",
-    "0.740222750902034"
+    "0.32014251027578466",
+    "0.38518259948656836",
+    "0.7402227519044842"
    ],
    [
     "autumn kyoto train kitten n34",
-    "0.24928053723859409",
-    "0.32588183879852295",
-    "0.6383715131824076"
+    "0.24928053287196572",
+    "0.32588183326912923",
+    "0.6383715125358036"
    ]
   ],
   "pack": "[1702379094 Asia/Tokyo;+09:00] autumn kyoto trip trip n6　《id》\n[1700382053 Asia/Tokyo;+09:00] train hotel autumn vet n6　《id》\n[1704302941 Asia/Tokyo;+09:00] trip hotel trip recital n8　《id》\n[1703010728 Asia/Tokyo;+09:00] chopin teacher lesson trip n2　《id》\n[1703985561 Asia/Tokyo;+09:00] autumn kyoto train kitten n34　《id》\n"
@@ -2999,32 +2999,32 @@
   "recalled": [
    [
     "medicine clinic allergy medicine n23 / medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-    "0.6472121181649769",
-    "0.8212921619415283",
-    "0.6739096458307705"
+    "0.6472120530661495",
+    "0.8212920790902809",
+    "0.6739096461892577"
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "0.34236418391686435",
-    "0.37095075845718384",
-    "0.8814415540500328"
+    "0.34236417458101714",
+    "0.37095074765719427",
+    "0.8814415566705877"
    ],
    [
     "medicine clinic doctor vector n25",
-    "0.35330872245364886",
-    "0.566997766494751",
-    "0.4201875300493043"
+    "0.3533087050558916",
+    "0.5669977383635615",
+    "0.4201875304058457"
    ],
    [
     "python dart python doctor n23 / python test engine medicine n37 / engine memory vector medicine n27",
-    "0.3836019718690932",
-    "0.49586400389671326",
-    "0.651697204986055"
+    "0.38360198428387315",
+    "0.49586402238184624",
+    "0.6516971991365057"
    ],
    [
     "medicine pollen medicine vector n3",
-    "0.3965307015767349",
-    "0.7409746646881104",
+    "0.3965307440600327",
+    "0.7409747440742643",
     "0.28484222922093244"
    ]
   ],
@@ -3033,7 +3033,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.784,
+  "cosine": "0.7839454019508298",
   "evicted": "trip hotel autumn litter n8"
  },
  {
@@ -3049,7 +3049,7 @@
     "after": [
      [
       "autumn temple autumn chopin n16 / autumn kyoto trip trip n6 / train hotel trip trip n8 / trip temple trip litter n12 / trip temple trip train n30 / trip temple trip",
-      "np.float64(2575769.9348269883)",
+      "2575769.9583391566",
       1704367966
      ]
     ]
@@ -3065,7 +3065,7 @@
     "after": [
      [
       "doctor clinic doctor allergy n25 / doctor clinic doctor doctor n37 / doctor clinic medicine allergy n27 / medicine clinic doctor savings n7 / allergy pollen medicine",
-      "np.float64(5728526.024760492)",
+      "5728526.043925247",
       1702992419
      ]
     ]
@@ -3079,7 +3079,7 @@
     "after": [
      [
       "salary bank savings vector n7 / salary loan rent savings n31",
-      "np.float64(1910777.6177572468)",
+      "1910777.6014087934",
       1704161862
      ]
     ]
@@ -3089,19 +3089,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.819,
+  "cosine": "0.8194846172400313",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.615,
+  "cosine": "0.61521882903034",
   "evicted": null
  },
  {
@@ -3109,33 +3109,33 @@
   "recalled": [
    [
     "rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-    "0.674726379446169",
-    "0.7015208005905151",
-    "0.941238825219127"
+    "0.6747263605322867",
+    "0.701520780807508",
+    "0.9412388254680754"
    ],
    [
     "salary bank savings vector n7 / salary loan rent savings n31",
-    "0.6150748206943725",
-    "0.6693778038024902",
-    "0.8751929770288344"
+    "0.6150748097370388",
+    "0.669377792350445",
+    "0.8751929760305922"
    ],
    [
     "savings budget salary salary n5",
-    "0.5481517653044408",
-    "0.7900485396385193",
+    "0.548151769918401",
+    "0.7900485462885983",
     "0.5289544060657793"
    ],
    [
     "savings bank savings rent n25",
-    "0.4318908193621225",
-    "0.49894312024116516",
-    "0.7932482044889272"
+    "0.43189083533864814",
+    "0.4989431389182585",
+    "0.7932482039012912"
    ],
    [
     "savings loan savings salary n9",
-    "0.4509548957358314",
-    "0.5942139625549316",
-    "0.6290922492136783"
+    "0.45095489106604125",
+    "0.5942139574367642",
+    "0.6290922471798036"
    ]
   ],
   "pack": "[1701881479 Asia/Tokyo;+09:00] rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37　《id》\n[1703289541 Asia/Tokyo;+09:00] salary bank savings vector n7 / salary loan rent savings n31　《id》\n[1704211824 Asia/Tokyo;+09:00] savings budget salary salary n5　《id》\n[1700969468 Asia/Tokyo;+09:00] savings bank savings rent n25　《id》\n[1703760328 Asia/Tokyo;+09:00] savings loan savings salary n9　《id》\n"
@@ -3143,13 +3143,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.555,
+  "cosine": "0.5552702567615349",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.714,
+  "cosine": "0.7138380177172847",
   "evicted": null
  },
  {
@@ -3268,7 +3268,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.759,
+  "cosine": "0.7591285794343012",
   "evicted": null
  },
  {
@@ -3283,7 +3283,7 @@
     "after": [
      [
       "chopin teacher chopin litter n30 / recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital lesson n24",
-      "np.float64(1035988.5965253564)",
+      "1035988.6134403514",
       1704091973
      ]
     ]
@@ -3297,7 +3297,7 @@
     "after": [
      [
       "salary budget savings engine n27 / rent budget salary savings n15",
-      "np.float64(774506.0888532534)",
+      "774506.0888532533",
       1702457755
      ]
     ]
@@ -3307,7 +3307,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.615,
+  "cosine": "0.61521882903034",
   "evicted": null
  },
  {
@@ -3322,7 +3322,7 @@
     "after": [
      [
       "medicine clinic medicine salary n33 / medicine clinic allergy medicine n23 / medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-      "np.float64(2455228.1974807163)",
+      "2455228.1299898326",
       1704409976
      ]
     ]
@@ -3336,7 +3336,7 @@
     "after": [
      [
       "recital teacher chopin litter n18 / chopin teacher chopin litter n30 / recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital",
-      "np.float64(1236479.6438507237)",
+      "1236479.6615937138",
       1704114986
      ]
     ]
@@ -3346,13 +3346,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.797,
+  "cosine": "0.7966973772899362",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.808,
+  "cosine": "0.8078529196135353",
   "evicted": null
  },
  {
@@ -3371,13 +3371,13 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.634,
+  "cosine": "0.6344695720217659",
   "evicted": "recital piano lesson recital n20"
  },
  {
@@ -3393,7 +3393,7 @@
     "after": [
      [
       "trip temple trip train n12 / autumn temple autumn chopin n16 / autumn kyoto trip trip n6 / train hotel trip trip n8 / trip temple trip litter n12 / trip temple trip",
-      "np.float64(3440004.0286120414)",
+      "3440004.040589944",
       1704375040
      ]
     ]
@@ -3407,7 +3407,7 @@
     "after": [
      [
       "savings budget rent allergy n23 / savings loan savings salary n9",
-      "np.float64(907827.9434561926)",
+      "907827.9416279912",
       1704537598
      ]
     ]
@@ -3417,19 +3417,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.0,
+  "cosine": "0.0",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.563,
+  "cosine": "0.5634612928570822",
   "evicted": null
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.666,
+  "cosine": "0.6656273659199379",
   "evicted": null
  },
  {
@@ -3483,33 +3483,33 @@
   "recalled": [
    [
     "doctor clinic doctor allergy n25 / doctor clinic doctor doctor n37 / doctor clinic medicine allergy n27 / medicine clinic doctor savings n7 / allergy pollen medicine",
-    "0.6736931301223648",
-    "0.7789920568466187",
-    "0.7920410774632051"
+    "0.6736931449992802",
+    "0.7789920736871135",
+    "0.7920410780809777"
    ],
    [
     "medicine clinic medicine salary n33 / medicine clinic allergy medicine n23 / medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-    "0.4478908478256467",
-    "0.49059340357780457",
-    "0.8660882124798371"
+    "0.44789084665043233",
+    "0.4905934034860826",
+    "0.8660882090570556"
    ],
    [
     "medicine pollen allergy allergy n27",
-    "0.3448644242095261",
-    "0.542197048664093",
+    "0.3448644334759702",
+    "0.5421970632328287",
     "0.44007689869387673"
    ],
    [
     "medicine pollen doctor medicine n37",
-    "0.3756543738822061",
-    "0.4175060987472534",
+    "0.37565437612281644",
+    "0.4175061012374905",
     "0.8457812491449906"
    ],
    [
     "medicine clinic doctor vector n25",
-    "0.3205863055687415",
-    "0.5489193201065063",
-    "0.36004883056553455"
+    "0.3205862846415287",
+    "0.5489192877817357",
+    "0.36004882482412487"
    ]
   ],
   "pack": "[1703245890 Asia/Tokyo;+09:00] doctor clinic doctor allergy n25 / doctor clinic doctor doctor n37 / doctor clinic medicine allergy n27 / medicine clinic doctor savings n7 / allergy pollen medicine　《id》\n[1703562713 Asia/Tokyo;+09:00] medicine clinic medicine salary n33 / medicine clinic allergy medicine n23 / medicine pollen medicine medicine n31 / doctor spring allergy savings n3　《id》\n[1704509975 Asia/Tokyo;+09:00] medicine pollen allergy allergy n27　《id》\n[1704877469 Asia/Tokyo;+09:00] medicine pollen doctor medicine n37　《id》\n[1703969927 Asia/Tokyo;+09:00] medicine clinic doctor vector n25　《id》\n"
@@ -3517,7 +3517,7 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.638,
+  "cosine": "0.6380069379941407",
   "evicted": "chopin piano chopin autumn n8"
  },
  {
@@ -3525,33 +3525,33 @@
   "recalled": [
    [
     "savings bank savings rent n25",
-    "0.6495533786222276",
-    "0.7031636238098145",
-    "0.882705393885815"
+    "0.6495533322867454",
+    "0.7031635735302759",
+    "0.8827053941279496"
    ],
    [
     "savings loan rent vector n29",
-    "0.517619649645206",
-    "0.6503938436508179",
+    "0.5176196535309243",
+    "0.6503938485332587",
     "0.685931850721005"
    ],
    [
     "rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-    "0.5097937241718713",
-    "0.5332158803939819",
-    "0.9324212053307002"
+    "0.5097937266911057",
+    "0.5332158829703382",
+    "0.932421205492412"
    ],
    [
     "salary bank savings vector n7 / salary loan rent savings n31",
-    "0.540032253094751",
-    "0.5921369791030884",
-    "0.8646240316601678"
+    "0.5400323104983585",
+    "0.5921370425532269",
+    "0.8646240304565083"
    ],
    [
     "savings budget rent allergy n23 / savings loan savings salary n9",
-    "0.4409908656997366",
-    "0.542112410068512",
-    "0.7130270330805897"
+    "0.4409908706385007",
+    "0.542112416350143",
+    "0.7130270325949141"
    ]
   ],
   "pack": "[1700969468 Asia/Tokyo;+09:00] savings bank savings rent n25　《id》\n[1704792633 Asia/Tokyo;+09:00] savings loan rent vector n29　《id》\n[1701881479 Asia/Tokyo;+09:00] rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37　《id》\n[1703289541 Asia/Tokyo;+09:00] salary bank savings vector n7 / salary loan rent savings n31　《id》\n[1703839418 Asia/Tokyo;+09:00] savings budget rent allergy n23 / savings loan savings salary n9　《id》\n"
@@ -3559,19 +3559,19 @@
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.598,
+  "cosine": "0.5975044955149725",
   "evicted": "autumn temple trip recital n12"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.758,
+  "cosine": "0.7583227727661715",
   "evicted": "chopin teacher lesson vet n8"
  },
  {
   "op": "remember",
   "action": "inserted",
-  "cosine": 0.721,
+  "cosine": "0.7213921109548478",
   "evicted": "trip hotel trip recital n8"
  },
  {
@@ -3579,115 +3579,115 @@
   "memories": [
    [
     "chopin piano lesson trip n38",
-    "np.float64(2089953.9048899643)",
+    "2089953.926437163",
     1703667583,
     true
    ],
    [
     "train hotel autumn vet n6",
-    "np.float64(1878444.1328016482)",
+    "1878444.1618081504",
     1704367632,
     true
    ],
    [
     "kitten cat litter vet n28",
-    "np.float64(1875717.6167988447)",
+    "1875717.6386245731",
     1704169283,
     true
    ],
    [
     "vet food vet chopin n22",
-    "np.float64(1337026.6251967966)",
+    "1337026.6185125462",
     1703667583,
     true
    ],
    [
     "savings bank savings rent n25",
-    "np.float64(2817067.387101509)",
+    "2817067.370478037",
     1704980592,
     true
    ],
    [
     "vector test engine python n11 / vector test vector python n29",
-    "np.float64(1695584.7751396378)",
+    "1695584.809711011",
     1704409785,
     true
    ],
    [
     "vet toy litter train n2",
-    "np.float64(930077.4654333849)",
+    "930077.4721083505",
     1704169283,
     true
    ],
    [
     "rent bank salary engine n1 / rent bank rent salary n21 / savings loan savings allergy n1 / salary bank salary salary n3 / salary budget rent rent n37",
-    "np.float64(4711672.542961783)",
+    "4711672.555229582",
     1704980592,
     true
    ],
    [
     "recital piano lesson train n22",
-    "np.float64(542667.8669473488)",
+    "542667.8676639415",
     1703271710,
     true
    ],
    [
     "savings bank rent doctor n11",
-    "np.float64(380087.8555446833)",
+    "380087.85692505725",
     1702894719,
     true
    ],
    [
     "litter toy litter recital n38",
-    "np.float64(681664.1847073293)",
+    "681664.1824128736",
     1704169283,
     true
    ],
    [
     "autumn kyoto train litter n36 / train kyoto train autumn n30",
-    "np.float64(1554353.5896859202)",
+    "1554353.5742576113",
     1703803907,
     true
    ],
    [
     "chopin teacher lesson trip n2",
-    "np.float64(751300.592477497)",
+    "751300.5904902908",
     1704367632,
     true
    ],
    [
     "doctor spring medicine savings n39",
-    "np.float64(481973.58943143045)",
+    "481973.59360931074",
     1703417670,
     true
    ],
    [
     "medicine pollen medicine vector n3",
-    "np.float64(620307.308426057)",
+    "620307.3378575041",
     1704409785,
     true
    ],
    [
     "salary budget salary medicine n33",
-    "np.float64(479576.7573170552)",
+    "479576.76380327676",
     1704161561,
     false
    ],
    [
     "vector test python doctor n17",
-    "np.float64(245614.6610550516)",
+    "245614.66509912955",
     1704120186,
     true
    ],
    [
     "medicine clinic doctor vector n25",
-    "np.float64(527825.5903085879)",
+    "527825.5729769767",
     1704919225,
     false
    ],
    [
     "autumn kyoto train kitten n34",
-    "np.float64(360463.5144475351)",
+    "360463.51281213114",
     1704367632,
     false
    ],
@@ -3699,7 +3699,7 @@
    ],
    [
     "python dart python doctor n23 / python test engine medicine n37 / engine memory vector medicine n27",
-    "np.float64(2016313.7496014438)",
+    "2016313.7297670308",
     1704409785,
     true
    ],
@@ -3711,7 +3711,7 @@
    ],
    [
     "savings budget salary salary n5",
-    "np.float64(538521.9812535174)",
+    "538521.9828774005",
     1704529356,
     false
    ],
@@ -3729,13 +3729,13 @@
    ],
    [
     "doctor clinic doctor allergy n25 / doctor clinic doctor doctor n37 / doctor clinic medicine allergy n27 / medicine clinic doctor savings n7 / allergy pollen medicine",
-    "np.float64(7120543.660420269)",
+    "7120543.710199893",
     1704919225,
     true
    ],
    [
     "salary bank savings vector n7 / salary loan rent savings n31",
-    "np.float64(2408772.6709048944)",
+    "2408772.677855163",
     1704980592,
     true
    ],
@@ -3747,7 +3747,7 @@
    ],
    [
     "medicine pollen allergy allergy n27",
-    "np.float64(502980.3577188423)",
+    "502980.3619476238",
     1704919225,
     false
    ],
@@ -3765,7 +3765,7 @@
    ],
    [
     "salary budget savings engine n27 / rent budget salary savings n15",
-    "np.float64(774506.0888532534)",
+    "774506.0888532533",
     1702457755,
     true
    ],
@@ -3777,13 +3777,13 @@
    ],
    [
     "medicine clinic medicine salary n33 / medicine clinic allergy medicine n23 / medicine pollen medicine medicine n31 / doctor spring allergy savings n3",
-    "np.float64(2697177.0874511558)",
+    "2697177.019448398",
     1704919225,
     true
    ],
    [
     "recital teacher chopin litter n18 / chopin teacher chopin litter n30 / recital piano recital litter n16 / lesson teacher chopin train n10 / lesson practice recital",
-    "np.float64(1236479.6438507237)",
+    "1236479.6615937138",
     1704114986,
     true
    ],
@@ -3801,7 +3801,7 @@
    ],
    [
     "savings loan rent vector n29",
-    "np.float64(451492.5264192449)",
+    "451492.5272141694",
     1704980592,
     true
    ],
@@ -3813,13 +3813,13 @@
    ],
    [
     "trip temple trip train n12 / autumn temple autumn chopin n16 / autumn kyoto trip trip n6 / train hotel trip trip n8 / trip temple trip litter n12 / trip temple trip",
-    "np.float64(3440004.0286120414)",
+    "3440004.040589944",
     1704375040,
     true
    ],
    [
     "savings budget rent allergy n23 / savings loan savings salary n9",
-    "np.float64(1119676.3211410067)",
+    "1119676.3216994705",
     1704980592,
     true
    ],
@@ -3831,7 +3831,7 @@
    ],
    [
     "medicine pollen doctor medicine n37",
-    "np.float64(189489.18013080038)",
+    "189489.1802303439",
     1704919225,
     false
    ],

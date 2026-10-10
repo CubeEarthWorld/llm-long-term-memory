@@ -1,0 +1,39 @@
+[package]
+name = "llm-long-term-memory"
+version = "1.0.0"
+edition = "2024"
+rust-version = "1.88"
+description = "ENGRAM v2.1: a trace-based long-term memory engine for LLM applications, with a local web app and CLI."
+license = "MIT"
+repository = "https://github.com/CubeEarthWorld/llm-long-term-memory"
+readme = "README.md"
+
+[lib]
+name = "engram"
+
+[[bin]]
+name = "ltm"
+path = "src/main.rs"
+required-features = ["app"]
+
+[features]
+default = ["app"]
+# The local app (web UI + CLI + benchmarks): SQLite store, LLM over HTTPS, llama.cpp embeddings.
+app = ["sqlite", "http", "llama"]
+sqlite = ["dep:rusqlite"]
+http = ["dep:ureq"]
+llama = ["dep:llama-cpp-2"]
+# Offload the embedding model to an NVIDIA GPU (needs the CUDA toolkit at build time).
+cuda = ["llama", "llama-cpp-2/cuda"]
+
+[dependencies]
+jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
+serde_json = { version = "1.0.151", features = ["preserve_order"] }
+llama-cpp-2 = { version = "0.1.159", default-features = false, features = ["openmp"], optional = true }
+rusqlite = { version = "0.40.2", features = ["bundled", "backup"], optional = true }
+ureq = { version = "3.4.2", default-features = false, features = ["rustls"], optional = true }
+
+[profile.release]
+lto = "thin"
+codegen-units = 1
+strip = "symbols"

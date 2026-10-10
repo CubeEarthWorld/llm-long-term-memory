@@ -1,57 +1,31 @@
 @echo off
-REM === Double-click launcher (Windows) ===
+REM === Double-click launcher (Windows): build, then start the web app ===
 setlocal enableextensions
 cd /d "%~dp0"
-
-REM keep the EmbeddingGemma model inside this folder (portable)
-set "PYTHONUTF8=1"
 set "PORT=8501"
 
-REM === automatically stop any previous instance still listening on the port ===
-REM This app owns the port; a leftover listener there is its own stale process and
-REM would make the server fail to bind, which looks like "start.bat does not launch".
-echo [cleanup] checking for a previous instance on port %PORT% ...
+REM A leftover instance on the port would make the server fail to bind: stop it
+REM (only if it is this app's ltm.exe; 8501 is also Streamlit's default).
 for /f "tokens=5" %%P in ('netstat -aon ^| findstr ":%PORT%" ^| findstr "LISTENING"') do (
-  REM 8501 is also Streamlit's default: only reclaim it from a python process.
-  tasklist /FI "PID eq %%P" | findstr /i "python.exe" >nul
+  tasklist /FI "PID eq %%P" | findstr /i "ltm.exe" >nul
   if not errorlevel 1 (
-    echo   stopping old process PID %%P
+    echo [cleanup] stopping old instance PID %%P
     taskkill /F /PID %%P >nul 2>&1
   )
 )
 
-if not exist ".venv\Scripts\python.exe" (
-  echo [setup] creating virtual environment .venv ...
-  python -m venv .venv
-  if errorlevel 1 (
-    echo [error] Python not found. Install Python 3.10+ from https://python.org and re-run.
-    pause
-    exit /b 1
-  )
-)
-
-call ".venv\Scripts\activate.bat"
-
-REM fc compares requirements.txt with the copy saved beside the venv: a missing or
-REM stale copy re-runs the install, so editing requirements.txt is picked up.
-fc /b requirements.txt ".venv\.deps_req" >nul 2>&1
+call build.bat
 if errorlevel 1 (
-  echo [setup] installing dependencies; first run, please wait ...
-  python -m pip install --upgrade pip
-  pip install -r requirements.txt
-  if errorlevel 1 (
-    echo [error] dependency install failed. Check your internet connection and re-run.
-    pause
-    exit /b 1
-  )
-  copy /y requirements.txt ".venv\.deps_req" >nul
+  pause
+  exit /b 1
 )
+REM The CUDA build loads cudart / cublas at run time.
+if defined CUDA_PATH set "PATH=%PATH%;%CUDA_PATH%\bin"
 
 echo.
-echo [run] starting the web app at http://localhost:%PORT%  -  close this window to stop
-echo [note] first launch loads the embedding model and can take 10-30s;
-echo        the page shows "loading" until it is ready - this is normal.
-python server.py
+echo [run] http://localhost:%PORT%  -  close this window to stop
+echo [note] the page shows "loading" until the embedding model is ready
+target\release\ltm.exe serve --port %PORT%
 
 echo.
 echo [stopped] the server has exited. See any message above.
