@@ -7,7 +7,7 @@
 
 use super::forget::{run, Spec};
 use super::{bench_dir, load_corpus, CachedEmbedder, Flags};
-use crate::{Config, Result};
+use engram::{Config, Result};
 use serde_json::Value;
 use std::collections::BTreeMap;
 use std::path::PathBuf;

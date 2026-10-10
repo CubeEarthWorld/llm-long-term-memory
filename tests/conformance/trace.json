@@ -1,0 +1,879 @@
+[
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "user lives in kyoto japan",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "user has a cat named tama",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "reinforced",
+  "text": "user has a cat named tama",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "advance",
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "user has a cat named tama and a dog",
+  "stability": "86400.000000",
+  "consolidated": false,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "user works at a bank in osaka",
+  "stability": "172800.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "recall",
+  "texts": [
+   "user has a cat named tama",
+   "user has a cat named tama and a dog"
+  ],
+  "scores": [
+   "0.520919",
+   "0.347124"
+  ],
+  "pack": "[1700000000 Asia/Tokyo;+09:00] user has a cat named tama　《id》\n[1700007200 Asia/Tokyo;+09:00] user has a cat named tama and a dog　《id》\n",
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "90332.572256",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "cite",
+  "cited": 1,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.943874",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "100947.778153",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "advance",
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.117984",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "100947.778153",
+    "R": "0.168677",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "0.125000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.353553",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "recall",
+  "texts": [],
+  "scores": [],
+  "pack": "",
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.117984",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "100947.778153",
+    "R": "0.168677",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "0.125000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.353553",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "trip kyoto plan schedule note",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.117984",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "100947.778153",
+    "R": "0.168677",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "0.125000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.353553",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "trip kyoto hotel schedule note",
+  "stability": "86400.000000",
+  "consolidated": false,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user lives in kyoto japan",
+    "S": "86400.000000",
+    "R": "0.117984",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama",
+    "S": "100947.778153",
+    "R": "0.168677",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "0.125000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.353553",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "trip kyoto food schedule note",
+  "stability": "86400.000000",
+  "consolidated": false,
+  "evicted": "user lives in kyoto japan",
+  "state": [
+   {
+    "text": "user has a cat named tama",
+    "S": "100947.778153",
+    "R": "0.168677",
+    "c": true
+   },
+   {
+    "text": "user has a cat named tama and a dog",
+    "S": "86400.000000",
+    "R": "0.125000",
+    "c": false
+   },
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.353553",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   }
+  ]
+ },
+ {
+  "op": "dream",
+  "reports": [
+   {
+    "action": "replace",
+    "before": [
+     "user has a cat named tama and a dog",
+     "user has a cat named tama"
+    ],
+    "after": [
+     "user has a cat named tama and a dog / user has a cat named tama"
+    ],
+    "stability": [
+     "111747.778153"
+    ]
+   }
+  ],
+  "state": [
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.353553",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": false
+   },
+   {
+    "text": "user has a cat named tama and a dog / user has a cat named tama",
+    "S": "111747.778153",
+    "R": "0.249021",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "advance",
+  "state": [
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.250000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "user has a cat named tama and a dog / user has a cat named tama",
+    "S": "111747.778153",
+    "R": "0.145710",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "noise alpha 1",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.250000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "user has a cat named tama and a dog / user has a cat named tama",
+    "S": "111747.778153",
+    "R": "0.145710",
+    "c": true
+   },
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "noise beta 2",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": "user has a cat named tama and a dog / user has a cat named tama",
+  "state": [
+   {
+    "text": "user works at a bank in osaka",
+    "S": "172800.000000",
+    "R": "0.250000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "noise gamma 3",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": "user works at a bank in osaka",
+  "state": [
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.500000",
+    "c": false
+   },
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "advance",
+  "state": [
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": false
+   },
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "recall",
+  "texts": [],
+  "scores": [],
+  "pack": "",
+  "state": [
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": false
+   },
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "forget",
+  "forgot": false,
+  "state": [
+   {
+    "text": "trip kyoto plan schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": false
+   },
+   {
+    "text": "trip kyoto food schedule note",
+    "S": "86400.000000",
+    "R": "0.000488",
+    "c": false
+   },
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "dream",
+  "reports": [
+   {
+    "action": "replace",
+    "before": [
+     "trip kyoto hotel schedule note",
+     "trip kyoto plan schedule note",
+     "trip kyoto food schedule note"
+    ],
+    "after": [
+     "trip kyoto hotel schedule note / trip kyoto plan schedule note / trip kyoto food schedule note"
+    ],
+    "stability": [
+     "86484.375000"
+    ]
+   }
+  ],
+  "state": [
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note / trip kyoto plan schedule note / trip kyoto food schedule note",
+    "S": "86484.375000",
+    "R": "0.001463",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "remember",
+  "action": "inserted",
+  "text": "id:fake user likes matcha",
+  "stability": "86400.000000",
+  "consolidated": true,
+  "evicted": null,
+  "state": [
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note / trip kyoto plan schedule note / trip kyoto food schedule note",
+    "S": "86484.375000",
+    "R": "0.001463",
+    "c": true
+   },
+   {
+    "text": "id:fake user likes matcha",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ },
+ {
+  "op": "recall",
+  "texts": [
+   "id:fake user likes matcha"
+  ],
+  "scores": [
+   "0.434625"
+  ],
+  "pack": "[1701216800 Asia/Tokyo;+09:00] id:fake user likes matcha　《id》\n",
+  "state": [
+   {
+    "text": "noise alpha 1",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise beta 2",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "noise gamma 3",
+    "S": "86400.000000",
+    "R": "0.000977",
+    "c": true
+   },
+   {
+    "text": "trip kyoto hotel schedule note / trip kyoto plan schedule note / trip kyoto food schedule note",
+    "S": "86484.375000",
+    "R": "0.001463",
+    "c": true
+   },
+   {
+    "text": "id:fake user likes matcha",
+    "S": "86400.000000",
+    "R": "1.000000",
+    "c": true
+   }
+  ]
+ }
+]

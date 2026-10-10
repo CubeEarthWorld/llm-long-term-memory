@@ -91,9 +91,11 @@ impl DreamDecision {
         Self::default()
     }
 
-    /// Parses an LLM answer leniently (fences, prose, `{text}` items, `action: keep`).
-    /// `None` for an empty or unparsable answer: a truncated reasoning model must be
-    /// retried by the next dream, never read as "keep" (SPEC §5).
+    /// Parses an LLM answer leniently (fences, prose, `{text}` items). Keep is only an
+    /// explicit `"action": "keep"`; anything else must carry at least one text. `None`
+    /// for every other answer — empty, unparsable, or `{"memories": []}` with no keep —
+    /// so a truncated or confused model is retried by the next dream, never read as
+    /// "keep" (SPEC §5).
     pub fn parse(raw: &str) -> Option<Self> {
         let obj = relaxed_json(raw)?;
         let obj = obj.as_object()?;
@@ -102,8 +104,11 @@ impl DreamDecision {
             return Some(Self::keep());
         }
         let memories = json_texts(obj.get("memories").filter(|m| m.is_array())?);
+        if memories.is_empty() {
+            return None;
+        }
         let absorbed_ids = match obj.get("ids").and_then(Value::as_array) {
-            Some(ids) if !memories.is_empty() => ids
+            Some(ids) => ids
                 .iter()
                 .map(|i| i.as_str().map_or_else(|| i.to_string(), str::to_owned))
                 .filter(|i| !i.is_empty())
@@ -137,7 +142,9 @@ mod tests {
         let v = DreamDecision::parse(r#"x {"action":"replace","ids":["A","B"],"memories":["a",{"text":"b"},""]} y"#).unwrap();
         assert_eq!((v.memories, v.absorbed_ids), (vec!["a".into(), "b".into()], vec!["A".into(), "B".into()]));
         assert!(DreamDecision::parse(r#"{"action":"replace","memories":["a"]}"#).unwrap().absorbed_ids.is_empty());
-        assert_eq!(DreamDecision::parse(r#"{"action":"replace","memories":[]}"#), Some(DreamDecision::keep()));
+        assert_eq!(DreamDecision::parse(r#"{"action":"replace","memories":[]}"#), None);
+        assert_eq!(DreamDecision::parse(r#"{"memories":[]}"#), None); // no action is not keep
+        assert_eq!(DreamDecision::parse(r#"{"action":1,"memories":[" "]}"#), None);
         assert_eq!(DreamDecision::parse(r#"{"action":"replace"}"#), None);
         assert_eq!(DreamDecision::parse("garbage"), None);
         assert_eq!(DreamDecision::parse(""), None);

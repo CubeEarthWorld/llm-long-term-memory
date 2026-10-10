@@ -6,7 +6,7 @@ use serde_json::Value;
 /// A parameter value that round-trips through JSON. Setting is tolerant, like a
 /// settings form: numbers may arrive as strings, and a value of the wrong kind is
 /// ignored (the field keeps its current value).
-pub trait Param {
+trait Param {
     /// The JSON form.
     fn to_json(&self) -> Value;
     /// Overwrites `self` from `v` when `v` can be read as this type.
@@ -46,33 +46,6 @@ impl Param for usize {
     }
 }
 
-impl Param for bool {
-    fn to_json(&self) -> Value {
-        Value::from(*self)
-    }
-    fn set_json(&mut self, v: &Value) {
-        *self = match v {
-            Value::Bool(b) => *b,
-            Value::String(s) => matches!(s.as_str(), "true" | "True" | "1"),
-            Value::Number(n) => n.as_f64() == Some(1.0),
-            _ => false,
-        };
-    }
-}
-
-impl Param for String {
-    fn to_json(&self) -> Value {
-        Value::from(self.as_str())
-    }
-    fn set_json(&mut self, v: &Value) {
-        *self = match v {
-            Value::String(s) => s.clone(),
-            Value::Null => return,
-            other => other.to_string(),
-        };
-    }
-}
-
 /// Declares a flat parameter struct: fields with defaults, `Default`, and
 /// `to_json` / `merge_json` (unknown keys are ignored, known ones coerced).
 macro_rules! params {
@@ -98,7 +71,7 @@ macro_rules! params {
             /// The parameters as a JSON object, in declaration order.
             pub fn to_json(&self) -> serde_json::Value {
                 let mut m = serde_json::Map::new();
-                $( m.insert(stringify!($field).to_owned(), $crate::Param::to_json(&self.$field)); )*
+                $( m.insert(stringify!($field).to_owned(), Param::to_json(&self.$field)); )*
                 serde_json::Value::Object(m)
             }
 
@@ -106,14 +79,12 @@ macro_rules! params {
             pub fn merge_json(&mut self, v: &serde_json::Value) {
                 let Some(o) = v.as_object() else { return };
                 $( if let Some(x) = o.get(stringify!($field)) {
-                    $crate::Param::set_json(&mut self.$field, x);
+                    Param::set_json(&mut self.$field, x);
                 } )*
             }
         }
     };
 }
-#[cfg(feature = "app")]
-pub(crate) use params;
 
 const DAY: f64 = 86_400.0;
 const YEAR: f64 = 365.0 * DAY;

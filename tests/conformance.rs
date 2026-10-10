@@ -1,6 +1,5 @@
-//! Cross-language conformance: replays the Dart package's scripted scenario and must
-//! reproduce its trace (texts, actions, stabilities, scores at 6 decimals — this crate
-//! shares the Dart arithmetic, so they agree exactly).
+//! Scripted scenario: replays `tests/conformance/scenario.json` and must reproduce the
+//! committed trace (texts, actions, stabilities, scores at 6 decimals).
 
 mod support;
 
@@ -10,9 +9,7 @@ use std::path::PathBuf;
 use support::{merge_to_gist, FakeEmbedder};
 
 fn dir() -> PathBuf {
-    std::env::var_os("CONFORMANCE_DIR").map(PathBuf::from).unwrap_or_else(|| {
-        PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../long-term-memory/test/conformance")
-    })
+    PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conformance")
 }
 
 fn snake(k: &str) -> String {
@@ -27,10 +24,8 @@ fn masked(pack: &str) -> String {
     pack.split_inclusive('\n').map(|l| format!("{}《id》\n", &l[..l.find("《id:").unwrap()])).collect()
 }
 
-// No skip on a missing trace.json: the baseline is committed in the sibling package,
-// so a missing one means a broken checkout, not a reason to drop the guarantee.
 #[test]
-fn dart_scenario_reproduced() {
+fn scripted_scenario_reproduced() {
     let read = |f: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(dir().join(f)).expect(f)).unwrap() };
     let (scenario, expected) = (read("scenario.json"), read("trace.json"));
     let mut cfg = Config::default();
@@ -96,6 +91,11 @@ fn dart_scenario_reproduced() {
             .map(|m| json!({"text": m.text, "S": r6(m.stability), "R": r6(s.retrievability(m, now)), "c": m.consolidated}))
             .collect::<Vec<_>>());
         trace.push(row);
+    }
+    if std::env::var_os("BLESS").is_some() {
+        std::fs::write(dir().join("trace.json"), serde_json::to_string_pretty(&trace).unwrap() + "
+").unwrap();
+        return;
     }
     let expected = expected.as_array().unwrap();
     assert_eq!(trace.len(), expected.len());

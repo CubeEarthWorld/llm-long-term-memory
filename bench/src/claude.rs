@@ -7,9 +7,9 @@
 //! seed labile, a turn answers without saving — so the pending prompts can be answered
 //! out of band (any Claude client) and merged into the cache.
 
-use super::llm::{build_prompt, parse_texts, retry, CallError, Converse, Llm, ToolFn, EXTRACT_INSTRUCTION, EXTRACT_SYSTEM_PROMPT, SYSTEM_PROMPT};
-use super::settings::{root, Settings};
-use crate::{relaxed_json, DreamDecision, DreamRequest, DREAM_SYSTEM_PROMPT};
+use crate::llm::{build_prompt, parse_texts, retry, CallError, Converse, Llm, ToolFn, EXTRACT_INSTRUCTION, EXTRACT_SYSTEM_PROMPT, SYSTEM_PROMPT};
+use crate::settings::{root, Settings};
+use engram::{relaxed_json, DreamDecision, DreamRequest, DREAM_SYSTEM_PROMPT};
 use serde_json::{json, Map, Value};
 use std::io::Write as _;
 use std::path::PathBuf;
@@ -190,7 +190,7 @@ impl Llm for ClaudeCode {
         self.ask("extract", EXTRACT_SYSTEM_PROMPT, &instruction).map(|r| parse_texts(&r)).unwrap_or_default()
     }
 
-    fn adjudicate(&mut self, request: &DreamRequest) -> crate::Result<DreamDecision> {
+    fn adjudicate(&mut self, request: &DreamRequest) -> engram::Result<DreamDecision> {
         if request.members.is_empty() {
             return Ok(DreamDecision::keep());
         }
@@ -213,7 +213,7 @@ mod tests {
             ..Settings::default()
         };
         let mut c = ClaudeCode::new(&s);
-        let req = DreamRequest { current_time: "t".into(), members: vec![crate::DreamMember { id: "A".into(), text: "x".into(), local_time: "t".into(), timezone: "UTC;+00:00".into(), retrievability: 1.0 }] };
+        let req = DreamRequest { current_time: "t".into(), members: vec![engram::DreamMember { id: "A".into(), text: "x".into(), local_time: "t".into(), timezone: "UTC;+00:00".into(), retrievability: 1.0 }] };
         assert!(c.adjudicate(&req).is_err()); // no CLI, no cache: queued
         let pending: Map<String, Value> = serde_json::from_str(&std::fs::read_to_string(dir.join("cache.pending.json")).unwrap()).unwrap();
         let (k, mut e) = pending.into_iter().next().unwrap();

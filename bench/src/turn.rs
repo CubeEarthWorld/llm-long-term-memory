@@ -1,10 +1,10 @@
 //! One conversational turn — recall → converse (+ save / delete tools) → cite — and its
 //! metrics. Generation is confined to the converse step; the rest is engine arithmetic.
 
-use super::llm::Llm;
-use super::settings::Settings;
-use super::{round_to, timed, EmbedTimer};
-use crate::{Engram, Recall, Remembered, Stats};
+use crate::llm::Llm;
+use crate::settings::Settings;
+use crate::{round_to, timed, EmbedTimer};
+use engram::{Engram, Recall, Remembered, Stats};
 use serde_json::{json, Value};
 
 /// Actions that mean a memory was created or strengthened.
@@ -44,10 +44,10 @@ impl TurnMetrics {
         self.pack_text.chars().count()
     }
 
-    /// The detail shown under a turn in the UI and stored in the turn log.
+    /// The detail stored in the turn log and written to the results file.
     pub fn detail(&self) -> Value {
         json!({
-            "title": super::TITLE,
+            "title": crate::TITLE,
             "response": self.response,
             "write_note": self.write_note,
             "records": self.records(),
@@ -73,7 +73,7 @@ impl TurnMetrics {
         let c = self.counts.unwrap_or(Stats { records: 0, labile: 0, unindexed: 0 });
         json!({
             "turn": self.turn,
-            "system": super::SYSTEM_ID,
+            "system": crate::SYSTEM_ID,
             "utterance": self.utterance,
             "embed_ms": round_to(self.embed_ms, 1),
             "retrieve_ms": round_to(self.retrieve_ms, 1),
@@ -101,9 +101,9 @@ pub fn invariants(rows: &[Value], budget_chars: usize, capacity: usize) -> Value
 }
 
 /// The JSON event for a remember outcome.
-pub fn remember_event(m: &Engram, r: &crate::Result<Remembered>) -> Value {
+pub fn remember_event(m: &Engram, r: &engram::Result<Remembered>) -> Value {
     let now = m.now();
-    let trace = |action: &str, t: &crate::Trace| {
+    let trace = |action: &str, t: &engram::Trace| {
         json!({"action": action, "id": t.id, "text": t.text, "stability": t.stability.round() as i64,
                "R": round_to(m.retrievability(t, now), 3), "consolidated": t.consolidated})
     };
@@ -121,7 +121,7 @@ pub fn remember_event(m: &Engram, r: &crate::Result<Remembered>) -> Value {
     }
 }
 
-/// The recalled items as the UI lists them.
+/// The recalled items as the runner lists them.
 pub fn recalled_items(r: &Recall) -> Vec<Value> {
     r.recalled
         .iter()
@@ -146,6 +146,7 @@ pub fn summarize(events: &[Value]) -> String {
         "rate_limited" => "レート上限",
         "not_found" => "対象なし",
         "not_injected" => "対象外",
+        "missing_cue" => "cue なし",
         other => other,
     }
     .to_owned();
@@ -201,7 +202,12 @@ pub fn run_turn(m: &mut Engram, llm: &mut dyn Llm, timer: &EmbedTimer, glob: &Se
                     }
                     // The model may send junk here.
                     let salience = args["salience"].as_f64().or_else(|| args["salience"].as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(1.0);
-                    let cue = args["cue"].as_str().unwrap_or("").to_owned();
+                    let cue = args["cue"].as_str().unwrap_or("").trim().to_owned();
+                    if cue.is_empty() {
+                        // Without its question the save could never find the version it updates.
+                        events.push(json!({"action": "missing_cue", "text": text}));
+                        return json!({"ok": false, "action": "missing_cue"});
+                    }
                     let ev = write(m, &mut events, &mut |m| {
                         let r = m.remember(&text, salience, &cue);
                         remember_event(m, &r)

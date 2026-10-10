@@ -87,7 +87,7 @@ pub fn parse_offset(text: &str) -> i64 {
 /// field: pure offset arithmetic (no tz database), valid for any year (SPEC §2).
 pub fn fmt_local(unix: i64, tz_field: &str) -> String {
     let seconds = parse_offset(tz_field.split(';').nth(1).unwrap_or("+00:00"));
-    let local = unix + seconds;
+    let local = unix.saturating_add(seconds);
     let (days, sod) = (local.div_euclid(86_400), local.rem_euclid(86_400));
     let (y, m, d) = civil_from_days(days);
     format!("{y:04}-{m:02}-{d:02} {:02}:{:02} {}", sod / 3600, sod % 3600 / 60, fmt_offset(seconds))

@@ -5,7 +5,7 @@
 
 pub mod workload;
 
-use engram::{Config, DreamDecision, DreamRequest, Embedder, Engram, ManualClock, MemoryStore, Result, Store};
+use engram::{Config, DreamDecision, DreamRequest, Embedder, Engram, ManualClock, MemoryStore, Result, Store, Trace, Write};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -170,6 +170,23 @@ pub fn always_fail(_: &DreamRequest) -> Result<DreamDecision> {
 }
 
 /// An engine over `store` (default: in RAM) with a virtual clock at [`START`].
+/// A [`MemoryStore`] that outlives an engine: clones share the rows, so a test can
+/// reopen "the same database" or write to it behind the engine's back.
+#[derive(Clone, Default)]
+pub struct SharedStore(Arc<Mutex<MemoryStore>>);
+
+impl Store for SharedStore {
+    fn load_all(&self) -> Result<Vec<Trace>> {
+        self.0.lock().unwrap().load_all()
+    }
+    fn write(&mut self, writes: &[Write<'_>]) -> Result<()> {
+        self.0.lock().unwrap().write(writes)
+    }
+    fn clear(&mut self) -> Result<()> {
+        self.0.lock().unwrap().clear()
+    }
+}
+
 pub fn build_with(cfg: Config, embedder: Box<dyn Embedder>, store: Box<dyn Store>) -> (Engram, ManualClock) {
     let clock = ManualClock::new(START);
     let engine = Engram::with_clock(store, embedder, cfg, "Asia/Tokyo", clock.clock()).expect("engine");

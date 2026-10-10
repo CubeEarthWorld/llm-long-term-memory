@@ -1,7 +1,7 @@
 //! SQLite substrate: one `memory` table (SPEC §2) plus a ring of pre-dream snapshots.
 
-use crate::store::{Store, Write};
-use crate::{Result, Trace};
+use engram::{Store, Write};
+use engram::{Result, Trace};
 use rusqlite::types::ValueRef;
 use rusqlite::{params, Connection};
 use std::path::{Path, PathBuf};

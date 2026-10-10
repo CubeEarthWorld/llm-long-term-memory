@@ -6,7 +6,7 @@ use crate::store::{Store, Write};
 use crate::text::{clean_text, cues};
 use crate::time::{fmt_local, system_clock, tz_field, Clock};
 use crate::vector::{normalized, scores};
-use crate::id::trace_id;
+use crate::id::{ulid_ids, IdGen};
 use crate::{Config, Embedder, Result, Trace};
 use std::collections::{HashMap, HashSet};
 use std::hash::{BuildHasher, RandomState};
@@ -108,6 +108,7 @@ pub struct Engram {
     store: Box<dyn Store>,
     embedder: Box<dyn Embedder>,
     clock: Clock,
+    ids: IdGen,
     timezone: String,
     traces: Vec<Trace>,
     /// Insertion sequence number of each trace (strictly increasing, parallel to `traces`).
@@ -146,6 +147,7 @@ impl Engram {
             store,
             embedder,
             clock,
+            ids: ulid_ids(),
             timezone: timezone.to_owned(),
             traces: Vec::new(),
             seqs: Vec::new(),
@@ -173,6 +175,11 @@ impl Engram {
     /// Replaces the time source (seed replays run on a virtual clock).
     pub fn set_clock(&mut self, clock: Clock) {
         self.clock = clock;
+    }
+
+    /// Replaces the id generator (ULIDs by default).
+    pub fn set_ids(&mut self, ids: IdGen) {
+        self.ids = ids;
     }
 
     /// Current local time, e.g. `'2026-06-12 09:30 +09:00'`.
@@ -408,14 +415,17 @@ impl Engram {
         Ok(())
     }
 
-    /// A trace id no live trace (nor `taken`) has. Random ids never collide in practice;
-    /// reproducible ids are derived from the text and the time, so a gist that repeats
-    /// its seed's text in the same millisecond must not inherit — and then lose — its id.
-    fn new_id(&self, millis: i64, text: &str, taken: &[String]) -> String {
-        (0u64..)
-            .map(|salt| trace_id(millis, text, salt))
-            .find(|id| !self.by_id.contains_key(id) && !taken.contains(id))
-            .expect("an unused id")
+    /// A fresh id no live trace (nor `taken`) has: a gist that repeats its seed's text in
+    /// the same millisecond must not inherit — and then lose — the seed's id under a
+    /// generator derived from text and time. A generator stuck on used ids is an error.
+    fn new_id(&mut self, millis: i64, text: &str, taken: &[String]) -> Result<String> {
+        for _ in 0..64 {
+            let id = (self.ids)(millis, text);
+            if !id.is_empty() && !self.by_id.contains_key(&id) && !taken.contains(&id) {
+                return Ok(id);
+            }
+        }
+        Err("the id generator keeps returning ids that are empty or in use".into())
     }
 
     /// One model id means one dimension (SPEC §7): a vector of any other length is
@@ -501,7 +511,7 @@ impl Engram {
         let sal = if salience.is_nan() { 1.0 } else { salience.clamp(0.0, 10.0) };
         let consolidated = v.is_some() && candidates.is_empty() && self.unindexed == 0;
         let trace = Trace {
-            id: self.new_id((now * 1000.0) as i64, &text, &[]),
+            id: self.new_id((now * 1000.0) as i64, &text, &[])?,
             text,
             created_at: now as i64,
             tz: tz_field(&self.timezone, now),
@@ -534,19 +544,22 @@ impl Engram {
         let (mut young, mut old) = (Vec::<(f64, usize)>::new(), Vec::<(f64, usize)>::new());
         for (i, t) in all.iter().enumerate() {
             let age = now - t.created_at as f64;
-            let group = if age >= 0.0 && age < self.cfg.grace_period { &mut young } else { &mut old };
+            // A trace stamped in the future (a clock that ran ahead) has not passed its grace.
+            let group = if age < self.cfg.grace_period { &mut young } else { &mut old };
             group.push((Self::rank(t, now), i));
         }
         // At most `excess` victims come from either group: select those (linear), then
         // order only them — never the whole store.
-        let young_total = young.len();
+        // A flood (more young traces than capacity/10) lifts the protection for this
+        // eviction as a whole; ranks do not change while evicting.
+        let flood = young.len() > self.cfg.capacity / 10;
         for group in [&mut young, &mut old] {
             first_k(group, excess, |a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1)));
         }
         let (mut y, mut o) = (0, 0);
         (0..excess)
             .map(|_| {
-                if o == old.len() || (young_total - y > self.cfg.capacity / 10 && young[y].0 < old[o].0) {
+                if o == old.len() || (flood && y < young.len() && young[y].0 < old[o].0) {
                     y += 1;
                     young[y - 1].1
                 } else {
@@ -717,7 +730,10 @@ impl Engram {
     }
 
     /// The traces column `col` of a scan reactivates, strongest first: cos ≥ θ_related
-    /// and not written after the seed, so evidence only ever rewrites its own past.
+    /// and not stated after the seed, so evidence only ever rewrites its own past.
+    /// Facts stated in the same second (one turn's saves) are simultaneous: each is in
+    /// the other's past. Seconds are the only order that survives a reload — a gist
+    /// takes its seed's time but a new id.
     /// Ties break on insertion order (ULID tails are random). At most
     /// `dream_max_members − 1`.
     fn near(&self, rows: &[usize], sims: &[f64], stride: usize, col: usize, seed: Option<&Trace>) -> Vec<(f64, usize)> {
@@ -878,7 +894,7 @@ impl Engram {
         let model_id = self.embedder.model_id().to_owned();
         let mut ids: Vec<String> = Vec::with_capacity(texts.len());
         for text in texts {
-            let id = self.new_id((now * 1000.0) as i64, text, &ids);
+            let id = self.new_id((now * 1000.0) as i64, text, &ids)?;
             ids.push(id);
         }
         Ok(texts

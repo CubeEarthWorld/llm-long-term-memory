@@ -6,10 +6,10 @@
 //! `ltm bench supersede --analyze`   cosine distribution and cluster capture, no LLM
 //! `ltm bench supersede --run [--theta 0.65]`   live dream, stale rate (needs an API key)
 
-use super::super::llm::client;
-use super::super::settings::AppConfig;
+use crate::llm::client;
+use crate::settings::AppConfig;
 use super::{bench_dir, load_updates, percentile, r4, Flags, Update, DAY};
-use crate::{Config, DreamAction, Embedder, Engram, ManualClock, MemoryStore, Result};
+use engram::{Config, DreamAction, Embedder, Engram, ManualClock, MemoryStore, Result};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -18,6 +18,7 @@ const GAP_DAYS: f64 = 30.0;
 fn scenario(pairs: &[Update], cfg: Config, embedder: Box<dyn Embedder>) -> Result<(Engram, ManualClock)> {
     let clock = ManualClock::new(1_700_000_000.0);
     let mut m = Engram::with_clock(Box::new(MemoryStore::default()), embedder, cfg, "Asia/Tokyo", clock.clock())?;
+    m.set_ids(crate::ids::reproducible(1)); // same ids → same dream prompts → cached verdicts replay
     for p in pairs {
         clock.advance(600.0);
         m.remember(&p.old, 1.0, &p.cue_old)?;
@@ -35,17 +36,17 @@ pub fn cluster_capture(pairs: &[Update], cfg: Config, embedder: Box<dyn Embedder
     let (mut m, _) = scenario(pairs, cfg, embedder)?;
     let clusters: Vec<HashSet<String>> = m.clusters(Some(pairs.len())).into_iter().map(|c| c.into_iter().map(|t| t.text).collect()).collect();
     let got = pairs.iter().filter(|p| clusters.iter().any(|c| c.contains(&p.old) && c.contains(&p.new))).count();
-    Ok(json!({"captured": got, "pairs": pairs.len(), "rate": super::super::round_to(got as f64 / pairs.len() as f64, 3), "clusters": clusters.len()}))
+    Ok(json!({"captured": got, "pairs": pairs.len(), "rate": crate::round_to(got as f64 / pairs.len() as f64, 3), "clusters": clusters.len()}))
 }
 
 /// The bottleneck of overwrite forgetting is capture, not the LLM: does a cue reach
 /// the version it supersedes?
 fn analyze(pairs: &[Update], mut cfg: AppConfig) -> Result<()> {
-    let (mut e, _) = super::super::embedder(&cfg.glob)?;
+    let (mut e, _) = crate::embedder(&cfg.glob)?;
     let olds: Vec<&str> = pairs.iter().map(|p| p.old.as_str()).collect();
     let news: Vec<&str> = pairs.iter().map(|p| p.new.as_str()).collect();
     let (a, b) = (e.embed_documents(&olds)?, e.embed_documents(&news)?);
-    let cos: Vec<f64> = a.iter().zip(&b).map(|(x, y)| crate::vector::dot(&crate::vector::normalized(x), &crate::vector::normalized(y))).collect();
+    let cos: Vec<f64> = a.iter().zip(&b).map(|(x, y)| crate::dot(&crate::normalized(x), &crate::normalized(y))).collect();
     let q: Vec<f64> = [10.0, 25.0, 50.0, 75.0, 90.0].iter().map(|&p| percentile(&cos, p)).collect();
     let (lo, hi) = (cos.iter().copied().fold(f64::INFINITY, f64::min), cos.iter().copied().fold(f64::NEG_INFINITY, f64::max));
     println!("cos(old,new): min {lo:.3} p10 {:.3} p25 {:.3} median {:.3} p75 {:.3} p90 {:.3} max {hi:.3}", q[0], q[1], q[2], q[3], q[4]);
@@ -58,7 +59,7 @@ fn analyze(pairs: &[Update], mut cfg: AppConfig) -> Result<()> {
         for members in [8, 16] {
             cfg.memory.theta_related = th;
             cfg.memory.dream_max_members = members;
-            let c = cluster_capture(pairs, cfg.memory.clone(), super::super::embedder(&cfg.glob)?.0)?;
+            let c = cluster_capture(pairs, cfg.memory.clone(), crate::embedder(&cfg.glob)?.0)?;
             println!("  theta={th:.2} max_members={members:2} → {:3}/{} ({:.0}%)  clusters={}", c["captured"], c["pairs"], c["rate"].as_f64().unwrap_or(0.0) * 100.0, c["clusters"]);
         }
     }
@@ -73,14 +74,14 @@ fn measure(pairs: &[Update], cfg: AppConfig) -> Result<Value> {
         return Err(format!("LLM unavailable: {}", llm.status()).into());
     }
     println!("live dream via {}", llm.status());
-    let (mut m, _) = scenario(pairs, cfg.memory.clone(), super::super::embedder(&cfg.glob)?.0)?;
+    let (mut m, _) = scenario(pairs, cfg.memory.clone(), crate::embedder(&cfg.glob)?.0)?;
     let before: HashSet<String> = m.memories().iter().map(|t| t.text.clone()).collect();
-    let mut judge = |r: &crate::DreamRequest| llm.adjudicate(r);
+    let mut judge = |r: &engram::DreamRequest| llm.adjudicate(r);
     let reports = m.dream(&mut judge, Some(1_000_000))?;
     let retry = m.dream(&mut judge, Some(1_000_000))?;
     let after: HashSet<String> = m.memories().iter().map(|t| t.text.clone()).collect();
     let gists: HashSet<&String> = after.difference(&before).collect();
-    let count = |rs: &[crate::DreamReport], a: DreamAction| rs.iter().filter(|r| r.action == a).count();
+    let count = |rs: &[engram::DreamReport], a: DreamAction| rs.iter().filter(|r| r.action == a).count();
     let mut errors: Vec<String> = reports.iter().chain(&retry).filter_map(|r| r.error.clone()).collect::<HashSet<_>>().into_iter().collect();
     errors.sort();
     errors.truncate(5);
@@ -123,7 +124,6 @@ pub fn main(args: &[String]) -> Result<()> {
         cfg.memory.theta_related = theta;
     }
     let pairs = load_updates(&bench_dir().join("updates"));
-    crate::deterministic_ids(1); // same ids → same dream prompts → cached verdicts replay
     if f.has("analyze") {
         return analyze(&pairs, cfg);
     }

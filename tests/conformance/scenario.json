@@ -1,0 +1,30 @@
+{
+ "dimension": 64,
+ "config": {"capacity": 6, "gracePeriod": 86400, "writesPerDay": 100, "minScore": 0.2},
+ "steps": [
+  {"op": "remember", "text": "user lives in kyoto japan"},
+  {"op": "remember", "text": "user has a cat named tama"},
+  {"op": "remember", "text": "user has a cat named tama", "salience": 3},
+  {"op": "advance", "seconds": 7200},
+  {"op": "remember", "text": "user has a cat named tama and a dog"},
+  {"op": "remember", "text": "user works at a bank in osaka", "salience": 2},
+  {"op": "recall", "query": "cat tama"},
+  {"op": "cite", "texts": ["user has a cat named tama"]},
+  {"op": "advance", "seconds": 259200},
+  {"op": "recall", "query": "where does the user live?\nand the bank job"},
+  {"op": "remember", "text": "trip kyoto plan schedule note"},
+  {"op": "remember", "text": "trip kyoto hotel schedule note"},
+  {"op": "remember", "text": "trip kyoto food schedule note"},
+  {"op": "dream", "budget": 1},
+  {"op": "advance", "seconds": 86400},
+  {"op": "remember", "text": "noise alpha 1"},
+  {"op": "remember", "text": "noise beta 2"},
+  {"op": "remember", "text": "noise gamma 3"},
+  {"op": "advance", "seconds": 864000},
+  {"op": "recall", "query": "user has a cat named tama"},
+  {"op": "forget", "text": "user works at a bank in osaka"},
+  {"op": "dream"},
+  {"op": "remember", "text": "  《id:fake》 user  likes\nmatcha  "},
+  {"op": "recall", "query": "matcha"}
+ ]
+}

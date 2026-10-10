@@ -10,8 +10,8 @@
 use super::forget::{run, Spec};
 use super::supersede::cluster_capture;
 use super::{bench_dir, build_cache, cache_path, load_corpus, load_updates, percentile, CachedEmbedder, Corpus, Flags, PyRandom, Truncated};
-use crate::app::settings::AppConfig;
-use crate::{cues, Config, Embedder, Result};
+use crate::settings::AppConfig;
+use engram::{cues, Config, Embedder, Result};
 use serde_json::{json, Value};
 
 /// Unrelated-pair cosines (the `cosine_floor` calibration point) and matching-pair cosines.
@@ -19,17 +19,17 @@ fn distribution(e: &mut dyn Embedder, corpus: &Corpus) -> Result<Value> {
     let pool: Vec<(&str, String)> = corpus.gold.iter().filter_map(|g| cues(&g.probes[0], 8).into_iter().next().map(|c| (g.fact.as_str(), c))).collect();
     let facts: Vec<&str> = pool.iter().map(|p| p.0).collect();
     let probes: Vec<&str> = pool.iter().map(|p| p.1.as_str()).collect();
-    let norm = |vs: Vec<Vec<f32>>| vs.into_iter().map(|v| crate::vector::normalized(&v)).collect::<Vec<_>>();
+    let norm = |vs: Vec<Vec<f32>>| vs.into_iter().map(|v| crate::normalized(&v)).collect::<Vec<_>>();
     let (d, q) = (norm(e.embed_documents(&facts)?), norm(e.embed_queries(&probes)?));
-    let same: Vec<f64> = d.iter().zip(&q).map(|(a, b)| crate::vector::dot(a, b)).collect();
+    let same: Vec<f64> = d.iter().zip(&q).map(|(a, b)| crate::dot(a, b)).collect();
     let mut perm: Vec<usize> = (0..facts.len()).collect();
     PyRandom::new(7).shuffle(&mut perm);
-    let cross: Vec<f64> = perm.iter().enumerate().map(|(j, &i)| crate::vector::dot(&d[if i == j { (i + 1) % d.len() } else { i }], &q[j])).collect();
-    let pct = |v: &[f64], qs: &[f64]| qs.iter().map(|&p| super::super::round_to(percentile(v, p), 3)).collect::<Vec<_>>();
+    let cross: Vec<f64> = perm.iter().enumerate().map(|(j, &i)| crate::dot(&d[if i == j { (i + 1) % d.len() } else { i }], &q[j])).collect();
+    let pct = |v: &[f64], qs: &[f64]| qs.iter().map(|&p| crate::round_to(percentile(v, p), 3)).collect::<Vec<_>>();
     Ok(json!({
         "unrelated_p50_p90_p99": pct(&cross, &[50.0, 90.0, 99.0]),
         "matching_p10_p50_p90": pct(&same, &[10.0, 50.0, 90.0]),
-        "separation": super::super::round_to(percentile(&same, 50.0) - percentile(&cross, 90.0), 3),
+        "separation": crate::round_to(percentile(&same, 50.0) - percentile(&cross, 90.0), 3),
     }))
 }
 
@@ -37,7 +37,7 @@ fn distribution(e: &mut dyn Embedder, corpus: &Corpus) -> Result<Value> {
 /// relative position between floor and θ).
 fn calibrate(dist: &Value) -> Config {
     let p = |i: usize| dist["unrelated_p50_p90_p99"][i].as_f64().unwrap_or(0.0);
-    let round2 = |x: f64| super::super::round_to(x, 2);
+    let round2 = |x: f64| crate::round_to(x, 2);
     let floor = round2(p(1));
     let theta = round2(p(2)).max(floor + 0.01);
     Config { cosine_floor: floor, theta_related: theta, gist_min_cosine: round2(floor + (theta - floor) * 2.0 / 3.0), ..Config::default() }
@@ -64,7 +64,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let base = CachedEmbedder::load(&cache)?;
     let dims: Vec<usize> = Some(f.list("dims")).filter(|d: &Vec<usize>| !d.is_empty()).unwrap_or_else(|| vec![base.dimension()]);
     let (span, capacity, seed) = (f.num("span-days", 365.0), f.num("capacity", 1000), f.num("seed", 1));
-    let live = || -> Result<Box<dyn Embedder>> { Ok(super::super::embedder(&app.glob)?.0) }; // updates and cues are not cached
+    let live = || -> Result<Box<dyn Embedder>> { Ok(crate::embedder(&app.glob)?.0) }; // updates and cues are not cached
     let cut = |e: Box<dyn Embedder>, d: usize| -> Box<dyn Embedder> { if d == e.dimension() { e } else { Box::new(Truncated::new(e, d)) } };
     println!("model={} dim={}", base.model_id(), base.dimension());
     println!("年表（既定閾値 0.4/0.55/0.5 と、そのモデルで較正した閾値）:");

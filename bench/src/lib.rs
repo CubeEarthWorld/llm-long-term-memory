@@ -1,17 +1,23 @@
-//! The local app around the engine: settings, the LLM client, the per-turn runner,
-//! the session (turn log, seed replay, dream), the web server, the CLI and benchmarks.
+//! Tools built on the `engram` crate: a SQLite [`Store`](engram::Store), a llama.cpp
+//! [`Embedder`], Claude Code as the LLM, a headless scenario runner (`ltm run`) and the
+//! benchmarks (`ltm bench`). None of this is part of the package.
 
 pub mod bench;
 pub mod claude;
+pub mod ids;
 pub mod cli;
+pub mod llama;
 pub mod llm;
 pub mod seed;
-pub mod server;
 pub mod session;
 pub mod settings;
+pub mod sqlite;
 pub mod turn;
 
-use crate::{Embedder, HttpEmbedder, LlamaEmbedder, Result};
+pub use llama::LlamaEmbedder;
+pub use sqlite::SqliteStore;
+
+use engram::{Embedder, Result};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -19,6 +25,23 @@ use std::time::Instant;
 
 pub const SYSTEM_ID: &str = "llm_long_term_memory";
 pub const TITLE: &str = "LLM Long-Term Memory";
+
+/// Worker threads the tools may use: 80% of the logical CPUs (at least one), so the
+/// machine stays responsive while a model or a benchmark runs.
+pub fn cpu_budget() -> usize {
+    std::thread::available_parallelism().map_or(1, |n| (n.get() * 8 / 10).max(1))
+}
+
+/// `v` scaled to unit length (zero stays zero).
+pub fn normalized(v: &[f32]) -> Vec<f32> {
+    let n = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum::<f64>().sqrt();
+    if n == 0.0 { v.to_vec() } else { v.iter().map(|&x| (f64::from(x) / n) as f32).collect() }
+}
+
+/// Dot product, summed in f64.
+pub fn dot(a: &[f32], b: &[f32]) -> f64 {
+    a.iter().zip(b).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum()
+}
 
 /// `x` rounded to `digits` decimals (display only). The binary value is rounded
 /// exactly (ties to even on the true decimal expansion), so 0.81875 — stored just below
@@ -118,37 +141,19 @@ impl Embedder for Offline {
 /// (keyed by source and prompts) and shared by handle, so rebuilding a session with the
 /// same embedding settings does not reload it.
 pub fn embedder(s: &settings::Settings) -> Result<(Box<dyn Embedder>, String)> {
-    #[derive(Clone)]
-    enum Loaded {
-        Local(LlamaEmbedder),
-        Http(HttpEmbedder),
-    }
-    static CACHE: Mutex<Option<(Vec<String>, Loaded)>> = Mutex::new(None);
-    let key = vec![s.embedding_url.clone(), s.embedding_model.clone(), s.embed_query_prefix.clone(), s.embed_document_prefix.clone()];
+    static CACHE: Mutex<Option<(Vec<String>, LlamaEmbedder)>> = Mutex::new(None);
+    let key = vec![s.embedding_model.clone(), s.embed_query_prefix.clone(), s.embed_document_prefix.clone()];
     let mut cache = CACHE.lock().unwrap_or_else(|e| e.into_inner());
-    let loaded = match cache.as_ref() {
-        Some((k, l)) if *k == key => l.clone(),
+    let e = match cache.as_ref() {
+        Some((k, e)) if *k == key => e.clone(),
         _ => {
-            let l = if s.embedding_url.is_empty() {
-                let path = Path::new(&s.embedding_model);
-                let path = if path.is_absolute() { path.to_path_buf() } else { settings::root().join("model").join(path) };
-                Loaded::Local(LlamaEmbedder::load(&path, &s.embed_query_prefix, &s.embed_document_prefix)?)
-            } else {
-                let api_key = settings::env("EMBEDDING_API_KEY", "");
-                Loaded::Http(HttpEmbedder::connect(&s.embedding_url, &s.embedding_model, &api_key, &s.embed_query_prefix, &s.embed_document_prefix)?)
-            };
-            *cache = Some((key, l.clone()));
-            l
+            let path = Path::new(&s.embedding_model);
+            let path = if path.is_absolute() { path.to_path_buf() } else { settings::root().join("model").join(path) };
+            let e = LlamaEmbedder::load(&path, &s.embed_query_prefix, &s.embed_document_prefix)?;
+            *cache = Some((key, e.clone()));
+            e
         }
     };
-    Ok(match loaded {
-        Loaded::Local(e) => {
-            let status = format!("OK — {} (dim={}, llama.cpp)", e.model_id(), e.dimension());
-            (Box::new(e), status)
-        }
-        Loaded::Http(e) => {
-            let status = format!("OK — {} (dim={}, {})", e.model_id(), e.dimension(), s.embedding_url);
-            (Box::new(e), status)
-        }
-    })
+    let status = format!("OK — {} (dim={}, llama.cpp)", e.model_id(), e.dimension());
+    Ok((Box::new(e), status))
 }

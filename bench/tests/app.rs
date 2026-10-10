@@ -1,14 +1,14 @@
-//! The app layer with fakes: one turn end to end (recall → converse with tools → cite),
-//! the per-turn caps and fallback, and the session's turn log and seed replay.
-#![cfg(feature = "app")]
+//! The scenario runner with fakes: one turn end to end (recall → converse with tools →
+//! cite), the per-turn caps and fallback, and the session's turn log and seed replay.
 
+#[path = "../../tests/support/mod.rs"]
 mod support;
 
-use engram::app::llm::{Converse, Llm, ToolFn};
-use engram::app::seed::SeedItem;
-use engram::app::session::Session;
-use engram::app::settings::AppConfig;
 use engram::{DreamDecision, DreamRequest};
+use ltm::llm::{Converse, Llm, ToolFn};
+use ltm::seed::SeedItem;
+use ltm::session::Session;
+use ltm::settings::AppConfig;
 use serde_json::json;
 use std::sync::{Arc, Mutex};
 use support::{temp_dir, FakeEmbedder, DAY};
@@ -123,23 +123,21 @@ fn item(text: &str, note: &str, advance: &str) -> SeedItem {
 }
 
 #[test]
-fn replay_runs_on_a_virtual_clock_and_restores_it() {
+fn replay_runs_on_a_virtual_clock() {
     let dir = temp_dir("replay");
     let mut s = session(&dir, config(), Scripted::new(1, &[]).0, true);
     let mut seen = Vec::new();
-    s.replay(&[item("user likes tea", "重要", "0"), item("user moved to osaka", "", "5y")], None, |_, t, _| seen.push(t), true).unwrap();
-    assert!(seen == [1, 2] && s.turn == 2 && s.seeded);
+    s.replay(&[item("user likes tea", "重要", "0"), item("user moved to osaka", "", "5y")], None, |_, t, _| seen.push(t)).unwrap();
+    assert!(seen == [1, 2] && s.turn == 2);
     let wall = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs_f64();
-    assert!((s.memory.now() - wall).abs() < 60.0); // the clock is restored
+    assert!(s.memory.now() - wall > 4.9 * 31_536_000.0); // still virtual
     assert_eq!(s.log.iter().map(|e| e["note"].as_str().unwrap()).collect::<Vec<_>>(), ["重要", ""]);
     assert!(s.log[1]["timestamp"].as_f64().unwrap() - s.log[0]["timestamp"].as_f64().unwrap() >= 5.0 * 31_536_000.0);
-    let t0 = s.start_time();
-    s.replay(&[item("kept virtual", "", "1d")], None, |_, _, _| {}, false).unwrap();
-    assert!(s.memory.now() - wall > 0.9 * DAY); // still virtual
-    s.replay(&[item("pinned", "", "1d")], Some(1_000_000.0), |_, _, _| {}, false).unwrap();
+    s.replay(&[item("pinned", "", "1d")], Some(1_000_000.0), |_, _, _| {}).unwrap();
     assert_eq!(s.memory.now(), 1_000_000.0 + 86_400.0); // an epoch pins the virtual clock
     drop(s);
-    assert_eq!(session(&dir, config(), Scripted::new(1, &[]).0, false).start_time(), t0); // survives a restart
+    let reopened = session(&dir, config(), Scripted::new(1, &[]).0, false);
+    assert_eq!(reopened.log.len(), 3); // the turn log survives a restart
 }
 
 #[test]
@@ -158,41 +156,30 @@ fn turn_log_window_drops_the_oldest() {
 }
 
 #[test]
-fn turn_log_survives_restart_and_reset_clears_it() {
+fn turn_log_survives_restart_and_a_wipe_clears_it() {
     let dir = temp_dir("restart");
     let mut s = session(&dir, config(), Scripted::new(1, &[]).0, true);
     s.run_turn("user has a cat", "n1").unwrap();
     drop(s);
-    let mut s2 = session(&dir, config(), Scripted::new(1, &[]).0, false);
+    let s2 = session(&dir, config(), Scripted::new(1, &[]).0, false);
     assert!(s2.turn == 1 && s2.log[0]["note"] == "n1" && s2.log[0]["system"]["records"] == 1);
     assert_eq!(s2.memory.memories().len(), 1);
-    s2.reset().unwrap();
-    assert!(s2.turn == 0 && s2.log.is_empty() && s2.start_time().is_none() && s2.memory.memories().is_empty());
     drop(s2);
-    assert!(session(&dir, config(), Scripted::new(1, &[]).0, false).log.is_empty());
+    assert!(session(&dir, config(), Scripted::new(1, &[]).0, true).log.is_empty()); // a wipe clears it
 }
 
 #[test]
-fn app_config_round_trips_and_rejects_bad_values() {
-    let c = AppConfig::from_json(&json!({"memory": {"capacity": "42", "alpha": 0.5}, "glob": {"tool_fallback": "false", "max_turn_log": 0}})).unwrap();
-    assert!(c.memory.capacity == 42 && c.memory.alpha == 0.5 && !c.glob.tool_fallback && c.glob.max_turn_log == 1);
-    assert_eq!(AppConfig::from_json(&c.to_json()).unwrap(), c);
-    assert!(AppConfig::from_json(&json!({"memory": {"capacity": 0}})).is_err());
-}
-
-#[test]
-fn dream_reports_are_logged_for_the_ui() {
+fn dream_reports_are_readable() {
     let dir = temp_dir("dreamlog");
     let mut s = session(&dir, config(), Scripted::new(0, &[]).0, true);
     for t in ["trip kyoto plan schedule note", "trip kyoto hotel schedule note"] {
         s.memory.remember(t, 1.0, "").unwrap();
     }
-    let reports = s.dream(None).unwrap().to_vec();
+    let reports = s.dream(None).unwrap();
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["action"], "keep");
     assert_eq!(reports[0]["before"][0]["text"], "trip kyoto hotel schedule note");
-    assert_eq!(s.last_dream, reports);
-    assert_eq!(s.cluster_preview().len(), 0); // settled
+    assert!(s.memory.clusters(None).is_empty()); // settled
     assert_eq!(s.snapshot().len(), 2);
 }
 
@@ -211,9 +198,38 @@ fn the_model_cannot_delete_what_it_was_not_shown() {
 #[test]
 fn a_session_starts_without_an_embedding_model() {
     let dir = temp_dir("offline");
-    let mut s = Session::with_parts(config(), Box::new(engram::app::Offline), "ERROR — no model".into(), Box::new(Scripted::new(1, &[]).0), &dir.join("o.db"), true).unwrap();
+    let mut s = Session::with_parts(config(), Box::new(ltm::Offline), "ERROR — no model".into(), Box::new(Scripted::new(1, &[]).0), &dir.join("o.db"), true).unwrap();
     s.run_turn("user likes tea", "").unwrap();
     let m = s.memory.memories();
     assert_eq!(m.len(), 1);
     assert!(m[0].vector.is_empty()); // kept, unindexed until a model is back
+}
+
+#[test]
+fn a_save_without_a_cue_is_refused_and_the_fallback_keeps_the_fact() {
+    struct NoCue;
+    impl Llm for NoCue {
+        fn status(&self) -> String {
+            "OK - no cue".into()
+        }
+        fn model(&self) -> String {
+            "no-cue".into()
+        }
+        fn converse(&mut self, _: &str, user: &str, tool: &mut ToolFn<'_>, _: &str) -> Converse {
+            tool("save_memory", &json!({"text": user}));
+            Converse { text: "ok".into(), prompt: String::new() }
+        }
+        fn extract(&mut self, user: &str, _: &str, _: &str, _: &str) -> Vec<String> {
+            vec![user.to_owned()]
+        }
+        fn adjudicate(&mut self, _: &DreamRequest) -> engram::Result<DreamDecision> {
+            Ok(DreamDecision::keep())
+        }
+    }
+    let dir = temp_dir("nocue");
+    let mut s = Session::with_parts(config(), Box::new(FakeEmbedder::new()), "OK".into(), Box::new(NoCue), &dir.join("n.db"), true).unwrap();
+    s.run_turn("user likes green tea", "").unwrap();
+    let written = &s.metrics.back().unwrap().written;
+    assert_eq!(written[0]["action"], "missing_cue");
+    assert_eq!(s.memory.memories().len(), 1); // kept through the extraction fallback
 }

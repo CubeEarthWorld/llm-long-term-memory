@@ -35,33 +35,16 @@ mod time;
 mod trace;
 mod vector;
 
-#[cfg(feature = "app")]
-pub mod app;
-#[cfg(feature = "sqlite")]
-mod sqlite;
-
-pub use config::{Config, Param};
+pub use config::Config;
 pub use dream::{Adjudicator, DreamDecision, DreamMember, DreamRequest, DREAM_SYSTEM_PROMPT};
 pub use embed::Embedder;
-#[cfg(feature = "http")]
-pub use embed::http::HttpEmbedder;
-#[cfg(feature = "llama")]
-pub use embed::llama::LlamaEmbedder;
 pub use engine::{DreamAction, DreamReport, Engram, Recall, Recalled, Remembered, Stats};
-pub use id::{deterministic_ids, ulid};
-pub use json::{json_texts, relaxed_json};
-#[cfg(feature = "sqlite")]
-pub use sqlite::SqliteStore;
+pub use id::{ulid_ids, IdGen};
+pub use json::relaxed_json;
 pub use store::{MemoryStore, Store, Write};
-pub use text::{clean_text, cues, shorten};
-pub use time::{fmt_local, parse_offset, system_clock, tz_field, Clock, ManualClock};
+pub use text::cues;
+pub use time::{fmt_local, system_clock, Clock, ManualClock};
 pub use trace::Trace;
-
-/// Worker threads this crate may use: 80% of the logical CPUs (at least one), so the
-/// machine stays responsive while a model or a benchmark runs.
-pub fn cpu_budget() -> usize {
-    std::thread::available_parallelism().map_or(1, |n| (n.get() * 8 / 10).max(1))
-}
 
 /// Errors from a store, an embedder or an adjudicator: any error type, boxed.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

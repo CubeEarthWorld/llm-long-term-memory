@@ -7,7 +7,7 @@
 //! * `cache`      — embed the corpus once with the configured model (`bench/embeddings*.bin`)
 //! * `perf`       — latency and memory of every operation on synthetic 768-d vectors
 //!
-//! Measurements run through [`crate::Engram::peek`], so probing never strengthens what it measures.
+//! Measurements run through [`engram::Engram::peek`], so probing never strengthens what it measures.
 
 mod forget;
 mod generality;
@@ -16,7 +16,7 @@ mod supersede;
 mod sweep;
 
 use super::settings::{root, AppConfig};
-use crate::{cues, Embedder, Result};
+use engram::{cues, Embedder, Result};
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
 use std::path::{Path, PathBuf};
@@ -271,7 +271,7 @@ impl<E: Embedder> Truncated<E> {
         Self { base, dimension, model_id }
     }
     fn cut(&self, vs: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
-        vs.into_iter().map(|v| crate::vector::normalized(&v[..self.dimension.min(v.len())])).collect()
+        vs.into_iter().map(|v| crate::normalized(&v[..self.dimension.min(v.len())])).collect()
     }
 }
 
@@ -310,7 +310,7 @@ pub fn build_cache(corpus: &Corpus, cfg: &AppConfig, path: &Path) -> Result<()> 
         for chunk in texts.chunks(64) {
             let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
             let vs = if query { e.embed_queries(&refs)? } else { e.embed_documents(&refs)? };
-            out.extend(chunk.iter().cloned().zip(vs.iter().map(|v| crate::vector::normalized(v))));
+            out.extend(chunk.iter().cloned().zip(vs.iter().map(|v| crate::normalized(v))));
         }
         Ok(out)
     };

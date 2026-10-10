@@ -1,10 +1,9 @@
 //! The sleep phase (SPEC §5).
-#![cfg(feature = "sqlite")]
 
 mod support;
 
-use engram::{DreamAction, DreamDecision, DreamRequest, Engram, ManualClock, MemoryStore, Result, SqliteStore};
-use support::{always_fail, always_keep, build, build_with, cfg, insert, merge_to_gist, temp_dir, BrokenEmbedder, FakeEmbedder, DAY};
+use engram::{DreamAction, DreamDecision, DreamRequest, Engram, ManualClock, Result};
+use support::{always_fail, always_keep, build, build_with, cfg, insert, merge_to_gist, BrokenEmbedder, FakeEmbedder, SharedStore, DAY};
 
 fn seeded() -> (Engram, ManualClock) {
     let (mut s, clock) = build(cfg());
@@ -116,8 +115,8 @@ fn only_named_candidates_are_absorbed() {
 
 #[test]
 fn model_switch_reindexes_from_text() {
-    let path = temp_dir("switch").join("switch.db");
-    let open = || Box::new(SqliteStore::open(&path).unwrap());
+    let db = SharedStore::default();
+    let open = || Box::new(db.clone());
     let (mut a, _) = build_with(cfg(), Box::new(FakeEmbedder::with(64, "m1")), open());
     insert(&mut a, "persisted across models", 1.0, "");
     drop(a);
@@ -138,16 +137,4 @@ fn cue_reaches_the_version_it_supersedes() {
     insert(&mut s, "resident of osaka prefecture now", 1.0, "user lives in city");
     let clusters: Vec<Vec<String>> = s.clusters(None).into_iter().map(|c| c.into_iter().map(|t| t.text).collect()).collect();
     assert_eq!(clusters, [vec!["resident of osaka prefecture now".to_owned(), "user lives in tokyo city".to_owned()]]);
-}
-
-#[test]
-fn dream_snapshots_the_store_first() {
-    let dir = temp_dir("backup");
-    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&dir.join("m.db")).unwrap()));
-    insert(&mut s, "trip kyoto plan schedule note", 1.0, "");
-    for _ in 0..10 {
-        s.dream(&mut merge_to_gist, None).unwrap();
-    }
-    assert_eq!(std::fs::read_dir(dir.join("snapshots")).unwrap().count(), 8); // a ring of 8
-    let _ = MemoryStore::default();
 }

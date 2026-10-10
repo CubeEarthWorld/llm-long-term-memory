@@ -19,12 +19,6 @@ pub struct SeedItem {
     pub advance: String,
 }
 
-impl SeedItem {
-    pub fn to_json(&self) -> serde_json::Value {
-        serde_json::json!({"text": self.text, "note": self.note, "advance": self.advance})
-    }
-}
-
 const DEFAULT_SEED: [(&str, &str); 17] = [
     ("こんにちは。今日は何をしようかな。", "0"),
     ("私はアイスクリームが好きです。特に抹茶味が好物です。", "0"),
@@ -75,16 +69,6 @@ pub fn clean(raw: impl IntoIterator<Item = (String, String, String)>) -> Vec<See
             advance: Some(a.trim()).filter(|a| !a.is_empty()).unwrap_or("0").to_owned(),
         })
         .collect()
-}
-
-/// Seed items from JSON objects with text / note / advance.
-pub fn from_json(items: &[serde_json::Value]) -> Vec<SeedItem> {
-    let field = |v: &serde_json::Value, k: &str| match &v[k] {
-        serde_json::Value::String(s) => s.clone(),
-        serde_json::Value::Null => String::new(),
-        other => other.to_string(),
-    };
-    clean(items.iter().map(|v| (field(v, "text"), field(v, "note"), field(v, "advance"))))
 }
 
 /// RFC 4180 records (quoted fields, doubled quotes, CRLF or LF).
@@ -139,22 +123,6 @@ pub fn load(path: &Path) -> Vec<SeedItem> {
     if items.is_empty() { default_seed() } else { items }
 }
 
-fn csv_cell(s: &str) -> String {
-    if s.contains([',', '"', '\n', '\r']) { format!("\"{}\"", s.replace('"', "\"\"")) } else { s.to_owned() }
-}
-
-/// Persists the items (UTF-8 with BOM, so spreadsheet apps read them) to survive restarts.
-pub fn save(path: &Path, items: &[SeedItem]) -> std::io::Result<()> {
-    if let Some(dir) = path.parent() {
-        std::fs::create_dir_all(dir)?;
-    }
-    let mut out = String::from("\u{FEFF}text,note,advance\r\n");
-    for i in items {
-        out.push_str(&format!("{},{},{}\r\n", csv_cell(&i.text), csv_cell(&i.note), csv_cell(&i.advance)));
-    }
-    std::fs::write(path, out)
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -176,7 +144,7 @@ mod tests {
         assert_eq!(load(&path), default_seed()); // no file → built-in scenario
         let items = clean([(" a,b ".into(), "重要".into(), "5y".into()), (" ".into(), String::new(), String::new()), ("c \"q\"".into(), String::new(), String::new())]);
         assert_eq!(items, [item("a,b", "重要", "5y"), item("c \"q\"", "", "0")]);
-        save(&path, &items).unwrap();
+        std::fs::write(&path, "\u{FEFF}text,note,advance\r\n\"a,b\",重要,5y\r\n\"c \"\"q\"\"\",,0\r\n").unwrap();
         assert_eq!(load(&path), items);
         assert_eq!(parse_csv("\u{FEFF}text,note,advance\nx,n,1d\n"), [item("x", "n", "1d")]);
         assert_eq!(parse_csv("x,2h\ny\n"), [item("x", "", "2h"), item("y", "", "0")]);

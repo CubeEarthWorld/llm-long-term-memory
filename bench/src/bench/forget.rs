@@ -7,7 +7,7 @@
 //! `ltm bench forget --arm engram --span-days 365 --capacity 500 --seed 1`
 
 use super::{bench_dir, load_corpus, r4, CachedEmbedder, Corpus, Flags, PyRandom, DAY};
-use crate::{Config, DreamDecision, Embedder, Engram, ManualClock, MemoryStore, Remembered, Result};
+use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, MemoryStore, Remembered, Result};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -59,7 +59,7 @@ impl Run<'_> {
             arm => {
                 while self.m.memories().len() > self.spec.capacity {
                     let rows = self.m.memories();
-                    let first_min = |key: &dyn Fn(&crate::Trace) -> i64| (0..rows.len()).min_by_key(|&i| (key(&rows[i]), i)).expect("rows");
+                    let first_min = |key: &dyn Fn(&engram::Trace) -> i64| (0..rows.len()).min_by_key(|&i| (key(&rows[i]), i)).expect("rows");
                     let i = match arm {
                         "fifo" => first_min(&|t| t.created_at),
                         "lru" => first_min(&|t| t.last_recall),
@@ -184,7 +184,7 @@ pub fn run(corpus: &Corpus, spec: &Spec, mut cfg: Config, embedder: Box<dyn Embe
     events.extend(CHECKPOINTS.iter().map(|f| (base + f * span, 3, Event::Measure)));
     events.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.cmp(&b.1))); // stable
 
-    let mut keep = |_: &crate::DreamRequest| Ok(DreamDecision::keep()); // measure forgetting itself
+    let mut keep = |_: &engram::DreamRequest| Ok(DreamDecision::keep()); // measure forgetting itself
     let (mut series, mut rehearsals, mut hits) = (Vec::new(), 0, 0);
     for (when, _, event) in &events {
         run.clock.set(*when);

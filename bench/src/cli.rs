@@ -2,27 +2,26 @@
 //! timeline, run extra turns (`--say`), dream (`--dream`), inspect (`--inspect`), and
 //! write per-turn results and final statistics to JSON.
 
-use super::seed;
-use super::session::Session;
-use super::settings::{data_dir, seed_csv_path, AppConfig};
+use crate::seed;
+use crate::session::Session;
+use crate::settings::{data_dir, seed_csv_path, AppConfig};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 
-const USAGE: &str = "usage: ltm run [--no-reset] [--no-seed] [--say TEXT]... [--dream [N]] [--provider claude-code|deepseek|gemini] [--epoch UNIX] [--inspect] [--out PATH]\n  --epoch fixes the virtual clock and the id sequence, so a rerun sends the same prompts (and replays cached answers)";
+const USAGE: &str = "usage: ltm run [--no-reset] [--no-seed] [--say TEXT]... [--dream [N]] [--epoch UNIX] [--inspect] [--out PATH]\n  --epoch fixes the virtual clock and the id sequence, so a rerun sends the same prompts (and replays cached answers)";
 
 struct Args {
     reset: bool,
     seed: bool,
     say: Vec<String>,
     dream: Option<usize>,
-    provider: Option<String>,
     inspect: bool,
     epoch: Option<f64>,
     out: PathBuf,
 }
 
 fn parse(args: &[String]) -> Result<Args, String> {
-    let mut a = Args { reset: true, seed: true, say: Vec::new(), dream: None, provider: None, inspect: false, epoch: None, out: data_dir().join("results.json") };
+    let mut a = Args { reset: true, seed: true, say: Vec::new(), dream: None, inspect: false, epoch: None, out: data_dir().join("results.json") };
     let mut it = args.iter().peekable();
     while let Some(arg) = it.next() {
         let mut value = |name: &str| it.next().cloned().ok_or(format!("{name} needs a value"));
@@ -32,7 +31,6 @@ fn parse(args: &[String]) -> Result<Args, String> {
             "--seed" => a.seed = true,
             "--no-seed" => a.seed = false,
             "--say" => a.say.push(value("--say")?),
-            "--provider" => a.provider = Some(value("--provider")?),
             "--out" => a.out = PathBuf::from(value("--out")?),
             "--inspect" => a.inspect = true,
             "--epoch" => a.epoch = Some(value("--epoch")?.parse().map_err(|_| "--epoch needs Unix seconds")?),
@@ -60,7 +58,7 @@ fn print_turn(s: &Session, turn: u64, utterance: &str) {
         println!("No metrics recorded.");
         return;
     };
-    println!("\n-- {} --", super::TITLE);
+    println!("\n-- {} --", crate::TITLE);
     println!("  応答: {}", m.response.trim().chars().take(400).collect::<String>());
     println!("  書込: {}", m.write_note);
     println!("  records={}  pack={}字/{}件  time={:.0}ms (llm {:.0})", m.records(), m.pack_chars(), m.recalled.len(), m.total_ms(), m.llm_ms);
@@ -112,15 +110,8 @@ pub fn main(args: &[String]) -> i32 {
             return 2;
         }
     };
-    let mut cfg = AppConfig::default();
-    if let Some(p) = a.provider {
-        cfg.glob.llm_provider = p;
-    }
-    println!("[init] provider={}", cfg.glob.llm_provider);
+    let cfg = AppConfig::default();
     println!("[init] embedding={} -> ./model", cfg.glob.embedding_model);
-    if let Some(t) = a.epoch {
-        crate::deterministic_ids(t.to_bits() | 1); // never 0, which means random ids
-    }
     let mut s = match Session::open(cfg, a.reset) {
         Ok(s) => s,
         Err(e) => {
@@ -128,19 +119,22 @@ pub fn main(args: &[String]) -> i32 {
             return 2;
         }
     };
+    if let Some(t) = a.epoch {
+        s.memory.set_ids(crate::ids::reproducible(t.to_bits()));
+    }
     println!("[init] model={}", s.llm.model());
     println!("[init] embedding: {}", s.embedding_status);
     println!("[init] llm: {}", s.llm.status());
-    let run = (|| -> crate::Result<()> {
+    let run = (|| -> engram::Result<()> {
         if a.seed {
-            s.replay(&seed::load(&seed_csv_path()), a.epoch, |s, t, item| print_turn(s, t, &item.text), false)?;
+            s.replay(&seed::load(&seed_csv_path()), a.epoch, |s, t, item| print_turn(s, t, &item.text))?;
         }
         for text in &a.say {
             let t = s.run_turn(text, "")?;
             print_turn(&s, t, text);
         }
         if let Some(budget) = a.dream.filter(|&b| b > 0) {
-            print_dream(s.dream(Some(budget))?);
+            print_dream(&s.dream(Some(budget))?);
         }
         if a.inspect {
             let dump = serde_json::to_string_pretty(&s.snapshot())?;
@@ -152,7 +146,7 @@ pub fn main(args: &[String]) -> i32 {
                 println!("  {label} : {ok}");
             }
         }
-        println!("  {}: {}", super::TITLE, s.final_stats());
+        println!("  {}: {}", crate::TITLE, s.final_stats());
         let keys = ["response", "write_note", "records", "pack_chars", "times", "recalled"];
         let turns: Vec<Value> = s
             .log

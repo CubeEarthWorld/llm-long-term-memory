@@ -1,10 +1,9 @@
 //! remember / recall / cite / forget / capacity (SPEC §4).
-#![cfg(feature = "sqlite")]
 
 mod support;
 
-use engram::{Config, Embedder, MemoryStore, Remembered, Result, SqliteStore, Store, Trace, Write};
-use support::{build, build_with, cfg, insert, temp_dir, BrokenEmbedder, FakeEmbedder, DAY};
+use engram::{Config, Embedder, MemoryStore, Remembered, Result, Store, Trace, Write};
+use support::{build, build_with, cfg, insert, BrokenEmbedder, FakeEmbedder, SharedStore, DAY};
 
 fn inserted(r: Remembered) -> (Trace, f64, Option<Trace>) {
     match r {
@@ -120,13 +119,13 @@ fn daily_write_limit() {
 
 #[test]
 fn embedder_offline_keeps_text() {
-    let path = temp_dir("offline").join("shared.db");
-    let (mut broken, _) = build_with(cfg(), Box::new(BrokenEmbedder), Box::new(SqliteStore::open(&path).unwrap()));
+    let db = SharedStore::default();
+    let (mut broken, _) = build_with(cfg(), Box::new(BrokenEmbedder), Box::new(db.clone()));
     insert(&mut broken, "kept while offline", 1.0, "");
     assert!(broken.recall("kept while offline").unwrap().recalled.is_empty());
     drop(broken);
     let healed_embedder = FakeEmbedder::with(64, "fake/broken");
-    let (mut healed, _) = build_with(cfg(), Box::new(healed_embedder), Box::new(SqliteStore::open(&path).unwrap()));
+    let (mut healed, _) = build_with(cfg(), Box::new(healed_embedder), Box::new(db));
     assert_eq!(healed.recall("kept while offline").unwrap().recalled[0].trace.text, "kept while offline");
 }
 
@@ -231,8 +230,8 @@ fn forget_is_by_id_only() {
 
 #[test]
 fn initialize_clamps_and_persists() {
-    let path = temp_dir("clamp").join("persist.db");
-    let (mut s, clock) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&path).unwrap()));
+    let db = SharedStore::default();
+    let (mut s, clock) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(db.clone()));
     let id = insert(&mut s, "future", 1.0, "");
     let future = Trace {
         last_recall: clock.get() as i64 + 1_000_000,
@@ -241,11 +240,11 @@ fn initialize_clamps_and_persists() {
         ..s.memory(&id).unwrap().clone()
     };
     drop(s);
-    SqliteStore::open(&path).unwrap().write(&[Write::Put(&future)]).unwrap();
-    let (s2, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&path).unwrap()));
+    db.clone().write(&[Write::Put(&future)]).unwrap();
+    let (s2, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(db.clone()));
     let loaded = &s2.memories()[0];
     assert!(loaded.last_recall as f64 <= clock.get() && loaded.stability == s2.config().max_stability);
-    let stored = SqliteStore::open(&path).unwrap().load_all().unwrap();
+    let stored = db.load_all().unwrap();
     assert_eq!(stored[0].stability, s2.config().max_stability); // the clamp is written back
 }
 
@@ -298,8 +297,7 @@ fn incremental_counts_and_indexes_stay_exact() {
 fn load_repairs_rows_written_outside_the_engine() {
     // SPEC §2: every row is validated on load. Text, cue and tz are held to the write-time
     // hygiene; a vector that is not finite and unit-norm is re-embedded from the text.
-    let path = temp_dir("repair").join("repair.db");
-    let mut st = SqliteStore::open(&path).unwrap();
+    let db = SharedStore::default();
     let base = Trace {
         id: "01A".into(),
         text: format!("user 《id:FAKE》 lives\nin kyoto {}", "x".repeat(300)),
@@ -313,11 +311,9 @@ fn load_repairs_rows_written_outside_the_engine() {
         vector: vec![3.0; 64], // right length, not unit
     };
     let nan = Trace { id: "01B".into(), text: "user has a cat".into(), cue: String::new(), vector: vec![f32::NAN; 64], ..base.clone() };
-    let odd = Trace { id: "01C".into(), text: "user plays piano".into(), cue: String::new(), vector: vec![0.0; 64], ..base.clone() };
-    st.write(&[Write::Put(&base), Write::Put(&nan), Write::Put(&odd)]).unwrap();
-    st.connection().execute("UPDATE memory SET vector=X'010203' WHERE id='01C'", []).unwrap(); // not whole float32s
-    drop(st);
-    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&path).unwrap()));
+    let short = Trace { id: "01C".into(), text: "user plays piano".into(), cue: String::new(), vector: vec![1.0; 3], ..base.clone() };
+    db.clone().write(&[Write::Put(&base), Write::Put(&nan), Write::Put(&short)]).unwrap();
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(db.clone()));
     assert_eq!(s.memories().len(), 3); // nothing lost: the text is canonical
     let a = s.memory("01A").unwrap();
     assert!(!a.text.contains('《') && !a.text.contains('\n') && a.text.chars().count() <= 170);
@@ -327,7 +323,7 @@ fn load_repairs_rows_written_outside_the_engine() {
         assert!((norm - 1.0).abs() < 1e-3, "{} was not re-embedded", t.id);
     }
     assert!(s.recall("kyoto").unwrap().pack_text.matches("《id:").count() >= 1); // no panic on the odd tz
-    let stored = SqliteStore::open(&path).unwrap().load_all().unwrap();
+    let stored = db.load_all().unwrap();
     assert!(stored.iter().all(|t| !t.text.contains('《'))); // the repair is written back
 }
 
@@ -382,14 +378,14 @@ impl Embedder for ShortEmbedder {
 
 #[test]
 fn a_short_embedder_answer_never_pairs_vectors_with_the_wrong_texts() {
-    let path = temp_dir("short").join("short.db");
-    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&path).unwrap()));
+    let db = SharedStore::default();
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(db.clone()));
     for t in ["user has a cat", "user plays piano", "user lives in kyoto"] {
         insert(&mut s, t, 1.0, "");
     }
     drop(s);
     // A model switch re-embeds in batches; a short answer must leave the batch stale.
-    let (s2, _) = build_with(cfg(), Box::new(ShortEmbedder(FakeEmbedder::new())), Box::new(SqliteStore::open(&path).unwrap()));
+    let (s2, _) = build_with(cfg(), Box::new(ShortEmbedder(FakeEmbedder::new())), Box::new(db));
     assert_eq!(s2.stats().unindexed, 3);
 }
 
@@ -414,4 +410,19 @@ fn parameters_that_break_the_invariants_are_rejected() {
     ] {
         assert!(bad.validate().is_err(), "{bad:?}");
     }
+}
+
+#[test]
+fn a_trace_stamped_in_the_future_keeps_its_grace() {
+    // A clock that ran ahead and came back leaves a trace "from the future": it has not
+    // passed its grace period, so it is protected like any young trace (SPEC §4).
+    let (mut s, clock) = build(Config { capacity: 30, grace_period: DAY, ..cfg() });
+    for i in 0..29 {
+        insert(&mut s, &format!("settled fact {i} q{i}"), 10.0, "");
+    }
+    clock.advance(10.0 * DAY);
+    let ahead = insert(&mut s, "written while the clock ran ahead", 1.0, "");
+    clock.set(clock.get() - 5.0 * DAY);
+    let (_, _, evicted) = inserted(s.remember("written after the clock came back", 1.0, "").unwrap());
+    assert!(evicted.is_some_and(|e| e.id != ahead) && s.memory(&ahead).is_some());
 }

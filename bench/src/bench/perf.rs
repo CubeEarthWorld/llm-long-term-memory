@@ -6,7 +6,8 @@
 //! `ltm bench perf [--n 10000] [--dim 768] [--vectors FILE]`
 
 use super::{Flags, PyRandom};
-use crate::{Config, DreamDecision, Embedder, Engram, ManualClock, Result, SqliteStore};
+use crate::SqliteStore;
+use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, Result};
 use serde_json::json;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -40,7 +41,7 @@ fn gaussian(rng: &mut PyRandom) -> f64 {
 
 fn synthetic(n: usize, dim: usize) -> (Vec<String>, Vec<String>, HashMap<String, Vec<f32>>) {
     let mut rng = PyRandom::new(42);
-    let unit = |v: Vec<f64>| crate::vector::normalized(&v.iter().map(|&x| x as f32).collect::<Vec<_>>());
+    let unit = |v: Vec<f64>| crate::normalized(&v.iter().map(|&x| x as f32).collect::<Vec<_>>());
     let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(n);
     for i in 0..n {
         let v = if i % 10 == 9 {
@@ -153,7 +154,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let clusters = m.clusters(None).len();
     let clusters_ms = ms(t);
     let t = Instant::now();
-    let reports = m.dream(&mut |_: &crate::DreamRequest| Ok(DreamDecision::keep()), Some(5))?.len();
+    let reports = m.dream(&mut |_: &engram::DreamRequest| Ok(DreamDecision::keep()), Some(5))?.len();
     let dream_ms = ms(t);
     let stats = m.stats();
     let (rss, peak) = rss_mb();

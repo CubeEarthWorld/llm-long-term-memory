@@ -1,11 +1,11 @@
-//! The SQLite substrate and the parameter set.
-#![cfg(feature = "sqlite")]
+//! The SQLite store.
 
+#[path = "../../tests/support/mod.rs"]
 mod support;
 
-use engram::{Config, SqliteStore, Store, Trace, Write};
-use serde_json::json;
-use support::temp_dir;
+use engram::{Store, Trace, Write};
+use ltm::SqliteStore;
+use support::{build_with, cfg, insert, merge_to_gist, temp_dir, FakeEmbedder};
 
 fn trace(id: &str, consolidated: bool) -> Trace {
     Trace {
@@ -61,17 +61,12 @@ fn store_round_trip_is_atomic_and_snapshots_rotate() {
 }
 
 #[test]
-fn config_round_trip_and_validation() {
-    let mut c = Config::default();
-    c.merge_json(&json!({"capacity": "42", "alpha": 0.5, "max_cues": 3.9, "unknown": 1, "inject_n": "junk"}));
-    assert_eq!((c.capacity, c.alpha, c.max_cues, c.inject_n), (42, 0.5, 3, 5));
-    let mut d = Config::default();
-    d.merge_json(&c.to_json());
-    assert_eq!(d, c);
-    assert_eq!(c.to_json().as_object().unwrap().keys().next().unwrap(), "capacity"); // declaration order
-    assert!(Config { theta_related: 1.5, ..Config::default() }.validate().is_err());
-    let mut zero = Config::default();
-    zero.merge_json(&json!({"capacity": -3}));
-    assert!(zero.validate().is_err());
-    assert!(Config::default().validate().is_ok());
+fn dream_snapshots_the_store_first() {
+    let dir = temp_dir("backup");
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&dir.join("m.db")).unwrap()));
+    insert(&mut s, "trip kyoto plan schedule note", 1.0, "");
+    for _ in 0..10 {
+        s.dream(&mut merge_to_gist, None).unwrap();
+    }
+    assert_eq!(std::fs::read_dir(dir.join("snapshots")).unwrap().count(), 8); // a ring of 8
 }
