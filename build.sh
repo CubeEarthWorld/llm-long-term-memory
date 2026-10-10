@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# === Build target/release/ltm (used by start.sh) ===
+# === Build target/release/ltm (the tools: runner and benchmarks) ===
 # Uses the GPU for the embedding model when available (CUDA) and at
 # most 80% of the CPU cores while compiling.
 set -e
@@ -10,8 +10,8 @@ JOBS=$(( CORES * 8 / 10 )); [ "$JOBS" -ge 1 ] || JOBS=1
 export CMAKE_BUILD_PARALLEL_LEVEL=$JOBS
 FEATURES=""
 if command -v nvcc >/dev/null 2>&1; then
-  FEATURES="--features cuda"
+  FEATURES="--features ltm-bench/cuda"
   echo "[build] CUDA found: the embedding model will run on the GPU"
 fi
 echo "[build] compiling (first build takes several minutes) ..."
-cargo build --release -j "$JOBS" $FEATURES
+cargo build --release -j "$JOBS" -p ltm-bench $FEATURES

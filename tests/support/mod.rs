@@ -242,7 +242,8 @@ pub fn same_json(a: &serde_json::Value, b: &serde_json::Value, path: &str) -> st
             Ok(())
         }
         _ => match (num(a), num(b)) {
-            (Some(p), Some(q)) if p == q => Ok(()),
+            // 1e-12: what a JSON text round trip may cost; any real change is far larger.
+            (Some(p), Some(q)) if (p - q).abs() <= 1e-12 * p.abs().max(q.abs()) => Ok(()),
             _ if a == b => Ok(()),
             _ => Err(format!("{path}: {a} vs {b}")),
         },

@@ -9,7 +9,6 @@ use crate::vector::{normalized, scores};
 use crate::id::{ulid_ids, IdGen};
 use crate::{Config, Embedder, Result, Trace};
 use std::collections::{HashMap, HashSet};
-use std::hash::{BuildHasher, RandomState};
 
 /// Seeds examined per LLM call: a dream costs O(budget · capacity · dim).
 const SEEDS_PER_BUDGET: usize = 8;
@@ -115,11 +114,8 @@ pub struct Engram {
     seqs: Vec<u64>,
     next_seq: u64,
     by_id: HashMap<String, u64>,
-    /// Text hash → sequence number (exact duplicates are rehearsed, so texts are unique).
-    by_text: HashMap<u64, u64>,
-    /// Inserts whose text hash was already taken: text lookups then fall back to a scan.
-    text_collisions: usize,
-    hasher: RandomState,
+    /// Text → sequence number (exact duplicates are rehearsed, so texts are unique).
+    by_text: HashMap<String, u64>,
     labile: usize,
     unindexed: usize,
     write_times: Vec<f64>,
@@ -154,8 +150,6 @@ impl Engram {
             next_seq: 0,
             by_id: HashMap::new(),
             by_text: HashMap::new(),
-            text_collisions: 0,
-            hasher: RandomState::new(),
             labile: 0,
             unindexed: 0,
             write_times: Vec::new(),
@@ -199,7 +193,7 @@ impl Engram {
 
     /// `R = 2^(−max(0, now − last_recall) / stability)`.
     pub fn retrievability(&self, t: &Trace, now: f64) -> f64 {
-        2f64.powf(-Self::elapsed(t, now) / t.stability)
+        (-Self::elapsed(t, now) / t.stability).exp2()
     }
 
     /// `S·R` — proportional to the trace's total remaining retrievability.
@@ -296,11 +290,6 @@ impl Engram {
         self.store.as_ref()
     }
 
-    /// The embedder.
-    pub fn embedder(&self) -> &dyn Embedder {
-        self.embedder.as_ref()
-    }
-
     /// Counts of all, labile and unindexed traces.
     pub fn stats(&self) -> Stats {
         Stats { records: self.traces.len(), labile: self.labile, unindexed: self.unindexed }
@@ -316,11 +305,7 @@ impl Engram {
         self.seqs.clear();
         self.by_id.clear();
         self.by_text.clear();
-        (self.text_collisions, self.labile, self.unindexed) = (0, 0, 0);
-    }
-
-    fn text_key(&self, text: &str) -> u64 {
-        self.hasher.hash_one(text)
+        (self.labile, self.unindexed) = (0, 0);
     }
 
     /// Position of the trace with sequence number `seq`.
@@ -333,11 +318,7 @@ impl Engram {
     }
 
     fn index_of_text(&self, text: &str) -> Option<usize> {
-        let hit = self.by_text.get(&self.text_key(text)).and_then(|&s| self.slot(s)).filter(|&i| self.traces[i].text == text);
-        if hit.is_some() || self.text_collisions == 0 {
-            return hit;
-        }
-        self.traces.iter().position(|t| t.text == text)
+        self.by_text.get(text).and_then(|&s| self.slot(s))
     }
 
     /// A trace's share of the (labile, unindexed) counts.
@@ -361,13 +342,7 @@ impl Engram {
         self.next_seq += 1;
         self.count(self.shares(&t), true);
         self.by_id.insert(t.id.clone(), seq);
-        let key = self.text_key(&t.text);
-        if let Some(old) = self.by_text.insert(key, seq)
-            && self.slot(old).is_some()
-        {
-            self.by_text.insert(key, old); // keep the first; lookups of this one scan
-            self.text_collisions += 1;
-        }
+        self.by_text.entry(t.text.clone()).or_insert(seq); // a loaded duplicate keeps the first
         self.seqs.push(seq);
         self.traces.push(t);
     }
@@ -397,9 +372,8 @@ impl Engram {
                 let Some(i) = self.index_of(id) else { continue };
                 let seq = self.seqs[i];
                 self.by_id.remove(id);
-                let key = self.text_key(&self.traces[i].text);
-                if self.by_text.get(&key) == Some(&seq) {
-                    self.by_text.remove(&key);
+                if self.by_text.get(&self.traces[i].text) == Some(&seq) {
+                    self.by_text.remove(&self.traces[i].text);
                 }
                 self.count(self.shares(&self.traces[i]), false);
                 gone.insert(seq);
@@ -794,6 +768,9 @@ impl Engram {
         // what the next seed searches.
         let qs = self.cue_vectors(&seeds.iter().map(|(_, c, v)| (c.as_str(), v.as_slice())).collect::<Vec<_>>());
         let mut reports = Vec::new();
+        // Seeds that reactivate nothing are settled together in one write at the end: the
+        // flag changes no later search, and a lost write only repeats a cheap check.
+        let mut settled = Vec::new();
         for ((id, _, _), q) in seeds.iter().zip(&qs) {
             let Some(seed) = self.memory(id).filter(|s| !s.consolidated).cloned() else { continue };
             if left == 0 {
@@ -802,12 +779,14 @@ impl Engram {
             let mut cluster = vec![seed.clone()];
             cluster.extend(self.candidates(q, Some(&seed)).into_iter().map(|(_, i)| self.traces[i].clone()));
             if cluster.len() < 2 {
-                self.apply(Change { put: vec![Trace { consolidated: true, ..seed }], remove: Vec::new() })?;
+                settled.push(Trace { consolidated: true, ..seed });
                 continue;
             }
             left -= 1;
             reports.push(self.adjudicate(adjudicator, cluster, now)?); // an error leaves the seed labile
         }
+        settled.retain(|t: &Trace| self.by_id.contains_key(&t.id)); // not absorbed by a later replace
+        self.apply(Change { put: settled, remove: Vec::new() })?;
         Ok(reports)
     }
 

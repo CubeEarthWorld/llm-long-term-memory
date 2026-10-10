@@ -12,10 +12,6 @@ fn dir() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/conformance")
 }
 
-fn snake(k: &str) -> String {
-    k.chars().flat_map(|c| if c.is_ascii_uppercase() { vec!['_', c.to_ascii_lowercase()] } else { vec![c] }).collect()
-}
-
 fn r6(v: f64) -> String {
     format!("{v:.6}")
 }
@@ -28,11 +24,15 @@ fn masked(pack: &str) -> String {
 fn scripted_scenario_reproduced() {
     let read = |f: &str| -> Value { serde_json::from_str(&std::fs::read_to_string(dir().join(f)).expect(f)).unwrap() };
     let (scenario, expected) = (read("scenario.json"), read("trace.json"));
-    let mut cfg = Config::default();
-    let overrides: serde_json::Map<String, Value> =
-        scenario["config"].as_object().unwrap().iter().map(|(k, v)| (snake(k), v.clone())).collect();
-    cfg.merge_json(&Value::Object(overrides));
-    cfg.cosine_floor = 0.0;
+    let c = &scenario["config"];
+    let cfg = Config {
+        capacity: c["capacity"].as_u64().unwrap() as usize,
+        grace_period: c["gracePeriod"].as_f64().unwrap(),
+        writes_per_day: c["writesPerDay"].as_u64().unwrap() as usize,
+        min_score: c["minScore"].as_f64().unwrap(),
+        cosine_floor: 0.0,
+        ..Config::default()
+    };
     let dim = scenario["dimension"].as_u64().unwrap() as usize;
     let (mut s, clock) = support::build_with(cfg, Box::new(FakeEmbedder::with(dim, "fake/token-overlap")), Box::new(MemoryStore::default()));
     let mut trace = Vec::new();

@@ -1,5 +1,5 @@
 @echo off
-REM === Build target\release\ltm.exe (used by start.bat and run_experiment.bat) ===
+REM === Build target\release\ltm.exe (the tools: runner and benchmarks; used by run_experiment.bat) ===
 REM Uses the GPU (CUDA) for the embedding model when the CUDA toolkit is installed,
 REM and at most 80%% of the CPU cores while compiling.
 setlocal enableextensions enabledelayedexpansion
@@ -29,12 +29,12 @@ if defined CUDA_PATH if exist "%CUDA_PATH%\bin\nvcc.exe" if defined VS (
   call "%VS%\VC\Auxiliary\Build\vcvars64.bat" >nul 2>&1
   set "PATH=!PATH!;%CUDA_PATH%\bin"
   set "CMAKE_GENERATOR=Ninja"
-  set "FEATURES=--features cuda"
+  set "FEATURES=--features ltm-bench/cuda"
   echo [build] CUDA found: the embedding model will run on the GPU
 )
 
 echo [build] compiling (first build takes several minutes) ...
-cargo build --release -j %JOBS% %FEATURES%
+cargo build --release -j %JOBS% -p ltm-bench %FEATURES%
 if errorlevel 1 (
   echo [error] build failed. See the messages above.
   exit /b 1

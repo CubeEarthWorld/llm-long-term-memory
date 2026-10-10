@@ -1,7 +1,5 @@
 //! The seeded workload behind `tests/equivalence/golden.json`: remember with cues,
-//! recall, cite, clusters, dream with both verdicts, eviction. It mirrors the Dart
-//! package's `test/support/workload.dart` step for step, so its trace must match the
-//! Dart golden bit for bit.
+//! recall, cite, clusters, dream with both verdicts, eviction.
 
 use super::{always_keep, merge_to_gist, FakeEmbedder, START};
 use engram::{Config, Engram, ManualClock, MemoryStore, Recall, Remembered};
