@@ -339,8 +339,8 @@ fn cache_main(args: &[String]) -> Result<()> {
 
 // ------------------------------------------------------------------ helpers
 
-/// Python's `random.Random` (MT19937 with `init_by_array`, `getrandbits`-based
-/// `randrange` and `shuffle`), so runs are comparable with the earlier Python results.
+/// A Mersenne Twister (MT19937 seeded with `init_by_array`, rejection-sampled
+/// `randrange`, Fisher–Yates `shuffle`): the benchmark timelines are fixed per seed.
 pub struct PyRandom {
     mt: [u32; 624],
     idx: usize,
@@ -424,7 +424,7 @@ impl PyRandom {
     }
 }
 
-/// numpy's default (linear) percentile, `q` in [0, 100].
+/// Percentile by linear interpolation between closest ranks, `q` in [0, 100].
 pub fn percentile(values: &[f64], q: f64) -> f64 {
     let mut v = values.to_vec();
     v.sort_by(f64::total_cmp);
@@ -445,7 +445,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn py_random_matches_cpython() {
+    fn mt19937_matches_the_reference_sequence() {
         let mut r = PyRandom::new(1);
         let mut x: Vec<u32> = (0..10).collect();
         r.shuffle(&mut x);

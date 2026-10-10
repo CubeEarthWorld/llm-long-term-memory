@@ -1,7 +1,7 @@
 //! Text hygiene shared by the write and dream paths, and query cue splitting.
 
-/// The whitespace class shared with the Dart engine: Unicode `White_Space` plus the
-/// separators Python's `str.isspace` adds (U+001C–U+001F) and U+FEFF.
+/// The whitespace class shared with the Dart engine: Unicode `White_Space`, the
+/// information separators U+001C–U+001F and U+FEFF.
 fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1C}'..='\u{1F}').contains(&c) || c == '\u{FEFF}'
 }

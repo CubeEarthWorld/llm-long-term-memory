@@ -31,7 +31,7 @@ impl Embedder for Table {
     }
 }
 
-/// Standard normal deviates (Box–Muller over Python's MT19937).
+/// Standard normal deviates (Box–Muller over MT19937).
 fn gaussian(rng: &mut PyRandom) -> f64 {
     let u = |rng: &mut PyRandom| (rng.randrange(1 << 30) as f64 + 0.5) / f64::from(1u32 << 30);
     let (a, b) = (u(rng), u(rng));

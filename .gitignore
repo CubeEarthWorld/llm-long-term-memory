@@ -3,7 +3,7 @@
 secrets/
 
 # Generated data & caches
-# data/ holds runtime artifacts only (the built-in seed scenario lives in core/seed.py).
+# data/ holds runtime artifacts only (the built-in seed scenario lives in src/app/seed.rs).
 data/seed.csv
 data/*.db
 data/*.db-*
@@ -31,11 +31,9 @@ Thumbs.db
 
 # Benchmark artefacts (regenerate: ltm bench cache; ltm bench sweep)
 bench/embeddings*.bin
-bench/embeddings*.npz
 bench/results/
 bench/generality_*.json
 bench/supersede_result*.json
 
 # Prompts the Claude provider could not answer yet (answer them, then they move to the cache)
 *.pending.json
-.venv/

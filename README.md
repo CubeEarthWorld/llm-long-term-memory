@@ -84,7 +84,7 @@ The LLM saves durable facts as pronoun-free propositions with absolute dates, an
 
 ## Storage
 
-One table: `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector, cue)` plus the UI's turn log (the schema is unchanged from the Python version, so existing databases open as they are). The whole store lives in RAM (≈80 MB process at 10k traces × 768 dims); SQLite only persists, and every engine operation is one transaction applied to RAM only after it commits. A rotating ring of 8 snapshots is written before every dream. Switching the embedding model re-embeds every trace from its text.
+One table: `memory(id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector, cue)` plus the UI's turn log. The whole store lives in RAM (≈80 MB process at 10k traces × 768 dims); SQLite only persists, and every engine operation is one transaction applied to RAM only after it commits. A rotating ring of 8 snapshots is written before every dream. Switching the embedding model re-embeds every trace from its text.
 
 ## Parameters
 
@@ -100,23 +100,20 @@ ltm bench generality --dims 768,512,256,128     # other models / dimensions
 ltm bench perf --n 10000        # latency and memory of every operation
 ```
 
-## Rust 1.0.0 vs the Python 1.0.1 it replaces
+## Performance
 
-Measured on one machine (Ryzen-class 8C/16T, RTX 5070 Ti) with identical inputs.
+Measured with 10,000 traces × 768 dimensions on one machine (8 cores / 16 threads, RTX 5070 Ti), SQLite on disk.
 
-| | Python 1.0.1 | Rust 1.0.0 |
-|---|---|---|
-| remember, 10k traces × 768 d (avg while filling / at capacity) | 10.8 ms / 24.8 ms | **2.0 ms / 4.3 ms** |
-| recall / cluster preview / dream(5) at 10k | 5.3 / 82.5 / 246 ms | **3.8 / 39.0 / ~240 ms** (dream = the pre-dream DB snapshot) |
-| load 10k traces | 162 ms | **73 ms** |
-| process memory at 10k (engine share) | 144 MB (113 MB) | **85 MB (76 MB)** |
-| embedding, per text | 21 ms (CPU) | 22 ms (CPU, 12 threads) / **1.3 ms (GPU)** |
-| one forgetting-benchmark run / 3000-virtual-year test | 12 s / minutes | **2.7 s / 15 s** |
-| 155-run forgetting sweep (same vectors) | — | 2 m 47 s; every per-configuration median identical to Python's, per-run metrics within 0.0001 (decimal rounding) |
-| seeded 220-step workload | float32 BLAS cosines | identical decisions; numbers within 8.3e-8 relative; **bit-identical to the Dart package** |
-| embedding vectors vs llama-cpp-python | — | cosine ≥ 0.9993 (median 0.99993) |
-| cue capture of 120 updates (θ = 0.55) | 91 / 120 | 92 / 120 |
-| overwrite forgetting, live dream | stale 0.033 (DeepSeek) | stale 0.033 (Claude Haiku 5.5, recorded in `bench/llm_cache.json`) |
+| operation | time |
+|---|---|
+| remember (average while filling / at capacity, with eviction) | 2.0 ms / 4.3 ms |
+| recall (one cue) | 3.8 ms |
+| cluster preview (40 seeds) | 39 ms |
+| dream, 5 verdicts (mostly the pre-dream snapshot) | ~240 ms |
+| load 10k traces | 73 ms |
+| embedding one text: GPU / CPU | 1.3 ms / 22 ms |
+| process memory with 10k traces | 85 MB |
+| 3000-virtual-year simulation | 15 s |
 
 ## Project structure
 

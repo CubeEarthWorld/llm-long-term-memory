@@ -39,7 +39,7 @@ impl Response {
     fn ok(v: Value) -> Self {
         Self::json(200, &v)
     }
-    /// The FastAPI-style error body the frontend reads (`{"detail": ...}`).
+    /// The error body the frontend reads (`{"detail": ...}`).
     fn error(status: u16, detail: &str) -> Self {
         Self::json(status, &json!({"detail": detail}))
     }

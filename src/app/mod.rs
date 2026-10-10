@@ -20,10 +20,24 @@ use std::time::Instant;
 pub const SYSTEM_ID: &str = "llm_long_term_memory";
 pub const TITLE: &str = "LLM Long-Term Memory";
 
-/// `x` rounded to `digits` decimals (display only).
-pub fn round_to(x: f64, digits: i32) -> f64 {
-    let p = 10f64.powi(digits);
-    (x * p).round() / p
+/// `x` rounded to `digits` decimals (display only). The binary value is rounded
+/// exactly (ties to even on the true decimal expansion), so 0.81875 — stored just below
+/// — reads 0.8187, not the 0.8188 that scaling by 10^digits would give.
+pub fn round_to(x: f64, digits: usize) -> f64 {
+    if !x.is_finite() {
+        return x;
+    }
+    format!("{x:.digits$}").parse().unwrap_or(x)
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rounding_is_exact() {
+        assert_eq!(super::round_to(0.81875, 4), 0.8187);
+        assert_eq!(super::round_to(2.5, 0), 2.0);
+        assert_eq!(super::round_to(1.23456, 3), 1.235);
+    }
 }
 
 /// Time spent inside an embedder, shared between the engine's embedder and the app.
