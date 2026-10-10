@@ -59,41 +59,13 @@ The seams:
 
 An embedder that fails is treated as offline: writes are kept unindexed and indexed once it answers again. Switching the model (a new `model_id`) re-embeds every trace from its text.
 
-## Tools (not part of the package)
-
-`bench/` is a separate, unpublished crate built on `engram` — an example of a real integration and the benchmark harness. It provides a SQLite `Store` (with a ring of 8 snapshots written before every dream), a llama.cpp `Embedder` for GGUF models (EmbeddingGemma by default, on the GPU when CUDA is available), Claude through the Claude Code CLI as the LLM, and the `ltm` binary.
-
-Requirements: [Rust](https://rustup.rs) and a C/C++ toolchain with CMake and libclang (on Windows: Visual Studio Build Tools with the C++ workload). Builds use at most 80% of the CPU cores.
-
-```bash
-mkdir secrets && copy .env.example secrets\.env       # tool settings (no API key: Claude Code signs in itself)
-# put embeddinggemma-300m-qat-Q4_0.gguf into ./model  (https://ai.google.dev/gemma/docs/embeddinggemma)
-build.bat                                             # or ./build.sh
-target/release/ltm run --dream 5 --inspect            # replay the seed scenario, dream with 5 LLM calls, dump the store
-target/release/ltm run --no-seed --say "I live in Kyoto"
-```
-
-A turn of the runner is `recall(utterance) → LLM (memory pack + save_memory / delete_memory) → cite(reply)`. The LLM saves pronoun-free propositions with absolute dates, an optional `salience` and a required `cue` — the question the fact would later be asked with; the dream searches the past with that cue, so an update reaches the version it supersedes even when the sentences are far apart.
-
-Every LLM answer is cached under a hash of (model, system prompt, prompt) in `LLM_CACHE`; prompts the CLI cannot answer go to `<cache>.pending.json`. `ltm run --epoch <unix>` pins the clock and the ids, so a rerun sends the same prompts: `bench/llm_cache.json` holds Claude Haiku 5.5's answers for `ltm run --epoch 1780000000 --dream 5` and `ltm bench supersede --run`.
-
-```bash
-cargo test --workspace                          # deterministic suite (no model, no LLM)
-cargo test --release --test longevity -- --ignored   # the 3000-virtual-year simulation
-ltm bench cache                                 # embed bench/corpus once with the configured model
-ltm bench sweep && ltm bench sweep --report     # forgetting: 155 runs (engram vs FIFO / LRU / random / none)
-ltm bench supersede --analyze                   # overwrite forgetting: cue capture (--run: live LLM dream)
-ltm bench generality --dims 768,512,256,128     # other models / dimensions; calibrates the 3 model-dependent parameters
-ltm bench perf --n 10000                        # latency and memory of every operation
-```
-
 ## Parameters
 
 All 19 engine parameters live in `engram::Config` (JSON round trip with `to_json` / `merge_json`); see [`SPEC.md`](SPEC.md) §6. Three depend on the embedding model's cosine distribution and are pre-set for EmbeddingGemma: `cosine_floor = 0.4`, `theta_related = 0.55`, `gist_min_cosine = 0.5`.
 
 ## Performance
 
-10,000 traces × 768 dimensions on one machine (8 cores / 16 threads, RTX 5070 Ti), through the tools' SQLite store on disk; medians of 5 runs.
+10,000 traces × 768 dimensions on one machine (8 cores / 16 threads, RTX 5070 Ti), with a SQLite store on disk; medians of 5 runs.
 
 | operation | time |
 |---|---|
@@ -114,10 +86,7 @@ Cosines are float32 multiply-adds over 16 SIMD lanes, summed in f64.
 │   ├── engine.rs           #   remember / recall / peek / cite / forget / dream
 │   ├── store.rs embed.rs dream.rs time.rs id.rs   # the seams: Store, Embedder, Adjudicator, Clock, IdGen
 │   └── config.rs trace.rs text.rs vector.rs json.rs
-├── tests/                  # the package's tests (in-memory store, deterministic fakes)
-├── bench/                  # the tools (crate ltm-bench, binary ltm) + benchmark data
-│   ├── src/                #   sqlite.rs llama.rs claude.rs, runner (session / turn / seed / cli), bench/
-│   └── tests/
+├── tests/                  # tests (in-memory store, deterministic fakes)
 └── SPEC.md                 # the specification
 ```
 

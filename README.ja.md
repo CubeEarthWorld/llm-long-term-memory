@@ -59,41 +59,13 @@ memory.dream(&mut |req: &DreamRequest| {                            // JSON を�
 
 埋め込みに失敗する Embedder はオフラインとして扱います。書き込みは未索引のまま保持し、応答が戻った時点で索引化します。モデルを切り替える（`model_id` が変わる）と、全痕跡を本文から埋め込み直します。
 
-## ツール（パッケージには含まれません）
-
-`bench/` は `engram` を利用する別の非公開クレートで、実際の組み込み例であり、ベンチマークの実行環境です。SQLite の `Store`（夢の前に 8 世代のスナップショットを保存）、GGUF モデル用の llama.cpp `Embedder`（既定は EmbeddingGemma。CUDA があれば GPU）、LLM としての Claude Code 経由の Claude、そして `ltm` コマンドを提供します。
-
-必要なもの: [Rust](https://rustup.rs) と CMake・libclang を含む C/C++ ツールチェーン（Windows では C++ ワークロード入りの Visual Studio Build Tools）。ビルドは CPU コアの 8 割までしか使いません。
-
-```bash
-mkdir secrets && copy .env.example secrets\.env       # ツールの設定（API キー不要: Claude Code が自分でサインイン）
-# embeddinggemma-300m-qat-Q4_0.gguf を ./model に置く（https://ai.google.dev/gemma/docs/embeddinggemma）
-build.bat                                             # または ./build.sh
-target/release/ltm run --dream 5 --inspect            # シードシナリオを再生し、LLM 5 回で夢を見て、ストアを表示
-target/release/ltm run --no-seed --say "京都に住んでいます"
-```
-
-ランナーの 1 ターンは `recall(発話) → LLM（記憶パック + save_memory / delete_memory）→ cite(応答)` です。LLM は代名詞を含まず絶対日付で書いた命題を、任意の `salience` と必須の `cue`（その事実が後で問われるであろう問い）付きで保存します。夢はその cue で過去を引き直すので、文面が遠くても更新は自分が置き換える版に届きます。
-
-LLM の回答はすべて（モデル, システムプロンプト, プロンプト）のハッシュをキーに `LLM_CACHE` へ保存し、CLI が答えられなかったプロンプトは `<cache>.pending.json` に溜めます。`ltm run --epoch <unix>` は時計と id を固定するので、再実行は同じプロンプトを送ります。`bench/llm_cache.json` には `ltm run --epoch 1780000000 --dream 5` と `ltm bench supersede --run` に対する Claude Haiku 5.5 の回答が入っています。
-
-```bash
-cargo test --workspace                          # 決定的なテスト一式（モデルも LLM も不要）
-cargo test --release --test longevity -- --ignored   # 3000 仮想年のシミュレーション
-ltm bench cache                                 # bench/corpus を設定中のモデルで一度だけ埋め込む
-ltm bench sweep && ltm bench sweep --report     # 忘却: 155 回（engram 対 FIFO / LRU / ランダム / 忘却なし）
-ltm bench supersede --analyze                   # 上書き忘却: cue による捕捉（--run で LLM を使った夢）
-ltm bench generality --dims 768,512,256,128     # 他のモデル・次元。モデル依存の 3 パラメータを較正
-ltm bench perf --n 10000                        # 全操作の遅延とメモリ
-```
-
 ## パラメータ
 
 19 個のエンジンパラメータはすべて `engram::Config` にあります（`to_json` / `merge_json` で JSON と相互変換）。[`SPEC.md`](SPEC.md) §6 を参照してください。埋め込みモデルのコサイン分布に依存する 3 つは EmbeddingGemma 向けに設定済みです: `cosine_floor = 0.4`、`theta_related = 0.55`、`gist_min_cosine = 0.5`。
 
 ## 性能
 
-10,000 痕跡 × 768 次元、1 台のマシン（8 コア / 16 スレッド、RTX 5070 Ti）、ツールの SQLite ストア（ディスク）経由。5 回の中央値。
+10,000 痕跡 × 768 次元、1 台のマシン（8 コア / 16 スレッド、RTX 5070 Ti）、SQLite ストア（ディスク）使用。5 回の中央値。
 
 | 操作 | 時間 |
 |---|---|
@@ -114,10 +86,7 @@ ltm bench perf --n 10000                        # 全操作の遅延とメモリ
 │   ├── engine.rs           #   remember / recall / peek / cite / forget / dream
 │   ├── store.rs embed.rs dream.rs time.rs id.rs   # 差し替え口: Store, Embedder, Adjudicator, Clock, IdGen
 │   └── config.rs trace.rs text.rs vector.rs json.rs
-├── tests/                  # パッケージのテスト（メモリ上のストア、決定的なフェイク）
-├── bench/                  # ツール（クレート ltm-bench、コマンド ltm）とベンチマークデータ
-│   ├── src/                #   sqlite.rs llama.rs claude.rs、ランナー（session / turn / seed / cli）、bench/
-│   └── tests/
+├── tests/                  # テスト（メモリ上のストア、決定的なフェイク）
 └── SPEC.md                 # 仕様
 ```
 

@@ -42,10 +42,6 @@ memory.dream(&mut |req: &DreamRequest| {                            // 任意能
 
 接入点：`Embedder`（文本 → 向量）、`Store`（持久化；crate 内有 `MemoryStore`）、`Adjudicator`（梦的判定，任意闭包）、`Clock`（时间）、`IdGen`（痕迹 id，默认 `ulid_ids()` 单调 ULID）。
 
-## 工具（不属于软件包）
-
-`bench/` 是基于 `engram` 的独立、未发布的 crate：SQLite `Store`、llama.cpp `Embedder`（默认 EmbeddingGemma，有 CUDA 时用 GPU）、通过 Claude Code 调用的 Claude，以及 `ltm` 命令（场景回放与基准测试）。用 `build.bat` / `build.sh` 构建（编译最多使用 80% 的 CPU 核心），`cargo test --workspace` 运行全部确定性测试。
-
 ## 许可证
 
 [MIT](LICENSE)
