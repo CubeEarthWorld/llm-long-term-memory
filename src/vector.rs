@@ -11,6 +11,7 @@ pub fn normalized(v: &[f32]) -> Vec<f32> {
     v.iter().map(|&x| (f64::from(x) / norm) as f32).collect()
 }
 
+#[cfg_attr(not(any(test, feature = "app")), allow(dead_code))] // the scalar reference (tests, benchmarks)
 /// Dot product (= cosine for unit vectors). Panics on a length mismatch: one model id
 /// means one dimension, and a truncated product would be a cosine no threshold means.
 pub fn dot(a: &[f32], b: &[f32]) -> f64 {

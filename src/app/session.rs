@@ -85,7 +85,9 @@ pub struct Session {
 impl Session {
     /// Assembles the configured runtime over the app database.
     pub fn open(cfg: AppConfig, wipe: bool) -> crate::Result<Self> {
-        let (embedder, status) = super::embedder(&cfg.glob)?;
+        // SPEC §2: a missing model is no reason not to start — memories are kept unindexed
+        // and indexed once the model is back.
+        let (embedder, status) = super::embedder(&cfg.glob).unwrap_or_else(|e| (Box::new(super::Offline), format!("ERROR — {e}")));
         let llm = client(&cfg.glob);
         Self::with_parts(cfg, embedder, status, llm, &super::settings::db_path(), wipe)
     }

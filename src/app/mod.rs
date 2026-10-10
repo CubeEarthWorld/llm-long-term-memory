@@ -95,6 +95,25 @@ pub fn timed<T>(timer: &EmbedTimer, f: impl FnOnce() -> T) -> (T, f64, f64) {
     (out, (wall - embed).max(0.0), embed)
 }
 
+/// The embedder used while the configured one cannot be loaded: every call fails, which
+/// the engine treats as offline (writes stay unindexed, recall falls back to recency).
+pub struct Offline;
+
+impl Embedder for Offline {
+    fn model_id(&self) -> &str {
+        ""
+    }
+    fn dimension(&self) -> usize {
+        0
+    }
+    fn embed_documents(&mut self, _: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Err("no embedding model".into())
+    }
+    fn embed_queries(&mut self, _: &[&str]) -> Result<Vec<Vec<f32>>> {
+        Err("no embedding model".into())
+    }
+}
+
 /// The configured embedder and its status line. A loaded model is cached per process
 /// (keyed by source and prompts) and shared by handle, so rebuilding a session with the
 /// same embedding settings does not reload it.

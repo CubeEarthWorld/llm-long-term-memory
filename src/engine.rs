@@ -232,13 +232,25 @@ impl Engram {
         self.clear_ram();
         let mut fixed = Change::default();
         for raw in self.store.load_all()? {
-            // A row an older version or a hand edit wrote is skipped, not fatal.
-            if raw.id.is_empty() || raw.text.is_empty() || self.by_id.contains_key(&raw.id) {
+            // Every row is held to the write-time rules (SPEC §2, §7): a row an older version
+            // or a hand edit wrote is repaired, or skipped when nothing usable is left.
+            let text = clean_text(&raw.text, self.cfg.text_max);
+            if raw.id.is_empty() || text.is_empty() || self.by_id.contains_key(&raw.id) {
                 continue;
             }
+            let (cue, tz) = (clean_text(&raw.cue, self.cfg.text_max), clean_text(&raw.tz, TZ_MAX));
             let (stability, last_recall, created_at) = (self.clamp_stability(raw.stability), raw.last_recall.min(now), raw.created_at.min(now));
-            let changed = stability != raw.stability || last_recall != raw.last_recall || created_at != raw.created_at;
-            let t = Trace { stability, last_recall, created_at, ..raw };
+            // A vector that is not finite and unit-norm is not an index entry: re-embed it.
+            let unit = !raw.vector.is_empty() && is_unit(&raw.vector);
+            let changed = stability != raw.stability
+                || last_recall != raw.last_recall
+                || created_at != raw.created_at
+                || text != raw.text
+                || cue != raw.cue
+                || tz != raw.tz
+                || (!unit && !raw.vector.is_empty());
+            let (model_id, vector) = if unit || raw.vector.is_empty() { (raw.model_id, raw.vector) } else { (String::new(), Vec::new()) };
+            let t = Trace { text, cue, tz, stability, last_recall, created_at, model_id, vector, ..raw };
             if changed {
                 fixed.put.push(t.clone());
             }
@@ -396,6 +408,16 @@ impl Engram {
         Ok(())
     }
 
+    /// A trace id no live trace (nor `taken`) has. Random ids never collide in practice;
+    /// reproducible ids are derived from the text and the time, so a gist that repeats
+    /// its seed's text in the same millisecond must not inherit — and then lose — its id.
+    fn new_id(&self, millis: i64, text: &str, taken: &[String]) -> String {
+        (0u64..)
+            .map(|salt| trace_id(millis, text, salt))
+            .find(|id| !self.by_id.contains_key(id) && !taken.contains(id))
+            .expect("an unused id")
+    }
+
     /// One model id means one dimension (SPEC §7): a vector of any other length is
     /// stale and re-embedded, so the index never mixes dimensions.
     fn is_indexed(&self, t: &Trace) -> bool {
@@ -405,7 +427,8 @@ impl Engram {
     /// A freshly embedded vector, normalised — or `None` when the embedder contradicted
     /// its own dimension (handled like an offline embedder: indexed on a later attempt).
     fn vector(&self, v: &[f32]) -> Option<Vec<f32>> {
-        (v.len() == self.embedder.dimension()).then(|| normalized(v))
+        let n = normalized(v);
+        (v.len() == self.embedder.dimension() && is_unit(&n)).then_some(n) // rejects zero and non-finite output
     }
 
     /// Re-embeds traces whose vector belongs to another model, in batches; an offline
@@ -414,7 +437,8 @@ impl Engram {
         let stale: Vec<usize> = (0..self.traces.len()).filter(|&i| !self.is_indexed(&self.traces[i])).collect();
         for batch in stale.chunks(REINDEX_BATCH) {
             let texts: Vec<&str> = batch.iter().map(|&i| self.traces[i].text.as_str()).collect();
-            let Ok(vectors) = self.embedder.embed_documents(&texts) else { return Ok(()) };
+            // An embedder that fails, or answers with a different count, is offline for now.
+            let Some(vectors) = self.embedder.embed_documents(&texts).ok().filter(|v| v.len() == texts.len()) else { return Ok(()) };
             let model_id = self.embedder.model_id().to_owned();
             let put = batch
                 .iter()
@@ -460,7 +484,8 @@ impl Engram {
             return Ok(Remembered::Reinforced(r));
         }
         let day_ago = now - 86_400.0;
-        self.write_times.retain(|&t| t >= day_ago);
+        // Writes stamped in the future (a virtual clock that ran ahead) do not count.
+        self.write_times.retain(|&t| t >= day_ago && t <= now);
         if self.write_times.len() >= self.cfg.writes_per_day {
             return Ok(Remembered::RateLimited { text });
         }
@@ -476,7 +501,7 @@ impl Engram {
         let sal = if salience.is_nan() { 1.0 } else { salience.clamp(0.0, 10.0) };
         let consolidated = v.is_some() && candidates.is_empty() && self.unindexed == 0;
         let trace = Trace {
-            id: trace_id((now * 1000.0) as i64, &text),
+            id: self.new_id((now * 1000.0) as i64, &text, &[]),
             text,
             created_at: now as i64,
             tz: tz_field(&self.timezone, now),
@@ -673,7 +698,8 @@ impl Engram {
             Vec::new()
         } else {
             match self.embedder.embed_queries(&distinct) {
-                Ok(raw) => raw.iter().take(distinct.len()).map(|v| self.vector(v)).collect(),
+                Ok(raw) if raw.len() == distinct.len() => raw.iter().map(|v| self.vector(v)).collect(),
+                Ok(_) => Vec::new(), // a count mismatch cannot be paired with the cues safely
                 Err(_) => Vec::new(), // offline: every cue falls back to its trace's vector
             }
         };
@@ -742,7 +768,7 @@ impl Engram {
     /// stale traces → up to `budget` LLM verdicts (keep / replace, one transaction each).
     pub fn dream(&mut self, adjudicator: &mut dyn Adjudicator, budget: Option<usize>) -> Result<Vec<DreamReport>> {
         let now = self.now();
-        self.store.backup();
+        self.store.backup()?; // no snapshot, no irreversible rewrite
         self.reindex()?;
         let mut left = budget.unwrap_or(self.cfg.dream_budget);
         let seeds: Vec<(String, String, Vec<f32>)> =
@@ -850,11 +876,17 @@ impl Engram {
         let last_recall = now as i64 - (stability * elapsed).round() as i64;
         let newest = absorbed.iter().reduce(|a, b| if b.created_at > a.created_at { b } else { a }).expect("seed");
         let model_id = self.embedder.model_id().to_owned();
+        let mut ids: Vec<String> = Vec::with_capacity(texts.len());
+        for text in texts {
+            let id = self.new_id((now * 1000.0) as i64, text, &ids);
+            ids.push(id);
+        }
         Ok(texts
             .iter()
             .zip(vectors)
-            .map(|(text, vector)| Trace {
-                id: trace_id((now * 1000.0) as i64, text),
+            .zip(ids)
+            .map(|((text, vector), id)| Trace {
+                id,
                 text: text.clone(),
                 created_at: newest.created_at,
                 tz: newest.tz.clone(),
@@ -867,6 +899,15 @@ impl Engram {
             })
             .collect())
     }
+}
+
+/// Longest stored timezone field (`'IANA name;+HH:MM'`).
+const TZ_MAX: usize = 64;
+
+/// Finite and of unit length (within float32 rounding).
+fn is_unit(v: &[f32]) -> bool {
+    let n2: f64 = v.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+    n2.is_finite() && (n2 - 1.0).abs() <= 1e-3
 }
 
 /// Keeps the first `k` elements of `v` under `order`, sorted: a linear selection, then a

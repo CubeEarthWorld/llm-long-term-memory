@@ -21,14 +21,16 @@ pub fn relaxed_json(text: &str) -> Option<Value> {
     if let Ok(v) = serde_json::from_str(unfenced) {
         return Some(v);
     }
-    // The leftmost opener that has a closer after it, through the last such closer.
+    // The leftmost opener that has a closer after it, through the last such closer (one
+    // pass: the last closers are found once, not once per opener).
+    let (last_brace, last_bracket) = (unfenced.rfind('}'), unfenced.rfind(']'));
     let span = unfenced.char_indices().find_map(|(i, c)| {
         let close = match c {
-            '{' => '}',
-            '[' => ']',
+            '{' => last_brace,
+            '[' => last_bracket,
             _ => return None,
         };
-        unfenced.rfind(close).filter(|&j| j > i).map(|j| &unfenced[i..=j])
+        close.filter(|&j| j > i).map(|j| &unfenced[i..=j])
     })?;
     serde_json::from_str(span).ok()
 }

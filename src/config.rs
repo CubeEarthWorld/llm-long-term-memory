@@ -167,6 +167,17 @@ impl Config {
     /// Rejects parameter combinations the engine cannot honour.
     pub fn validate(&self) -> Result<(), String> {
         let unit = |x: f64| (0.0..=1.0).contains(&x);
+        let reals = [self.initial_stability, self.spacing_gain, self.max_stability, self.grace_period, self.cosine_floor,
+                     self.alpha, self.mmr_lambda, self.min_score, self.relative_score, self.theta_related, self.gist_min_cosine];
+        if reals.iter().any(|x| !x.is_finite()) {
+            return Err("every real-valued parameter must be finite".into());
+        }
+        if self.max_stability < 1.0 || self.spacing_gain < 0.0 || self.grace_period < 0.0 || self.mmr_lambda < 0.0 {
+            return Err("require max_stability >= 1 s and spacing_gain, grace_period, mmr_lambda >= 0".into());
+        }
+        if !unit(self.min_score) || !(-1.0..=1.0).contains(&self.gist_min_cosine) || self.max_cues == 0 {
+            return Err("require min_score in [0, 1], gist_min_cosine in [-1, 1], max_cues >= 1".into());
+        }
         if self.capacity == 0 {
             return Err("capacity must be positive".into());
         }

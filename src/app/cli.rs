@@ -119,7 +119,7 @@ pub fn main(args: &[String]) -> i32 {
     println!("[init] provider={}", cfg.glob.llm_provider);
     println!("[init] embedding={} -> ./model", cfg.glob.embedding_model);
     if let Some(t) = a.epoch {
-        crate::deterministic_ids(t.to_bits());
+        crate::deterministic_ids(t.to_bits() | 1); // never 0, which means random ids
     }
     let mut s = match Session::open(cfg, a.reset) {
         Ok(s) => s,

@@ -321,24 +321,56 @@ impl App {
     }
 }
 
-/// Reads one request: (method, path without query, body).
-fn read_request(stream: &TcpStream) -> std::io::Result<(String, String, Vec<u8>)> {
+/// One parsed request.
+pub struct Request {
+    pub method: String,
+    pub path: String,
+    pub host: String,
+    pub origin: Option<String>,
+    pub content_type: String,
+    pub body: Vec<u8>,
+}
+
+/// The browser-facing guard. Any web page can make the user's browser send requests to
+/// 127.0.0.1, so a request is served only when its `Host` is this server (defeats DNS
+/// rebinding), any `Origin` is this server (defeats cross-site requests), and a POST
+/// carries a JSON body (a cross-site JSON POST needs a CORS preflight, never answered).
+pub fn check_request(r: &Request, port: u16) -> Result<(), Response> {
+    let ours = |authority: &str| authority == format!("localhost:{port}") || authority == format!("127.0.0.1:{port}");
+    if !ours(&r.host) {
+        return Err(Response::error(403, "unexpected Host"));
+    }
+    if r.origin.as_deref().is_some_and(|o| !o.strip_prefix("http://").is_some_and(ours)) {
+        return Err(Response::error(403, "cross-origin request refused"));
+    }
+    if r.method == "POST" && !r.content_type.to_ascii_lowercase().starts_with("application/json") {
+        return Err(Response::error(415, "POST bodies must be application/json"));
+    }
+    Ok(())
+}
+
+/// Reads one request.
+fn read_request(stream: &TcpStream) -> std::io::Result<Request> {
     let mut reader = BufReader::new(stream);
     let mut line = String::new();
     reader.read_line(&mut line)?;
     let mut parts = line.split_whitespace();
     let (method, target) = (parts.next().unwrap_or("").to_owned(), parts.next().unwrap_or("/"));
     let path = target.split('?').next().unwrap_or("/").to_owned();
-    let mut length = 0usize;
+    let (mut length, mut host, mut origin, mut content_type) = (0usize, String::new(), None, String::new());
     loop {
         let mut header = String::new();
         if reader.read_line(&mut header)? == 0 || header.trim().is_empty() {
             break;
         }
-        if let Some((k, v)) = header.split_once(':')
-            && k.trim().eq_ignore_ascii_case("content-length")
-        {
-            length = v.trim().parse().unwrap_or(0);
+        let Some((k, v)) = header.split_once(':') else { continue };
+        let (k, v) = (k.trim().to_ascii_lowercase(), v.trim().to_owned());
+        match k.as_str() {
+            "content-length" => length = v.parse().unwrap_or(0),
+            "host" => host = v,
+            "origin" => origin = Some(v),
+            "content-type" => content_type = v,
+            _ => {}
         }
     }
     if length > MAX_BODY {
@@ -346,13 +378,15 @@ fn read_request(stream: &TcpStream) -> std::io::Result<(String, String, Vec<u8>)
     }
     let mut body = vec![0; length];
     reader.read_exact(&mut body)?;
-    Ok((method, path, body))
+    Ok(Request { method, path, host, origin, content_type, body })
 }
 
 fn respond(mut stream: &TcpStream, r: &Response) -> std::io::Result<()> {
     let reason = match r.status {
         200 => "OK",
         400 => "Bad Request",
+        403 => "Forbidden",
+        415 => "Unsupported Media Type",
         404 => "Not Found",
         405 => "Method Not Allowed",
         409 => "Conflict",
@@ -372,10 +406,13 @@ fn respond(mut stream: &TcpStream, r: &Response) -> std::io::Result<()> {
     stream.flush()
 }
 
-fn serve_connection(app: &Arc<App>, stream: TcpStream) {
+fn serve_connection(app: &Arc<App>, stream: TcpStream, port: u16) {
     let _ = stream.set_read_timeout(Some(Duration::from_secs(30)));
     let response = match read_request(&stream) {
-        Ok((method, path, body)) => app.handle(&method, &path, &body),
+        Ok(r) => match check_request(&r, port) {
+            Ok(()) => app.handle(&r.method, &r.path, &r.body),
+            Err(refused) => refused,
+        },
         Err(e) => Response::error(400, &e.to_string()),
     };
     let _ = respond(&stream, &response);
@@ -411,7 +448,27 @@ pub fn serve(port: u16, open_browser: bool) -> std::io::Result<()> {
     }
     for stream in listener.incoming().flatten() {
         let app = Arc::clone(&app);
-        std::thread::spawn(move || serve_connection(&app, stream));
+        std::thread::spawn(move || serve_connection(&app, stream, port));
     }
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{check_request, Request};
+
+    fn req(method: &str, host: &str, origin: Option<&str>, content_type: &str) -> Request {
+        Request { method: method.into(), path: "/api/reset".into(), host: host.into(), origin: origin.map(Into::into), content_type: content_type.into(), body: Vec::new() }
+    }
+
+    #[test]
+    fn only_this_origin_reaches_the_api() {
+        let ok = |r: &Request| check_request(r, 8501).is_ok();
+        assert!(ok(&req("GET", "localhost:8501", None, "")));
+        assert!(ok(&req("POST", "127.0.0.1:8501", Some("http://127.0.0.1:8501"), "application/json")));
+        assert!(!ok(&req("POST", "localhost:8501", Some("https://evil.example"), "application/json"))); // cross-site
+        assert!(!ok(&req("POST", "localhost:8501", None, "text/plain"))); // a "simple" request needs no preflight
+        assert!(!ok(&req("GET", "evil.example:8501", None, ""))); // DNS rebinding
+        assert!(!ok(&req("POST", "localhost:8501", Some("http://localhost:8501.evil.example"), "application/json")));
+    }
 }

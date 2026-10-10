@@ -53,14 +53,14 @@ pub fn ulid(millis: i64) -> String {
 }
 
 /// The id of a new trace: random, or — after [`deterministic_ids`] — derived from the
-/// seed, the text and the timestamp.
-pub(crate) fn trace_id(millis: i64, text: &str) -> String {
+/// seed, the text, the timestamp and `salt` (bumped by the caller on a collision).
+pub(crate) fn trace_id(millis: i64, text: &str, salt: u64) -> String {
     let seed = SEED.load(Ordering::SeqCst);
     if seed == 0 {
         return ulid(millis);
     }
     let h = text.bytes().fold(0xCBF2_9CE4_8422_2325u64, |h, b| (h ^ u64::from(b)).wrapping_mul(0x100_0000_01B3));
-    let a = splitmix(seed ^ h ^ (millis as u64).rotate_left(32));
+    let a = splitmix(seed ^ h ^ (millis as u64).rotate_left(32) ^ salt.wrapping_mul(0x9E37_79B9_7F4A_7C15));
     encode(millis, a, splitmix(a))
 }
 
@@ -75,6 +75,6 @@ mod tests {
         let far = ulid(1 << 49);
         assert!(far > b && !far.starts_with('0'));
         assert_ne!(ulid(5), ulid(5));
-        assert_ne!(trace_id(5, "x"), trace_id(5, "x")); // random until deterministic_ids
+        assert_ne!(trace_id(5, "x", 0), trace_id(5, "x", 0)); // random until deterministic_ids
     }
 }

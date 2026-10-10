@@ -86,8 +86,8 @@ fn text(v: ValueRef<'_>) -> Option<String> {
 impl Store for SqliteStore {
     /// Ordered by id (ULIDs sort by time): `INSERT OR REPLACE` re-inserts a row, so
     /// rowid order would move a rehearsed trace to the end. SQLite is dynamically
-    /// typed, so a hand-edited or legacy row can hold a non-numeric stability or a
-    /// vector that is not whole float32s; such a row is skipped, not fatal.
+    /// typed, so a hand-edited or legacy row can hold a non-numeric stability (the row
+    /// is skipped, not fatal) or a vector that is not whole float32s (kept unindexed).
     fn load_all(&self) -> Result<Vec<Trace>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, text, created_at, tz, last_recall, stability, consolidated, model_id, vector, cue FROM memory ORDER BY id",
@@ -96,14 +96,11 @@ impl Store for SqliteStore {
         let mut out = Vec::new();
         while let Some(r) = rows.next()? {
             let cell = |i: usize| r.get_ref(i).unwrap_or(ValueRef::Null);
+            // A vector that is not whole float32s is no index entry, but the text is canonical:
+            // keep the row unindexed and let the engine re-embed it.
             let vector = match cell(8) {
-                ValueRef::Blob(b) if b.len() % 4 == 0 => {
-                    b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()
-                }
-                _ => {
-                    eprintln!("skipping unreadable memory row {:?}: vector is not float32s", text(cell(0)));
-                    continue;
-                }
+                ValueRef::Blob(b) if b.len() % 4 == 0 => b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect(),
+                _ => Vec::new(),
             };
             let trace = (|| {
                 Some(Trace {
@@ -159,26 +156,26 @@ impl Store for SqliteStore {
     }
 
     /// Copies the database into `snapshots/` beside it and keeps the newest 8.
-    fn backup(&mut self) -> Option<String> {
-        let path = self.path.clone()?;
-        let result = (|| -> Result<String> {
-            let dir = path.parent().unwrap_or(Path::new(".")).join("snapshots");
-            std::fs::create_dir_all(&dir)?;
-            self.snapshots += 1;
-            let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
-            let dst = dir.join(format!("snap_{millis}_{:04}.db", self.snapshots));
-            // Page copy (online backup API): far cheaper than VACUUM INTO, which rebuilds.
-            self.conn.backup(rusqlite::MAIN_DB, &dst, None)?;
-            let mut snaps: Vec<PathBuf> = std::fs::read_dir(&dir)?
-                .filter_map(|e| e.ok().map(|e| e.path()))
-                .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("snap_") && n.ends_with(".db")))
-                .collect();
-            snaps.sort();
-            for old in &snaps[..snaps.len().saturating_sub(SNAPSHOT_GENERATIONS)] {
-                let _ = std::fs::remove_file(old);
-            }
-            Ok(dst.to_string_lossy().into_owned())
-        })();
-        result.map_err(|e| eprintln!("pre-dream backup failed: {e}")).ok() // the dream is the only deleter
+    fn backup(&mut self) -> Result<Option<String>> {
+        let Some(path) = self.path.clone() else { return Ok(None) };
+        let dir = path.parent().unwrap_or(Path::new(".")).join("snapshots");
+        std::fs::create_dir_all(&dir)?;
+        self.snapshots += 1;
+        let millis = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_millis();
+        let dst = dir.join(format!("snap_{millis}_{:04}.db", self.snapshots));
+        // Page copy (online backup API): far cheaper than VACUUM INTO, which rebuilds.
+        if let Err(e) = self.conn.backup(rusqlite::MAIN_DB, &dst, None) {
+            let _ = std::fs::remove_file(&dst); // a partial copy must not evict a good generation
+            return Err(e.into());
+        }
+        let mut snaps: Vec<PathBuf> = std::fs::read_dir(&dir)?
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.file_name().and_then(|n| n.to_str()).is_some_and(|n| n.starts_with("snap_") && n.ends_with(".db")))
+            .collect();
+        snaps.sort();
+        for old in &snaps[..snaps.len().saturating_sub(SNAPSHOT_GENERATIONS)] {
+            let _ = std::fs::remove_file(old);
+        }
+        Ok(Some(dst.to_string_lossy().into_owned()))
     }
 }

@@ -13,7 +13,7 @@ use serde_json::json;
 use std::sync::{Arc, Mutex};
 use support::{temp_dir, FakeEmbedder, DAY};
 
-/// Saves the utterance (with a salience and a cue), deletes on `forget:<id>`, cites
+/// Saves the utterance (with a salience and a cue), deletes on `forget:<id> …`, cites
 /// every memory it was shown, and returns canned extraction candidates.
 struct Scripted {
     saves: usize,
@@ -40,7 +40,7 @@ impl Llm for Scripted {
             let text = if i == 0 { user.to_owned() } else { format!("{user} {i}") };
             tool("save_memory", &json!({"text": text, "salience": 2, "cue": format!("why {user}")}));
         }
-        if let Some(id) = user.strip_prefix("forget:") {
+        if let Some(id) = user.strip_prefix("forget:").and_then(|rest| rest.split_whitespace().next()) {
             tool("delete_memory", &json!({"id": id}));
         }
         let cited: Vec<String> = pack.lines().filter_map(|l| l.find('《').map(|i| l[i..].to_owned())).collect();
@@ -113,7 +113,7 @@ fn delete_tool() {
     let dir = temp_dir("delete");
     let mut s = session(&dir, config(), Scripted::new(0, &[]).0, true);
     let id = support::insert(&mut s.memory, "delete me later", 1.0, "");
-    s.run_turn(&format!("forget:{id}"), "").unwrap();
+    s.run_turn(&format!("forget:{id} delete me later"), "").unwrap(); // recalled, so it may be deleted
     assert_eq!(s.metrics.back().unwrap().written[0]["action"], "deleted");
     assert!(s.memory.memories().is_empty());
 }
@@ -194,4 +194,26 @@ fn dream_reports_are_logged_for_the_ui() {
     assert_eq!(s.last_dream, reports);
     assert_eq!(s.cluster_preview().len(), 0); // settled
     assert_eq!(s.snapshot().len(), 2);
+}
+
+#[test]
+fn the_model_cannot_delete_what_it_was_not_shown() {
+    let dir = temp_dir("delete-uninjected");
+    let mut c = config();
+    c.memory.cosine_floor = 0.99; // nothing is similar enough to be injected
+    let mut s = session(&dir, c, Scripted::new(0, &[]).0, true);
+    let id = support::insert(&mut s.memory, "a memory the model never saw", 1.0, "");
+    s.run_turn(&format!("forget:{id}"), "").unwrap();
+    assert_eq!(s.metrics.back().unwrap().written[0]["action"], "not_injected");
+    assert_eq!(s.memory.memories().len(), 1);
+}
+
+#[test]
+fn a_session_starts_without_an_embedding_model() {
+    let dir = temp_dir("offline");
+    let mut s = Session::with_parts(config(), Box::new(engram::app::Offline), "ERROR — no model".into(), Box::new(Scripted::new(1, &[]).0), &dir.join("o.db"), true).unwrap();
+    s.run_turn("user likes tea", "").unwrap();
+    let m = s.memory.memories();
+    assert_eq!(m.len(), 1);
+    assert!(m[0].vector.is_empty()); // kept, unindexed until a model is back
 }

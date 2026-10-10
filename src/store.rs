@@ -21,10 +21,11 @@ pub trait Store: Send {
     fn write(&mut self, writes: &[Write<'_>]) -> Result<()>;
     /// Deletes every trace.
     fn clear(&mut self) -> Result<()>;
-    /// Snapshots the store before a dream (the only irreversible rewrite); returns
-    /// where it went. Stores without durability have nothing to snapshot.
-    fn backup(&mut self) -> Option<String> {
-        None
+    /// Snapshots the store before a dream (the only irreversible rewrite) and returns
+    /// where it went; a failed snapshot is an error, and the dream does not run. Stores
+    /// without durability have nothing to snapshot (`Ok(None)`).
+    fn backup(&mut self) -> Result<Option<String>> {
+        Ok(None)
     }
 }
 

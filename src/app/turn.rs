@@ -145,6 +145,7 @@ pub fn summarize(events: &[Value]) -> String {
         "rejected" => "却下",
         "rate_limited" => "レート上限",
         "not_found" => "対象なし",
+        "not_injected" => "対象外",
         other => other,
     }
     .to_owned();
@@ -191,7 +192,7 @@ pub fn run_turn(m: &mut Engram, llm: &mut dyn Llm, timer: &EmbedTimer, glob: &Se
             ev
         };
         let mut tool = |name: &str, args: &Value| -> Value {
-            let text = args["text"].as_str().map_or_else(|| if args["text"].is_null() { String::new() } else { args["text"].to_string() }, str::to_owned);
+            let text = args["text"].as_str().unwrap_or("").to_owned(); // a non-string text is no proposition
             match name {
                 "save_memory" => {
                     if saved(&events) >= max_writes {
@@ -209,6 +210,12 @@ pub fn run_turn(m: &mut Engram, llm: &mut dyn Llm, timer: &EmbedTimer, glob: &Se
                 }
                 "delete_memory" => {
                     let id = args["id"].as_str().unwrap_or("").to_owned();
+                    // The model may forget only what it was shown this turn (SPEC §4: id-only,
+                    // and the prompt hands it nothing but the injected ids).
+                    if !recall.recalled.iter().any(|c| c.trace.id == id) {
+                        events.push(json!({"action": "not_injected", "id": id}));
+                        return json!({"ok": false, "action": "not_injected"});
+                    }
                     let ev = write(m, &mut events, &mut |m| match m.forget(&id) {
                         Ok(Some(t)) => json!({"action": "deleted", "id": id, "text": t.text}),
                         Ok(None) => json!({"action": "not_found", "id": id}),

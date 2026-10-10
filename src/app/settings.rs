@@ -123,9 +123,13 @@ impl AppConfig {
     }
 
     /// Defaults overwritten by the sections of `v`; rejects invalid engine parameters.
+    /// Which executable runs (`claude_cli`) and where the answer cache is written
+    /// (`llm_cache`) come from the environment only, never from a request body.
     pub fn from_json(v: &Value) -> Result<Self, String> {
         let mut cfg = Self::default();
+        let (cli, cache) = (cfg.glob.claude_cli.clone(), cfg.glob.llm_cache.clone());
         cfg.glob.merge_json(&v["glob"]);
+        (cfg.glob.claude_cli, cfg.glob.llm_cache) = (cli, cache);
         cfg.memory.merge_json(&v["memory"]);
         // A window of 0 would keep nothing, not everything.
         cfg.glob.max_turn_log = cfg.glob.max_turn_log.max(1);

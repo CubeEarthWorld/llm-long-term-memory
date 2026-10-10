@@ -1,4 +1,5 @@
 //! The sleep phase (SPEC §5).
+#![cfg(feature = "sqlite")]
 
 mod support;
 

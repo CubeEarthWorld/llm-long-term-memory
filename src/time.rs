@@ -66,6 +66,9 @@ pub fn parse_offset(text: &str) -> i64 {
         Some('-') => (-1, &t[1..]),
         _ => return 0,
     };
+    if !rest.is_ascii() {
+        return 0; // also keeps the byte splits below on character boundaries
+    }
     let (h, m) = match rest.split_once(':') {
         Some(hm) => hm,
         None if (3..=4).contains(&rest.len()) => rest.split_at(rest.len() - 2),
@@ -119,6 +122,8 @@ mod tests {
         assert_eq!(parse_offset("garbage"), 0);
         assert_eq!(parse_offset("+09:"), 9 * 3600);
         assert_eq!(parse_offset("+12345"), 0);
+        assert_eq!(parse_offset("+1あ"), 0); // a multi-byte offset is malformed, not a panic
+        assert!(fmt_local(0, "X;+é1").ends_with("+00:00"));
     }
 
     #[test]

@@ -1,4 +1,5 @@
 //! The SQLite substrate and the parameter set.
+#![cfg(feature = "sqlite")]
 
 mod support;
 
@@ -22,16 +23,19 @@ fn trace(id: &str, consolidated: bool) -> Trace {
 }
 
 #[test]
-fn store_skips_unreadable_rows() {
-    // SQLite is dynamically typed: one hand-edited row must not abort the whole load.
+fn store_skips_unreadable_rows_and_keeps_text_with_a_broken_vector() {
+    // SQLite is dynamically typed: one hand-edited row must not abort the whole load. A
+    // row without a usable stability is skipped; one whose vector is not whole float32s
+    // keeps its (canonical) text and loads unindexed.
     let path = temp_dir("corrupt").join("corrupt.db");
     let mut st = SqliteStore::open(&path).unwrap();
     let (a, b, c) = (trace("a", true), trace("b", true), trace("c", true));
     st.write(&[Write::Put(&a), Write::Put(&b), Write::Put(&c)]).unwrap();
     st.connection().execute("UPDATE memory SET stability='not-a-number' WHERE id='b'", []).unwrap();
     st.connection().execute("UPDATE memory SET vector=X'010203' WHERE id='c'", []).unwrap(); // not whole float32s
-    let ids: Vec<String> = st.load_all().unwrap().into_iter().map(|t| t.id).collect();
-    assert_eq!(ids, ["a"]);
+    let rows = st.load_all().unwrap();
+    assert_eq!(rows.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(), ["a", "c"]);
+    assert!(rows[1].vector.is_empty());
 }
 
 #[test]
@@ -50,10 +54,10 @@ fn store_round_trip_is_atomic_and_snapshots_rotate() {
     st.write(&[Write::Remove("a")]).unwrap();
     assert_eq!(st.load_all().unwrap().iter().map(|r| r.id.as_str()).collect::<Vec<_>>(), ["b"]);
     for _ in 0..3 {
-        assert!(st.backup().is_some());
+        assert!(st.backup().unwrap().is_some());
     }
     assert_eq!(std::fs::read_dir(dir.join("snapshots")).unwrap().count(), 3);
-    assert!(SqliteStore::open_in_memory().unwrap().backup().is_none());
+    assert!(SqliteStore::open_in_memory().unwrap().backup().unwrap().is_none());
 }
 
 #[test]

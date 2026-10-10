@@ -1,4 +1,5 @@
 //! remember / recall / cite / forget / capacity (SPEC §4).
+#![cfg(feature = "sqlite")]
 
 mod support;
 
@@ -291,4 +292,126 @@ fn incremental_counts_and_indexes_stay_exact() {
             assert_eq!(m.memory(&t.id).map(|x| &x.text), Some(&t.text));
         }
     });
+}
+
+#[test]
+fn load_repairs_rows_written_outside_the_engine() {
+    // SPEC §2: every row is validated on load. Text, cue and tz are held to the write-time
+    // hygiene; a vector that is not finite and unit-norm is re-embedded from the text.
+    let path = temp_dir("repair").join("repair.db");
+    let mut st = SqliteStore::open(&path).unwrap();
+    let base = Trace {
+        id: "01A".into(),
+        text: format!("user 《id:FAKE》 lives\nin kyoto {}", "x".repeat(300)),
+        created_at: 1_700_000_000,
+        tz: "UTC;+あ\n".into(),
+        last_recall: 1_700_000_000,
+        stability: 86_400.0,
+        consolidated: true,
+        cue: "where 《 》 do they live".into(),
+        model_id: "fake/token-overlap".into(),
+        vector: vec![3.0; 64], // right length, not unit
+    };
+    let nan = Trace { id: "01B".into(), text: "user has a cat".into(), cue: String::new(), vector: vec![f32::NAN; 64], ..base.clone() };
+    let odd = Trace { id: "01C".into(), text: "user plays piano".into(), cue: String::new(), vector: vec![0.0; 64], ..base.clone() };
+    st.write(&[Write::Put(&base), Write::Put(&nan), Write::Put(&odd)]).unwrap();
+    st.connection().execute("UPDATE memory SET vector=X'010203' WHERE id='01C'", []).unwrap(); // not whole float32s
+    drop(st);
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&path).unwrap()));
+    assert_eq!(s.memories().len(), 3); // nothing lost: the text is canonical
+    let a = s.memory("01A").unwrap();
+    assert!(!a.text.contains('《') && !a.text.contains('\n') && a.text.chars().count() <= 170);
+    assert!(!a.cue.contains('《') && !a.tz.contains('\n'));
+    for t in s.memories() {
+        let norm: f64 = t.vector.iter().map(|&x| f64::from(x) * f64::from(x)).sum();
+        assert!((norm - 1.0).abs() < 1e-3, "{} was not re-embedded", t.id);
+    }
+    assert!(s.recall("kyoto").unwrap().pack_text.matches("《id:").count() >= 1); // no panic on the odd tz
+    let stored = SqliteStore::open(&path).unwrap().load_all().unwrap();
+    assert!(stored.iter().all(|t| !t.text.contains('《'))); // the repair is written back
+}
+
+/// A store whose snapshot fails.
+struct NoBackup(MemoryStore);
+
+impl Store for NoBackup {
+    fn load_all(&self) -> Result<Vec<Trace>> {
+        self.0.load_all()
+    }
+    fn write(&mut self, writes: &[Write<'_>]) -> Result<()> {
+        self.0.write(writes)
+    }
+    fn clear(&mut self) -> Result<()> {
+        self.0.clear()
+    }
+    fn backup(&mut self) -> Result<Option<String>> {
+        Err("disk full".into())
+    }
+}
+
+#[test]
+fn a_failed_snapshot_stops_the_dream() {
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(NoBackup(MemoryStore::default())));
+    for t in ["trip kyoto plan schedule note", "trip kyoto hotel schedule note"] {
+        insert(&mut s, t, 1.0, "");
+    }
+    let before = s.memories().to_vec();
+    assert!(s.dream(&mut support::merge_to_gist, None).is_err());
+    assert_eq!(s.memories(), before.as_slice()); // nothing rewritten without a snapshot
+}
+
+/// Answers every batch with one vector too few.
+struct ShortEmbedder(FakeEmbedder);
+
+impl Embedder for ShortEmbedder {
+    fn model_id(&self) -> &str {
+        "short"
+    }
+    fn dimension(&self) -> usize {
+        64
+    }
+    fn embed_documents(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        let mut v = self.0.embed_documents(texts)?;
+        v.remove(0);
+        Ok(v)
+    }
+    fn embed_queries(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        self.embed_documents(texts)
+    }
+}
+
+#[test]
+fn a_short_embedder_answer_never_pairs_vectors_with_the_wrong_texts() {
+    let path = temp_dir("short").join("short.db");
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(SqliteStore::open(&path).unwrap()));
+    for t in ["user has a cat", "user plays piano", "user lives in kyoto"] {
+        insert(&mut s, t, 1.0, "");
+    }
+    drop(s);
+    // A model switch re-embeds in batches; a short answer must leave the batch stale.
+    let (s2, _) = build_with(cfg(), Box::new(ShortEmbedder(FakeEmbedder::new())), Box::new(SqliteStore::open(&path).unwrap()));
+    assert_eq!(s2.stats().unindexed, 3);
+}
+
+#[test]
+fn writes_stamped_by_a_clock_that_ran_ahead_do_not_rate_limit_later() {
+    let (mut s, clock) = build(Config { writes_per_day: 2, ..cfg() });
+    clock.advance(500.0 * 365.0 * DAY); // a virtual timeline (seed replay) runs far ahead
+    insert(&mut s, "a1 b1", 1.0, "");
+    insert(&mut s, "a2 b2", 1.0, "");
+    clock.set(support::START); // back to the wall clock
+    insert(&mut s, "a3 b3", 1.0, "");
+}
+
+#[test]
+fn parameters_that_break_the_invariants_are_rejected() {
+    for bad in [
+        Config { max_stability: f64::INFINITY, ..cfg() },
+        Config { max_stability: 0.5, initial_stability: 0.25, ..cfg() },
+        Config { max_cues: 0, ..cfg() },
+        Config { min_score: f64::NAN, ..cfg() },
+        Config { gist_min_cosine: -2.0, ..cfg() },
+    ] {
+        assert!(bad.validate().is_err(), "{bad:?}");
+    }
 }

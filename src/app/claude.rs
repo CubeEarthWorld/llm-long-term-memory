@@ -26,6 +26,9 @@ const TOOL_PROTOCOL: &str = concat!(
     "保存・削除が無ければ空配列にしてください。",
 );
 
+/// Longest one CLI call may take.
+const CLI_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+
 /// FNV-1a over the parts (stable across runs and platforms, unlike `RandomState`).
 fn key(parts: &[&str]) -> String {
     let mut h: u64 = 0xCBF2_9CE4_8422_2325;
@@ -62,7 +65,10 @@ impl ClaudeCode {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = std::fs::write(path, serde_json::to_string_pretty(map).unwrap_or_default()) {
+        // Write a sibling file, then rename it over the old one: a crash never leaves half a cache.
+        let tmp = path.with_extension("tmp");
+        let written = std::fs::write(&tmp, serde_json::to_string_pretty(map).unwrap_or_default()).and_then(|()| std::fs::rename(&tmp, path));
+        if let Err(e) = written {
             eprintln!("could not write {}: {e}", path.display());
         }
     }
@@ -77,6 +83,15 @@ impl ClaudeCode {
             .spawn()
             .map_err(|e| CallError::Fatal(format!("cannot run {}: {e}", self.cli)))?;
         child.stdin.take().expect("piped").write_all(prompt.as_bytes()).map_err(|e| CallError::Fatal(e.to_string()))?;
+        // A hung CLI must not hold the session forever: give up after CLI_TIMEOUT.
+        let deadline = std::time::Instant::now() + CLI_TIMEOUT;
+        while child.try_wait().map_err(|e| CallError::Transient(e.to_string()))?.is_none() {
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                return Err(CallError::Transient(format!("claude did not answer within {} s", CLI_TIMEOUT.as_secs())));
+            }
+            std::thread::sleep(std::time::Duration::from_millis(50));
+        }
         let out = child.wait_with_output().map_err(|e| CallError::Transient(e.to_string()))?;
         let body: Value = serde_json::from_slice(&out.stdout)
             .map_err(|_| CallError::Transient(format!("no JSON from claude: {}", String::from_utf8_lossy(&out.stderr).chars().take(200).collect::<String>())))?;
@@ -94,7 +109,9 @@ impl ClaudeCode {
     /// The cached answer, else a live one (then cached), else a pending entry and an error.
     fn ask(&mut self, kind: &str, system: &str, prompt: &str) -> Result<String, CallError> {
         let k = key(&[&self.model, system, prompt]);
-        if let Some(r) = self.cache.get(&k).and_then(|e| e["response"].as_str()) {
+        // A 64-bit key can collide: an entry answers only the exact prompt it was made for.
+        let exact = |e: &&Value| e["model"] == json!(self.model) && e["system"] == json!(system) && e["prompt"] == json!(prompt);
+        if let Some(r) = self.cache.get(&k).filter(exact).and_then(|e| e["response"].as_str()) {
             // Cache maintenance: LLM_CACHE_USED lists the keys a run replayed, so entries no
             // scenario asks for any more can be pruned.
             if let Some(path) = std::env::var_os("LLM_CACHE_USED")
@@ -207,7 +224,11 @@ mod tests {
         assert_eq!(c.adjudicate(&req).unwrap(), DreamDecision::keep()); // replayed, no CLI needed
         let mut saved = Vec::new();
         let k2 = key(&[&c.model, &format!("{SYSTEM_PROMPT}{TOOL_PROTOCOL}"), &build_prompt("", "hi", "now")]);
-        c.cache.insert(k2, json!({"response": r#"{"reply":"ok","save_memory":[{"text":"t","cue":"q"}],"delete_memory":["X"]}"#}));
+        let system = format!("{SYSTEM_PROMPT}{TOOL_PROTOCOL}");
+        c.cache.insert(k2.clone(), json!({"model": c.model, "system": system, "prompt": "another prompt", "response": "{}"}));
+        assert!(c.converse("", "hi", &mut |_, _| json!({}), "now").text.starts_with("[LLM error]")); // a colliding key is a miss
+        c.cache.insert(k2, json!({"model": c.model, "system": system, "prompt": build_prompt("", "hi", "now"),
+                                  "response": r#"{"reply":"ok","save_memory":[{"text":"t","cue":"q"}],"delete_memory":["X"]}"#}));
         let r = c.converse("", "hi", &mut |n, a| {
             saved.push((n.to_owned(), a.clone()));
             json!({})
