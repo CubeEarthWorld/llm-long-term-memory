@@ -3,7 +3,7 @@
 const DAY: f64 = 86_400.0;
 const YEAR: f64 = 365.0 * DAY;
 
-/// ENGRAM v2.1 parameters (SPEC §6). Only `cosine_floor`, `theta_related` and
+/// ENGRAM v2.2 parameters (SPEC §6). Only `cosine_floor`, `theta_related` and
 /// `gist_min_cosine` depend on the embedding model (pre-set for EmbeddingGemma).
 #[derive(Clone, Debug, PartialEq)]
 pub struct Config {

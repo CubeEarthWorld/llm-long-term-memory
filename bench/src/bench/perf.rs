@@ -1,85 +1,97 @@
-//! Latency and memory of every engine operation on synthetic unit vectors (every 10th
-//! fact a near-duplicate of the previous one, so dreams have labile pairs), over a
-//! file-backed SQLite store as in the app. `--vectors` replays a recorded dataset
-//! (`u32 dim, u32 count, then u32 len + UTF-8 text + dim f32` per entry).
+//! Latency, memory and disk of every engine operation on synthetic unit vectors (every
+//! 10th fact a near-duplicate of the previous one, so dreams have labile pairs).
+//! Vectors are a function of the fact number, so no table of them is held; above
+//! 20,000 facts the store is filled in bulk and the operations are timed at capacity.
+//! The store is the bundled [`Store`] in a file.
 //!
-//! `ltm bench perf [--n 10000] [--dim 768] [--vectors FILE]`
+//! `ltm bench perf [--n 10000] [--dim 768]`
 
-use super::{Flags, PyRandom};
-use crate::SqliteStore;
-use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, Result};
+use super::Flags;
+use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, Result, Storage, Store, Trace, Write};
 use serde_json::json;
-use std::collections::HashMap;
-use std::sync::Arc;
+use std::path::Path;
 use std::time::Instant;
 
-/// Serves precomputed vectors by text.
-#[derive(Clone)]
-struct Table(Arc<HashMap<String, Vec<f32>>>, usize);
+const MODEL: &str = "synthetic";
+const T0: f64 = 1_700_000_000.0;
+const STEP: f64 = 60.0;
 
-impl Embedder for Table {
+/// SplitMix64: a reproducible stream per seed.
+struct Rng(u64);
+
+impl Rng {
+    fn next(&mut self) -> u64 {
+        self.0 = self.0.wrapping_add(0x9E37_79B9_7F4A_7C15);
+        let mut z = self.0;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D0_49BB_1331_11EB);
+        z ^ (z >> 31)
+    }
+    /// A standard normal deviate (Box–Muller).
+    fn gaussian(&mut self) -> f64 {
+        let u = |r: &mut Self| ((r.next() >> 11) as f64 + 0.5) / (1u64 << 53) as f64;
+        let (a, b) = (u(self), u(self));
+        (-2.0 * a.ln()).sqrt() * (std::f64::consts::TAU * b).cos()
+    }
+}
+
+fn unit(v: Vec<f64>) -> Vec<f32> {
+    crate::normalized(&v.iter().map(|&x| x as f32).collect::<Vec<_>>())
+}
+
+/// Fact `i`: random, or (every 10th) a near-duplicate of fact `i − 1`.
+fn fact(i: u64, dim: usize) -> Vec<f32> {
+    let random = |i: u64| -> Vec<f64> {
+        let mut r = Rng(i);
+        (0..dim).map(|_| r.gaussian()).collect()
+    };
+    if i % 10 == 9 {
+        let mut r = Rng(i ^ 0xD1CE);
+        unit(random(i - 1).iter().map(|&x| x / (dim as f64).sqrt() + 0.012 * r.gaussian() / (dim as f64).sqrt() * 40.0).collect())
+    } else {
+        unit(random(i))
+    }
+}
+
+/// Query `j`: a noisy copy of a stored fact.
+fn query(j: u64, n: u64, dim: usize) -> Vec<f32> {
+    let base = fact((j * 37) % n.saturating_sub(300).max(1), dim);
+    let mut r = Rng(j ^ 0xBEEF);
+    unit(base.iter().map(|&x| f64::from(x) + 0.03 * r.gaussian() / (dim as f64).sqrt() * 10.0).collect())
+}
+
+/// Embeds `"fact {i}"` and `"query {j}"` by number.
+struct Synthetic {
+    n: u64,
+    dim: usize,
+}
+
+impl Synthetic {
+    fn embed(&self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
+        texts
+            .iter()
+            .map(|t| {
+                let (kind, num) = t.split_once(' ').ok_or("unknown text")?;
+                let i: u64 = num.parse()?;
+                Ok(if kind == "query" { query(i, self.n, self.dim) } else { fact(i, self.dim) })
+            })
+            .collect()
+    }
+}
+
+impl Embedder for Synthetic {
     fn model_id(&self) -> &str {
-        "synthetic"
+        MODEL
     }
     fn dimension(&self) -> usize {
-        self.1
+        self.dim
     }
     fn embed_documents(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        texts.iter().map(|t| self.0.get(*t).cloned().ok_or_else(|| format!("no vector for {t:?}").into())).collect()
+        self.embed(texts)
     }
     fn embed_queries(&mut self, texts: &[&str]) -> Result<Vec<Vec<f32>>> {
-        self.embed_documents(texts)
+        self.embed(texts)
     }
-}
-
-/// Standard normal deviates (Box–Muller over MT19937).
-fn gaussian(rng: &mut PyRandom) -> f64 {
-    let u = |rng: &mut PyRandom| (rng.randrange(1 << 30) as f64 + 0.5) / f64::from(1u32 << 30);
-    let (a, b) = (u(rng), u(rng));
-    (-2.0 * a.ln()).sqrt() * (std::f64::consts::TAU * b).cos()
-}
-
-fn synthetic(n: usize, dim: usize) -> (Vec<String>, Vec<String>, HashMap<String, Vec<f32>>) {
-    let mut rng = PyRandom::new(42);
-    let unit = |v: Vec<f64>| crate::normalized(&v.iter().map(|&x| x as f32).collect::<Vec<_>>());
-    let mut vecs: Vec<Vec<f32>> = Vec::with_capacity(n);
-    for i in 0..n {
-        let v = if i % 10 == 9 {
-            vecs[i - 1].iter().map(|&x| f64::from(x) + 0.012 * gaussian(&mut rng)).collect()
-        } else {
-            (0..dim).map(|_| gaussian(&mut rng)).collect()
-        };
-        vecs.push(unit(v));
-    }
-    let texts: Vec<String> = (0..n).map(|i| format!("fact number {i} about topic {}", i % 97)).collect();
-    let queries: Vec<String> = (0..50).map(|j| format!("query {j}")).collect();
-    let mut table: HashMap<String, Vec<f32>> = texts.iter().cloned().zip(vecs.iter().cloned()).collect();
-    for (j, q) in queries.iter().enumerate() {
-        let base = &vecs[(j * 37) % (n - 300)];
-        table.insert(q.clone(), unit(base.iter().map(|&x| f64::from(x) + 0.03 * gaussian(&mut rng)).collect()));
-    }
-    (texts, queries, table)
-}
-
-/// Texts, queries, their vectors and the dimension.
-type Dataset = (Vec<String>, Vec<String>, HashMap<String, Vec<f32>>, usize);
-
-fn recorded(path: &str) -> Result<Dataset> {
-    let b = std::fs::read(path)?;
-    let u32_at = |at: usize| u32::from_le_bytes([b[at], b[at + 1], b[at + 2], b[at + 3]]) as usize;
-    let (dim, count) = (u32_at(0), u32_at(4));
-    let (mut at, mut keys, mut table) = (8, Vec::new(), HashMap::new());
-    for _ in 0..count {
-        let len = u32_at(at);
-        let key = String::from_utf8_lossy(&b[at + 4..at + 4 + len]).into_owned();
-        at += 4 + len;
-        let v = b[at..at + 4 * dim].as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect();
-        at += 4 * dim;
-        keys.push(key.clone());
-        table.insert(key, v);
-    }
-    let (texts, queries): (Vec<String>, Vec<String>) = keys.into_iter().partition(|k| !k.starts_with("query "));
-    Ok((texts, queries, table, dim))
 }
 
 /// Resident and peak resident memory of this process, MiB.
@@ -113,62 +125,101 @@ fn rss_mb() -> (f64, f64) {
     }
 }
 
+/// Writes facts `0..n` straight into the store, as `remember` would have left them.
+fn bulk_fill(store: &mut dyn Storage, n: u64, dim: usize) -> Result<()> {
+    let mut ids = engram::ulid_ids();
+    for chunk in (0..n).collect::<Vec<_>>().chunks(10_000) {
+        let traces: Vec<Trace> = chunk
+            .iter()
+            .map(|&i| {
+                let t = T0 + i as f64 * STEP;
+                Trace {
+                    id: ids((t * 1000.0) as i64, ""),
+                    text: format!("fact {i}"),
+                    created_at: t as i64,
+                    tz: "Asia/Tokyo;+09:00".into(),
+                    last_recall: t as i64,
+                    stability: 86_400.0,
+                    consolidated: i % 10 != 9,
+                    cue: String::new(),
+                    model_id: MODEL.into(),
+                    vector: fact(i, dim),
+                }
+            })
+            .collect();
+        store.write(&traces.iter().map(Write::Insert).collect::<Vec<_>>())?;
+    }
+    Ok(())
+}
+
+fn disk_mb(dir: &Path) -> f64 {
+    std::fs::read_dir(dir).map_or(0.0, |d| d.filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum::<u64>() as f64 / 1_048_576.0)
+}
+
 pub fn main(args: &[String]) -> Result<()> {
     let f = Flags::parse(args);
+    let (n, dim) = (f.num("n", 10_000) as u64, f.num("dim", 768));
     let base_rss = rss_mb().0;
-    let (texts, queries, table, dim) = if f.has("vectors") {
-        recorded(&f.str("vectors", ""))?
-    } else {
-        let (n, dim) = (f.num("n", 10_000), f.num("dim", 768));
-        let (t, q, table) = synthetic(n + 300, dim);
-        (t, q, table, dim)
-    };
-    let n = texts.len() - 300;
-    let embedder = Table(Arc::new(table), dim);
     let dir = std::env::temp_dir().join(format!("engram-perf-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    let db = dir.join("p.db");
-    let cfg = Config { capacity: n, writes_per_day: usize::MAX, ..Config::default() };
-    let clock = ManualClock::new(1_700_000_000.0);
-    let mut m = Engram::with_clock(Box::new(SqliteStore::open(&db)?), Box::new(embedder.clone()), cfg.clone(), "Asia/Tokyo", clock.clock())?;
+    std::fs::create_dir_all(&dir)?;
+    let db = dir.join("p.redb");
+    let cfg = Config { capacity: n as usize, writes_per_day: usize::MAX, ..Config::default() };
+    let clock = ManualClock::new(T0);
+    let embedder = || Box::new(Synthetic { n, dim });
     let ms = |t: Instant| t.elapsed().as_secs_f64() * 1000.0;
+    let mut store = Store::open(&db)?;
     let t = Instant::now();
-    for text in &texts[..n] {
-        clock.advance(60.0);
-        m.remember(text, 1.0, "")?;
+    let bulk = n > 20_000;
+    if bulk {
+        bulk_fill(&mut store, n, dim)?;
+    }
+    let mut m = Engram::with_clock(Box::new(store), embedder(), cfg.clone(), "Asia/Tokyo", clock.clock())?;
+    if !bulk {
+        for i in 0..n {
+            clock.set(T0 + i as f64 * STEP);
+            m.remember(&format!("fact {i}"), 1.0, "")?;
+        }
     }
     let fill_ms = ms(t);
+    clock.set(T0 + n as f64 * STEP);
     let t = Instant::now();
-    for text in &texts[n..n + 200] {
-        clock.advance(60.0);
-        m.remember(text, 1.0, "")?;
+    for i in n..n + 200 {
+        clock.advance(STEP);
+        m.remember(&format!("fact {i}"), 1.0, "")?;
     }
     let remember_ms = ms(t) / 200.0;
     let (t, mut hits) = (Instant::now(), 0);
-    for q in &queries {
-        clock.advance(60.0);
-        hits += m.recall(q)?.recalled.len();
+    for j in 0..50 {
+        clock.advance(STEP);
+        hits += m.recall(&format!("query {j}"))?.recalled.len();
     }
-    let recall_ms = ms(t) / queries.len() as f64;
+    let recall_ms = ms(t) / 50.0;
     let t = Instant::now();
-    let clusters = m.clusters(None).len();
+    let clusters = m.clusters(None)?.len();
     let clusters_ms = ms(t);
     let t = Instant::now();
     let reports = m.dream(&mut |_: &engram::DreamRequest| Ok(DreamDecision::keep()), Some(5))?.len();
     let dream_ms = ms(t);
-    let stats = m.stats();
+    let stats = m.stats()?;
     let (rss, peak) = rss_mb();
     drop(m);
+    let disk = disk_mb(&dir);
     let t = Instant::now();
-    let loaded = Engram::with_clock(Box::new(SqliteStore::open(&db)?), Box::new(embedder), cfg, "Asia/Tokyo", clock.clock())?.memories().len();
-    let load_ms = ms(t);
+    let reopened = Engram::with_clock(Box::new(Store::open(&db)?), embedder(), cfg, "Asia/Tokyo", clock.clock())?;
+    let open_ms = ms(t);
+    let first = Instant::now();
+    let _ = reopened.memory("nothing")?;
+    let first_ms = ms(first);
+    drop(reopened);
     let _ = std::fs::remove_dir_all(&dir);
     println!("{}", serde_json::to_string_pretty(&json!({
-        "n": n, "dim": dim, "base_rss_mb": base_rss,
+        "n": n, "dim": dim, "fill": if bulk { "bulk" } else { "remember" },
         "fill_ms_per_op": fill_ms / n as f64, "remember_at_capacity_ms": remember_ms, "recall_ms": recall_ms, "recall_hits": hits,
         "clusters_ms": clusters_ms, "clusters_n": clusters, "dream5_ms": dream_ms, "dream_reports": reports,
-        "stats": {"records": stats.records, "labile": stats.labile, "unindexed": stats.unindexed},
-        "rss_mb": rss, "peak_rss_mb": peak, "load_ms": load_ms, "loaded": loaded,
+        "records": stats.records, "labile": stats.labile,
+        "base_rss_mb": base_rss, "rss_mb": rss, "peak_rss_mb": peak, "disk_mb": disk,
+        "reopen_ms": open_ms, "first_lookup_ms": first_ms,
     }))?);
     Ok(())
 }

@@ -3,7 +3,7 @@ name = "llm-long-term-memory"
 version = "1.0.0"
 edition = "2024"
 rust-version = "1.88"
-description = "ENGRAM v2.1: a trace-based long-term memory engine for LLM applications. Bring your own embedding model, LLM and database."
+description = "ENGRAM v2.2: a trace-based long-term memory engine for LLM applications. Bring your own embedding model, LLM and database."
 license = "MIT"
 repository = "https://github.com/CubeEarthWorld/llm-long-term-memory"
 readme = "README.md"
@@ -14,6 +14,7 @@ name = "engram"
 
 [dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
+redb = { version = "2.6.4", optional = true }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 ulid = "3.0.0"
 
@@ -24,3 +25,9 @@ members = ["bench"]
 lto = "thin"
 codegen-units = 1
 strip = "symbols"
+
+[features]
+# The bundled Store (redb + an IVF index, pure Rust). Without it the crate is the
+# algorithm alone and you implement `Storage` over your own database.
+default = ["store"]
+store = ["dep:redb"]

@@ -1,4 +1,4 @@
-//! The runner session: assembles the runtime (embedder, LLM, SQLite store, engine,
+//! The runner session: assembles the runtime (embedder, LLM, store, engine,
 //! metrics) and owns the turn log. The CLI drives the runner through it.
 
 use crate::llm::{client, Llm};
@@ -6,58 +6,58 @@ use crate::seed::{parse_duration, SeedItem};
 use crate::settings::AppConfig;
 use crate::turn::{invariants, run_turn, TurnMetrics};
 use crate::{round_to, EmbedTimer, Timed};
-use crate::SqliteStore;
-use engram::{fmt_local, system_clock, DreamAction, Embedder, Engram, ManualClock};
-use rusqlite::Connection;
+use engram::{fmt_local, system_clock, DreamAction, Embedder, Engram, ManualClock, Store};
+use redb::ReadableTable;
 use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-/// The runner's turn log, in its own table beside `memory` (same file, own connection).
-struct TurnLog(Connection);
+/// The runner's turn log: a small redb file beside the store, one row per turn.
+struct TurnLog(redb::Database);
+
+const TURNS: redb::TableDefinition<u64, &str> = redb::TableDefinition::new("turns");
 
 impl TurnLog {
     fn open(path: &Path) -> engram::Result<Self> {
-        let conn = Connection::open(path)?;
-        conn.busy_timeout(std::time::Duration::from_secs(5))?;
-        conn.execute_batch(
-            "CREATE TABLE IF NOT EXISTS turn_log (turn INTEGER PRIMARY KEY, utterance TEXT NOT NULL, \
-             note TEXT NOT NULL DEFAULT '', timestamp REAL NOT NULL, system_json TEXT NOT NULL DEFAULT '{}');",
-        )?;
-        Ok(Self(conn))
+        let db = redb::Database::create(path)?;
+        let tx = db.begin_write()?;
+        tx.open_table(TURNS)?;
+        tx.commit()?;
+        Ok(Self(db))
     }
 
+    /// Saves one entry and drops those older than the newest `keep` (turns are
+    /// consecutive, so the window is a key range).
     fn save(&mut self, e: &Value, keep: usize) -> engram::Result<()> {
-        let tx = self.0.transaction()?;
-        tx.execute(
-            "INSERT OR REPLACE INTO turn_log(turn,utterance,note,timestamp,system_json) VALUES(?,?,?,?,?)",
-            rusqlite::params![e["turn"].as_i64(), e["utterance"].as_str(), e["note"].as_str(), e["timestamp"].as_f64(), e["system"].to_string()],
-        )?;
-        // Turns are consecutive, so the window is a key range (an index seek, not a sort).
-        tx.execute("DELETE FROM turn_log WHERE turn <= ?", [e["turn"].as_i64().unwrap_or(0) - keep as i64])?;
+        let turn = e["turn"].as_u64().unwrap_or(0);
+        let tx = self.0.begin_write()?;
+        {
+            let mut t = tx.open_table(TURNS)?;
+            t.insert(turn, e.to_string().as_str())?;
+            let cut = turn.saturating_sub(keep as u64);
+            let old: Vec<u64> = t.range(..=cut)?.filter_map(|r| r.ok().map(|(k, _)| k.value())).collect();
+            for k in old {
+                t.remove(k)?;
+            }
+        }
         tx.commit()?;
         Ok(())
     }
 
     /// The newest `keep` turns, oldest first; unreadable rows are skipped.
     fn load(&self, keep: usize) -> engram::Result<Vec<Value>> {
-        let mut stmt = self.0.prepare("SELECT turn, utterance, note, timestamp, system_json FROM turn_log ORDER BY turn DESC LIMIT ?")?;
-        let rows = stmt.query_map([keep as i64], |r| {
-            Ok(json!({
-                "turn": r.get::<_, i64>(0)?,
-                "utterance": r.get::<_, String>(1)?,
-                "note": r.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                "timestamp": r.get::<_, f64>(3)?,
-                "system": serde_json::from_str::<Value>(&r.get::<_, String>(4).unwrap_or_default()).unwrap_or_else(|_| json!({})),
-            }))
-        })?;
-        let mut out: Vec<Value> = rows.filter_map(|r| r.ok()).collect();
+        let tx = self.0.begin_read()?;
+        let t = tx.open_table(TURNS)?;
+        let mut out: Vec<Value> = t.iter()?.rev().take(keep).filter_map(|r| serde_json::from_str(r.ok()?.1.value()).ok()).collect();
         out.reverse();
         Ok(out)
     }
 
     fn clear(&self) -> engram::Result<()> {
-        self.0.execute("DELETE FROM turn_log", [])?;
+        let tx = self.0.begin_write()?;
+        tx.delete_table(TURNS)?;
+        tx.open_table(TURNS)?;
+        tx.commit()?;
         Ok(())
     }
 }
@@ -91,15 +91,15 @@ impl Session {
     /// turn log is restored.
     pub fn with_parts(cfg: AppConfig, embedder: Box<dyn Embedder>, embedding_status: String, llm: Box<dyn Llm>, db_path: &Path, wipe: bool) -> engram::Result<Self> {
         if wipe {
-            for suffix in ["", "-wal", "-shm"] {
-                let _ = std::fs::remove_file(format!("{}{suffix}", db_path.display()));
+            for p in [db_path.to_path_buf(), db_path.with_extension("turns")] {
+                let _ = std::fs::remove_file(p);
             }
         }
         let timer = EmbedTimer::default();
-        let store = Box::new(SqliteStore::open(db_path)?);
+        let store = Box::new(Store::open(db_path)?);
         let embedder = Box::new(Timed { inner: embedder, timer: timer.clone() });
         let mut memory = Engram::open(store, embedder, cfg.memory.clone(), &cfg.glob.default_timezone)?;
-        let turn_log = TurnLog::open(db_path)?;
+        let turn_log = TurnLog::open(&db_path.with_extension("turns"))?;
         let log = if wipe {
             memory.reset()?;
             turn_log.clear()?;
@@ -153,7 +153,7 @@ impl Session {
                 let after: Vec<Value> = r.after.iter().map(|g| json!({"id": g.id, "text": g.text, "stability": g.stability.round() as i64})).collect();
                 let mut v = json!({"action": r.action.as_str(), "before": before, "after": after});
                 match r.action {
-                    DreamAction::Replace => v["absorbed"] = json!(r.absorbed),
+                    DreamAction::Replace => v["absorbed"] = json!(r.absorbed.iter().map(|t| &t.id).collect::<Vec<_>>()),
                     DreamAction::Error => v["error"] = json!(r.error),
                     DreamAction::Keep => {}
                 }
@@ -183,14 +183,13 @@ impl Session {
 
     /// Bytes of the database file and its WAL / SHM companions.
     pub fn db_size_bytes(&self) -> u64 {
-        ["", "-wal", "-shm"].iter().filter_map(|s| std::fs::metadata(format!("{}{s}", self.db_path.display())).ok()).map(|m| m.len()).sum()
+        [self.db_path.clone(), self.db_path.with_extension("turns")].iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum()
     }
 
     /// Final engine figures, as the CLI reports them.
     pub fn final_stats(&self) -> Value {
-        let s = self.memory.stats();
-        json!({"records": s.records, "labile": s.labile, "unindexed": s.unindexed,
-               "vector_mb": round_to(self.memory.vector_mb(), 3), "db_kb": round_to(self.db_size_bytes() as f64 / 1024.0, 1)})
+        let s = self.memory.stats().unwrap_or(engram::Stats { records: 0, labile: 0 });
+        json!({"records": s.records, "labile": s.labile, "db_kb": round_to(self.db_size_bytes() as f64 / 1024.0, 1)})
     }
 
     /// The metrics rows.
@@ -207,7 +206,8 @@ impl Session {
     pub fn snapshot(&self) -> Vec<Value> {
         let m = &self.memory;
         let now = m.now();
-        let mut rows: Vec<(f64, &engram::Trace)> = m.memories().iter().map(|t| (m.strength(t, now), t)).collect();
+        let all = crate::all_traces(m);
+        let mut rows: Vec<(f64, &engram::Trace)> = all.iter().map(|t| (m.strength(t, now), t)).collect();
         rows.sort_by(|a, b| b.0.total_cmp(&a.0));
         rows.iter()
             .map(|(strength, t)| {

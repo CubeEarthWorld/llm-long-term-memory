@@ -1,4 +1,4 @@
-//! Tools built on the `engram` crate: a SQLite [`Store`](engram::Store), a llama.cpp
+//! Tools built on the `engram` crate: a llama.cpp
 //! [`Embedder`], Claude Code as the LLM, a headless scenario runner (`ltm run`) and the
 //! benchmarks (`ltm bench`). None of this is part of the package.
 
@@ -11,13 +11,11 @@ pub mod llm;
 pub mod seed;
 pub mod session;
 pub mod settings;
-pub mod sqlite;
 pub mod turn;
 
 pub use llama::LlamaEmbedder;
-pub use sqlite::SqliteStore;
 
-use engram::{Embedder, Result};
+use engram::{Embedder, Engram, Result, Trace, View};
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -25,6 +23,12 @@ use std::time::Instant;
 
 pub const SYSTEM_ID: &str = "llm_long_term_memory";
 pub const TITLE: &str = "LLM Long-Term Memory";
+
+/// Every trace in `m`'s store, oldest first: for benchmarks that simulate other
+/// eviction policies and for inspection (the engine itself never lists everything).
+pub fn all_traces(m: &Engram) -> Vec<Trace> {
+    m.store().find(View::All, usize::MAX).expect("the store is readable")
+}
 
 /// Worker threads the tools may use: 80% of the logical CPUs (at least one), so the
 /// machine stays responsive while a model or a benchmark runs.

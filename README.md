@@ -1,6 +1,6 @@
 # LLM Long-Term Memory
 
-A long-term memory engine for LLMs implementing **ENGRAM v2.1** ([`SPEC.md`](SPEC.md), Japanese): a memory *trace* model derived from the principles of human memory. The package is the Rust crate `engram` — only the algorithm. You bring the embedding model, the LLM and the database through four small traits; the crate itself has no networking, no settings and three dependencies (`serde_json`, `jiff`, `ulid`).
+A long-term memory engine for LLMs implementing **ENGRAM v2.2** ([`SPEC.md`](SPEC.md), Japanese): a memory *trace* model derived from the principles of human memory. The package is the Rust crate `engram`, pure Rust. The engine keeps no copy of the memory: it asks a storage for what it needs, so opening costs nothing and every operation is a few index queries. The bundled `Store` keeps everything in one file (redb) with a self-refining similarity index; any database or vector index can take its place through the `Storage` trait. You bring the embedding model and the LLM. No networking, no settings; dependencies: `serde_json`, `jiff`, `ulid` and, for the bundled store, `redb`.
 
 日本語版は [README.ja.md](README.ja.md)、中文版は [README.zh.md](README.zh.md)。
 
@@ -20,13 +20,13 @@ new      : stability = clamp(S0 · salience, 1 s, S_max)
 
 | verb | what happens |
 |---|---|
-| `remember(text, salience, cue)` | exact duplicate → rehearsal; otherwise insert, **never overwrite**. A trace whose `cue` reaches an older neighbour (cos ≥ θ_related) is born *labile*; no existing trace is touched. Over `capacity`, the lowest-strength trace outside the 3-day grace period is forgotten. |
+| `remember(text, salience, cue)` | exact duplicate → rehearsal; otherwise insert, **never overwrite**. A trace whose `cue` reaches an older neighbour (cos ≥ θ_related) is born *labile*; no existing trace is touched. Over `capacity`, the lowest-strength trace outside the 3-day grace period is forgotten (found from per-stability-band indexes, not by ranking everything). |
 | `recall(query)` | multi-cue cosine → `score = a·(α + (1−α)·R)` → absolute + relative cut → MMR → `[unix tz] text 《id》` pack ≤ 1024 chars. Injection is exposure: half-activation strengthening. `peek(query)` is the same without side effects. |
 | `cite(reply)` | the `《id》`s the LLM quoted are strengthened as *used* (full activation). |
 | `forget(id)` | id-only physical delete. |
-| `dream(adjudicator, budget)` | labile traces (first in, first out; ≤ 8·budget) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace**. Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. |
+| `dream(adjudicator, budget)` | labile traces (first in, first out; ≤ 8·budget) each seed a cluster of the older traces their `cue` reactivates (cos ≥ θ_related, ≤ 8); your LLM answers **keep** or **replace**. Gists inherit the strongest member's stability plus the *live* evidence of the others; unrelated outputs are rejected as confabulation. Each report is its own undo record (`undo(report)`). |
 
-No tiers, no counters, no rings, no maintenance call. Every operation is at most one linear pass over the store, and nothing depends on elapsed time; a 3000-virtual-year simulation is part of the test suite.
+No tiers, no counters, no rings, no maintenance call, no snapshot copies. Nothing is loaded at open and nothing touches every trace: each operation is a few store queries (O(log N) with an indexed store), and nothing depends on elapsed time; a 3000-virtual-year simulation is part of the test suite.
 
 ## Using the library
 
@@ -36,9 +36,9 @@ llm-long-term-memory = { git = "https://github.com/CubeEarthWorld/llm-long-term-
 ```
 
 ```rust
-use engram::{Config, DreamDecision, DreamRequest, Engram, MemoryStore};
+use engram::{Config, DreamDecision, DreamRequest, Engram, Store};
 
-let mut memory = Engram::open(Box::new(MemoryStore::default()), Box::new(my_embedder), Config::default(), "Asia/Tokyo")?;
+let mut memory = Engram::open(Box::new(Store::open("memory.redb".as_ref())?), Box::new(my_embedder), Config::default(), "Asia/Tokyo")?;
 memory.remember("The user moved to Osaka in April 2026.", 1.0, "Where does the user live?")?;
 let pack = memory.recall("where do I live now?")?.pack_text;      // inject into your prompt
 memory.cite(&llm_reply)?;                                           // strengthen what was used
@@ -52,12 +52,12 @@ The seams:
 | trait / type | what you provide | in the crate |
 |---|---|---|
 | `Embedder` | text → vectors (`model_id`, `dimension`, document and query prompts) | — |
-| `Store` | durable rows: `load_all`, atomic `write`, `clear`, optional `backup` | `MemoryStore` (RAM only) |
+| `Storage` | persistence and lookup: `find(view)` (by id / text, labile queue, eviction order, …), `count`, `near` (similarity search), atomic `write`, `clear` | `Store`: one redb file + an IVF similarity index (default feature `store`) |
 | `Adjudicator` | the dream verdict; any `FnMut(&DreamRequest) -> Result<DreamDecision>` | `DreamDecision::parse` for lenient JSON |
 | `Clock` | Unix seconds | `system_clock()`, `ManualClock` |
 | `IdGen` | trace ids (unique, creation-ordered) | `ulid_ids()` — monotonic ULIDs (default) |
 
-An embedder that fails is treated as offline: writes are kept unindexed and indexed once it answers again. Switching the model (a new `model_id`) re-embeds every trace from its text.
+`Store` opens in milliseconds whatever its size: rows and every view are B-trees in one file, and vectors sit in lists, one per centroid; a search reads the 8 lists nearest the query, and a list that passes 512 vectors splits in two, so the index refines itself without rebuilds. Only the centroids and a bounded page cache live in RAM. Search is approximate once a model has more than one list; to use another database or vector index (PostgreSQL + pgvector, Qdrant, LanceDB, …) implement `Storage` — every view is one index range — and build with `default-features = false` to drop `redb`. An embedder that fails is treated as offline: writes are kept unindexed and re-embedded, newest first, at the next dream (or `reindex(limit)`), as is every trace after a model switch (a new `model_id`).
 
 ## Parameters
 
@@ -65,26 +65,25 @@ All 19 engine parameters live in `engram::Config` (JSON round trip with `to_json
 
 ## Performance
 
-10,000 traces × 768 dimensions on one machine (8 cores / 16 threads, RTX 5070 Ti), with a SQLite store on disk; medians of 5 runs.
+The bundled `Store` on disk, one machine (8 cores / 16 threads), CPU build, embeddings precomputed. 768 dimensions: medians of 5 runs at 10k, one run at 100k. 128 dimensions up to a million.
 
-| operation | time |
-|---|---|
-| remember (average while filling / at capacity, with eviction) | 1.1 ms / 3.4 ms |
-| recall (one cue) | 2.4 ms |
-| cluster preview (40 seeds) | 25 ms |
-| dream, 5 verdicts (mostly the pre-dream snapshot of the database) | ~270 ms |
-| load 10k traces | ~100 ms |
-| embedding one text: GPU / CPU | 1.3 ms / 22 ms |
-| process memory with 10k traces | 83 MB |
+| operation | 10k × 768 | 100k × 768 | 1M × 128 |
+|---|---|---|---|
+| remember (at capacity, with eviction) | 11 ms | 15 ms | 17 ms |
+| recall (one cue) | 9 ms | 11 ms | 11 ms |
+| dream, 5 verdicts | 36 ms | 43 ms | 56 ms |
+| open | 4 ms | 7 ms | 7 ms |
+| process memory | 70 MB | 0.5 GB | 1.3 GB |
 
-Cosines are float32 multiply-adds over 16 SIMD lanes, summed in f64.
+Opening reads nothing, a dream copies nothing, and the cost of an operation grows with the lists it reads rather than the store size; memory is bounded by a 1 GiB page cache. Cosines are float32 multiply-adds over 16 SIMD lanes, summed in f64.
 
 ## Project structure
 
 ```
 ├── src/                    # the package (crate engram)
 │   ├── engine.rs           #   remember / recall / peek / cite / forget / dream
-│   ├── store.rs embed.rs dream.rs time.rs id.rs   # the seams: Store, Embedder, Adjudicator, Clock, IdGen
+│   ├── storage.rs store.rs                        # the Storage seam and the bundled Store (redb + IVF)
+│   ├── embed.rs dream.rs time.rs id.rs             # the other seams: Embedder, Adjudicator, Clock, IdGen
 │   └── config.rs trace.rs text.rs vector.rs json.rs
 ├── tests/                  # tests (in-memory store, deterministic fakes)
 └── SPEC.md                 # the specification

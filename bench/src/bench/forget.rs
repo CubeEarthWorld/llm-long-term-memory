@@ -7,7 +7,7 @@
 //! `ltm bench forget --arm engram --span-days 365 --capacity 500 --seed 1`
 
 use super::{bench_dir, load_corpus, r4, CachedEmbedder, Corpus, Flags, PyRandom, DAY};
-use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, MemoryStore, Remembered, Result};
+use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, Remembered, Result, Store};
 use serde_json::{json, Value};
 use std::collections::{HashMap, HashSet};
 
@@ -57,8 +57,11 @@ impl Run<'_> {
             }
             "none" => {}
             arm => {
-                while self.m.memories().len() > self.spec.capacity {
-                    let rows = self.m.memories();
+                loop {
+                    let rows = crate::all_traces(&self.m);
+                    if rows.len() <= self.spec.capacity {
+                        break;
+                    }
                     let first_min = |key: &dyn Fn(&engram::Trace) -> i64| (0..rows.len()).min_by_key(|&i| (key(&rows[i]), i)).expect("rows");
                     let i = match arm {
                         "fifo" => first_min(&|t| t.created_at),
@@ -79,14 +82,14 @@ impl Run<'_> {
 
 /// Probes every gold fact without side effects and summarises survival and ranking.
 fn measure(m: &mut Engram, corpus: &Corpus, rehearsed: &HashSet<&str>, t0: f64) -> Value {
-    let alive: HashSet<String> = m.memories().iter().map(|t| t.text.clone()).collect();
+    let alive: HashSet<String> = crate::all_traces(m).into_iter().map(|t| t.text).collect();
     let mut out = json!({"records": alive.len(), "day": ((m.now() - t0) / DAY).round() as i64});
     for (group, used) in [("rehearsed", true), ("dormant", false)] {
         let items: Vec<_> = corpus.gold.iter().filter(|g| rehearsed.contains(g.fact.as_str()) == used).collect();
         let (mut top1, mut hit5, mut mrr, mut probes, mut beaten) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for g in &items {
             for p in &g.probes {
-                let texts: Vec<String> = m.peek(p).recalled.into_iter().map(|c| c.trace.text).collect();
+                let texts: Vec<String> = m.peek(p).expect("peek").recalled.into_iter().map(|c| c.trace.text).collect();
                 probes += 1.0;
                 let has_distractor = !g.distractor.is_empty();
                 if let Some(i) = texts.iter().position(|t| *t == g.fact) {
@@ -118,26 +121,27 @@ fn measure(m: &mut Engram, corpus: &Corpus, rehearsed: &HashSet<&str>, t0: f64) 
 /// Violations of SPEC §7 at `now` (all zero when healthy).
 pub fn invariants(m: &Engram, capacity: usize) -> Value {
     let now = m.now();
-    let rs: Vec<f64> = m.memories().iter().map(|t| m.retrievability(t, now)).collect();
+    let all = crate::all_traces(m);
+    let rs: Vec<f64> = all.iter().map(|t| m.retrievability(t, now)).collect();
     let max_s = m.config().max_stability;
     json!({
         "nan": rs.iter().filter(|r| r.is_nan()).count(),
         "r_out_of_range": rs.iter().filter(|r| !(0.0..=1.0).contains(*r)).count(),
-        "stability_out_of_range": m.memories().iter().filter(|t| !(1.0..=max_s).contains(&t.stability)).count(),
-        "over_capacity": m.memories().len().saturating_sub(capacity),
-        "store_mismatch": m.store().load_all().map_or(-1, |rows| rows.len() as i64 - m.memories().len() as i64),
+        "stability_out_of_range": all.iter().filter(|t| !(1.0..=max_s).contains(&t.stability)).count(),
+        "over_capacity": all.len().saturating_sub(capacity),
+        "store_mismatch": m.stats().map_or(-1, |s| s.records as i64 - all.len() as i64),
     })
 }
 
 /// Explicit forgetting (SPEC §4 forget): a deleted fact is never recalled again.
 fn forget_api_check(m: &mut Engram, corpus: &Corpus) -> Result<Value> {
-    let alive: HashMap<String, String> = m.memories().iter().map(|t| (t.text.clone(), t.id.clone())).collect();
+    let alive: HashMap<String, String> = crate::all_traces(m).into_iter().map(|t| (t.text, t.id)).collect();
     let targets: Vec<_> = corpus.gold.iter().filter(|g| alive.contains_key(&g.fact)).take(10).collect();
     for g in &targets {
         m.forget(&alive[&g.fact])?;
     }
-    let leaked = targets.iter().flat_map(|g| g.probes.iter().map(move |p| (g, p))).filter(|(g, p)| m.peek(p).recalled.iter().any(|c| c.trace.text == g.fact)).count();
-    Ok(json!({"deleted": targets.len(), "leaked": leaked, "store_mismatch": m.store().load_all()?.len() as i64 - m.memories().len() as i64}))
+    let leaked = targets.iter().flat_map(|g| g.probes.iter().map(move |p| (g, p))).filter(|(g, p)| m.peek(p).expect("peek").recalled.iter().any(|c| c.trace.text == g.fact)).count();
+    Ok(json!({"deleted": targets.len(), "leaked": leaked, "store_mismatch": m.stats()?.records as i64 - crate::all_traces(m).len() as i64}))
 }
 
 /// Runs one timeline and returns its result record.
@@ -147,7 +151,7 @@ pub fn run(corpus: &Corpus, spec: &Spec, mut cfg: Config, embedder: Box<dyn Embe
     cfg.capacity = engine_cap;
     let (model_id, dimension) = (embedder.model_id().to_owned(), embedder.dimension());
     let clock = ManualClock::new(1_700_000_000.0);
-    let m = Engram::with_clock(Box::new(MemoryStore::default()), embedder, cfg, "Asia/Tokyo", clock.clock())?;
+    let m = Engram::with_clock(Box::new(Store::in_memory()?), embedder, cfg, "Asia/Tokyo", clock.clock())?;
     let mut kind: HashMap<&str, &'static str> = corpus.gold.iter().map(|g| (g.fact.as_str(), "gold")).collect();
     kind.extend(corpus.gold.iter().filter(|g| !g.distractor.is_empty()).map(|g| (g.distractor.as_str(), "distractor")));
     let evicted = ["gold", "distractor", "noise"].into_iter().map(|k| (k, 0)).collect();

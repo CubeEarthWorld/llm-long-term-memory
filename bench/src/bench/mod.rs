@@ -5,7 +5,7 @@
 //! * `supersede`  — overwrite forgetting through the dream (`--analyze` / `--run`, real LLM)
 //! * `generality` — embedding models and dimensions, with and without calibration
 //! * `cache`      — embed the corpus once with the configured model (`bench/embeddings*.bin`)
-//! * `perf`       — latency and memory of every operation on synthetic 768-d vectors
+//! * `perf`       — latency, memory and disk of every operation per store (memory / sqlite / ann)
 //!
 //! Measurements run through [`engram::Engram::peek`], so probing never strengthens what it measures.
 

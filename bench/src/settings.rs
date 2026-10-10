@@ -31,10 +31,10 @@ pub fn data_dir() -> PathBuf {
     std::env::var_os("MEMORY_DATA_DIR").map_or_else(|| root().join("data"), PathBuf::from)
 }
 
-/// The SQLite file (`MEMORY_DB_NAME` is a file name inside the data dir).
+/// The store file (`MEMORY_DB_NAME` is a file name inside the data dir).
 pub fn db_path() -> PathBuf {
-    let name = env("MEMORY_DB_NAME", "llm_long_term_memory.db");
-    data_dir().join(PathBuf::from(name).file_name().map_or_else(|| "llm_long_term_memory.db".into(), PathBuf::from))
+    let name = env("MEMORY_DB_NAME", "llm_long_term_memory.redb");
+    data_dir().join(PathBuf::from(name).file_name().map_or_else(|| "llm_long_term_memory.redb".into(), PathBuf::from))
 }
 
 /// The user-editable seed scenario.

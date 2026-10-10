@@ -2,13 +2,14 @@
 
 mod support;
 
+use support::mem;
 use support::{build, cfg, insert, DAY};
 
 #[test]
 fn retrievability_halves_every_stability() {
     let (mut s, _) = build(cfg());
     let id = insert(&mut s, "half life", 1.0, "");
-    let m = s.memory(&id).unwrap().clone();
+    let m = mem(&s, &id).unwrap().clone();
     let t0 = m.last_recall as f64;
     assert_eq!(s.retrievability(&m, t0), 1.0);
     assert!((s.retrievability(&m, t0 + DAY) - 0.5).abs() < 1e-9);
@@ -28,8 +29,8 @@ fn spaced_beats_massed() {
     }
     clock.advance(3.0 * DAY);
     s.recall("spaced beta").unwrap();
-    assert!(s.memory(&massed).unwrap().stability < DAY * 1.05);
-    assert!(s.memory(&spaced).unwrap().stability > DAY * 2.0);
+    assert!(mem(&s, &massed).unwrap().stability < DAY * 1.05);
+    assert!(mem(&s, &spaced).unwrap().stability > DAY * 2.0);
 }
 
 #[test]
@@ -40,9 +41,9 @@ fn no_immortal_memory() {
         clock.advance(30.0 * DAY);
         s.recall("rehearsed daily").unwrap();
     }
-    let m = s.memory(&id).unwrap();
+    let m = mem(&s, &id).unwrap();
     assert_eq!(m.stability, cfg().max_stability);
-    assert!(s.retrievability(m, clock.get() + 100.0 * 365.0 * DAY) < 0.001);
+    assert!(s.retrievability(&m, clock.get() + 100.0 * 365.0 * DAY) < 0.001);
 }
 
 #[test]
@@ -52,7 +53,7 @@ fn strength_orders_stable_above_fresh_junk() {
     clock.advance(5.0 * DAY);
     let junk = insert(&mut s, "junk", 1.0, "");
     let now = clock.get();
-    assert!(s.strength(s.memory(&fact).unwrap(), now) > s.strength(s.memory(&junk).unwrap(), now));
+    assert!(s.strength(&mem(&s, &fact).unwrap(), now) > s.strength(&mem(&s, &junk).unwrap(), now));
 }
 
 #[test]
@@ -69,10 +70,10 @@ fn peek_leaves_no_trace() {
     let (mut s, clock) = build(cfg());
     let id = insert(&mut s, "ユーザーは抹茶味のアイスクリームが好き", 1.0, "");
     clock.advance(2.0 * DAY);
-    let before = s.memory(&id).unwrap().clone();
-    assert!(!s.peek("抹茶アイス").recalled.is_empty());
-    assert_eq!(s.memory(&id).unwrap(), &before);
+    let before = mem(&s, &id).unwrap().clone();
+    assert!(!s.peek("抹茶アイス").unwrap().recalled.is_empty());
+    assert_eq!(mem(&s, &id).unwrap(), before);
     assert!(s.cite(&format!("《id:{id}》")).unwrap().is_empty()); // a peek opens no citation window
     s.recall("抹茶アイス").unwrap(); // a real recall does strengthen
-    assert!(s.memory(&id).unwrap().stability > before.stability);
+    assert!(mem(&s, &id).unwrap().stability > before.stability);
 }

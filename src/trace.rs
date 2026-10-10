@@ -24,3 +24,14 @@ pub struct Trace {
     /// Unit-norm vector under `model_id`.
     pub vector: Vec<f32>,
 }
+
+impl Trace {
+    /// The stability band: half-octaves of `stability` (seconds). Within one band traces
+    /// decay at nearly the same rate, so the one recalled longest ago is the band's
+    /// weakest — an order that never changes with time, so a store can index it
+    /// (`(band, last_recall)`); the weakest overall is the weakest of the band heads.
+    pub fn band(&self) -> u8 {
+        let s = if self.stability >= 1.0 { self.stability } else { 1.0 }; // NaN and junk: band 0
+        (2.0 * s.log2()).floor().clamp(0.0, 255.0) as u8
+    }
+}

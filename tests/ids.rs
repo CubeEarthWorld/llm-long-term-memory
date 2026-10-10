@@ -2,6 +2,7 @@
 
 mod support;
 
+use support::{mem, rows};
 use engram::{DreamAction, DreamDecision, DreamRequest, Result};
 use support::{build, cfg, insert};
 
@@ -27,7 +28,7 @@ fn a_gist_that_repeats_its_seed_keeps_a_distinct_id() {
     insert(&mut s, "trip kyoto plan schedule note", 1.0, "");
     let seed = insert(&mut s, "trip kyoto plan schedule notes", 1.0, "");
     insert(&mut s, "zebra unrelated", 1.0, ""); // so the gist's request is not a repeat
-    let text = s.memory(&seed).unwrap().text.clone();
+    let text = mem(&s, &seed).unwrap().text.clone();
     let mut same = |r: &DreamRequest| -> Result<DreamDecision> {
         Ok(DreamDecision { memories: vec![text.clone()], absorbed_ids: r.members[1..].iter().map(|m| m.id.clone()).collect() })
     };
@@ -37,8 +38,8 @@ fn a_gist_that_repeats_its_seed_keeps_a_distinct_id() {
     assert_ne!(gist.id, seed);
     let made = made.lock().unwrap().clone();
     assert_eq!(made.iter().filter(|id| **id == seed).count(), 2, "{made:?}"); // the collision happened
-    assert!(s.memory(&gist.id).is_some(), "the gist was deleted with the members it replaced");
-    assert_eq!(s.memories().len(), 2);
+    assert!(mem(&s, &gist.id).is_some(), "the gist was deleted with the members it replaced");
+    assert_eq!(rows(&s).len(), 2);
 }
 
 #[test]

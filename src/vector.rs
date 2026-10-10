@@ -33,12 +33,6 @@ pub fn dot(a: &[f32], b: &[f32]) -> f64 {
     acc.iter().map(|&s| f64::from(s)).sum::<f64>() + tail
 }
 
-/// Row-major scores: `out[i * queries.len() + j] == dot(rows[i], queries[j])`. Each row
-/// is read once and stays in L1 while every query is applied to it.
-pub fn scores(rows: &[&[f32]], queries: &[&[f32]]) -> Vec<f64> {
-    rows.iter().flat_map(|r| queries.iter().map(move |q| dot(r, q))).collect()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -49,11 +43,8 @@ mod tests {
         let b: Vec<f32> = (0..771).map(|d| ((d * 5) % 11) as f32 / 5.0 - 1.1).collect();
         let exact: f64 = a.iter().zip(&b).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum();
         assert!((dot(&a, &b) - exact).abs() < 1e-4 * exact.abs().max(1.0));
-        let (n, m) = (normalized(&a), normalized(&b));
+        let n = normalized(&a);
         assert!((dot(&n, &n) - 1.0).abs() < 1e-6);
-        let s = scores(&[&n, &m], &[&n, &m, &n]);
-        assert_eq!(s.len(), 6);
-        assert_eq!(s[1].to_bits(), dot(&n, &m).to_bits());
         assert_eq!(normalized(&[0.0, 0.0]), [0.0, 0.0]);
     }
 }

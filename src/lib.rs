@@ -1,12 +1,13 @@
-//! ENGRAM v2.1 — a trace-based long-term memory for LLM applications (see `SPEC.md`).
+//! ENGRAM v2.2 — a trace-based long-term memory for LLM applications (see `SPEC.md`).
 //!
-//! The engine ([`Engram`]) holds every trace in RAM and talks to three injected
-//! seams: a durable [`Store`], an [`Embedder`] (text → unit vectors) and — for
-//! [`Engram::dream`] only — an [`Adjudicator`] backed by any LLM. Everything else
-//! is arithmetic over the forgetting curve and embedding geometry.
+//! The engine ([`Engram`]) keeps no copy of the memory. It talks to injected seams: a
+//! [`Storage`] (persistence, ordered views and similarity search — the bundled
+//! [`Store`], or any database / vector index), an [`Embedder`] (text → vectors)
+//! and — for [`Engram::dream`] only — an [`Adjudicator`] backed by any LLM. Everything
+//! else is arithmetic over the forgetting curve and embedding geometry.
 //!
 //! ```
-//! use engram::{Config, Engram, MemoryStore, Remembered};
+//! use engram::{Config, Engram, Remembered, Store};
 //! # use engram::Embedder;
 //! # struct Hash;
 //! # impl Embedder for Hash {
@@ -17,9 +18,9 @@
 //! #     }
 //! #     fn embed_queries(&mut self, t: &[&str]) -> engram::Result<Vec<Vec<f32>>> { self.embed_documents(t) }
 //! # }
-//! let mut memory = Engram::open(Box::new(MemoryStore::default()), Box::new(Hash), Config::default(), "UTC")?;
+//! let mut memory = Engram::open(Box::new(Store::in_memory()?), Box::new(Hash), Config::default(), "UTC")?;
 //! let Remembered::Inserted { trace, .. } = memory.remember("the user lives in Kyoto", 1.0, "")? else { panic!() };
-//! assert_eq!(memory.memory(&trace.id).unwrap().text, "the user lives in Kyoto");
+//! assert_eq!(memory.memory(&trace.id)?.unwrap().text, "the user lives in Kyoto");
 //! # Ok::<(), engram::Error>(())
 //! ```
 
@@ -29,6 +30,8 @@ mod embed;
 mod engine;
 mod id;
 mod json;
+mod storage;
+#[cfg(feature = "store")]
 mod store;
 mod text;
 mod time;
@@ -41,7 +44,9 @@ pub use embed::Embedder;
 pub use engine::{DreamAction, DreamReport, Engram, Recall, Recalled, Remembered, Stats};
 pub use id::{ulid_ids, IdGen};
 pub use json::relaxed_json;
-pub use store::{MemoryStore, Store, Write};
+pub use storage::{Hit, Storage, View, Write};
+#[cfg(feature = "store")]
+pub use store::Store;
 pub use text::cues;
 pub use time::{fmt_local, system_clock, Clock, ManualClock};
 pub use trace::Trace;

@@ -5,7 +5,7 @@
 
 pub mod workload;
 
-use engram::{Config, DreamDecision, DreamRequest, Embedder, Engram, ManualClock, MemoryStore, Result, Store, Trace, Write};
+use engram::{Config, DreamDecision, DreamRequest, Embedder, Engram, Hit, ManualClock, Result, Storage, Store, Trace, View, Write};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 
@@ -169,15 +169,26 @@ pub fn always_fail(_: &DreamRequest) -> Result<DreamDecision> {
     Err("llm down".into())
 }
 
-/// An engine over `store` (default: in RAM) with a virtual clock at [`START`].
-/// A [`MemoryStore`] that outlives an engine: clones share the rows, so a test can
+/// An in-memory [`Store`] that outlives an engine: clones share the rows, so a test can
 /// reopen "the same database" or write to it behind the engine's back.
-#[derive(Clone, Default)]
-pub struct SharedStore(Arc<Mutex<MemoryStore>>);
+#[derive(Clone)]
+pub struct SharedStore(Arc<Mutex<Store>>);
 
-impl Store for SharedStore {
-    fn load_all(&self) -> Result<Vec<Trace>> {
-        self.0.lock().unwrap().load_all()
+impl Default for SharedStore {
+    fn default() -> Self {
+        Self(Arc::new(Mutex::new(Store::in_memory().unwrap())))
+    }
+}
+
+impl Storage for SharedStore {
+    fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>> {
+        self.0.lock().unwrap().find(view, limit)
+    }
+    fn count(&self, view: View<'_>) -> Result<usize> {
+        self.0.lock().unwrap().count(view)
+    }
+    fn near(&self, q: &[f32], model_id: &str, min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
+        self.0.lock().unwrap().near(q, model_id, min_cos, k, stated_by)
     }
     fn write(&mut self, writes: &[Write<'_>]) -> Result<()> {
         self.0.lock().unwrap().write(writes)
@@ -187,14 +198,25 @@ impl Store for SharedStore {
     }
 }
 
-pub fn build_with(cfg: Config, embedder: Box<dyn Embedder>, store: Box<dyn Store>) -> (Engram, ManualClock) {
+/// Every trace in the engine's store, oldest first.
+pub fn rows(m: &Engram) -> Vec<Trace> {
+    m.store().find(View::All, usize::MAX).unwrap()
+}
+
+/// The trace with `id`.
+pub fn mem(m: &Engram, id: &str) -> Option<Trace> {
+    m.memory(id).unwrap()
+}
+
+/// An engine over `store` with a virtual clock at [`START`].
+pub fn build_with(cfg: Config, embedder: Box<dyn Embedder>, store: Box<dyn Storage>) -> (Engram, ManualClock) {
     let clock = ManualClock::new(START);
     let engine = Engram::with_clock(store, embedder, cfg, "Asia/Tokyo", clock.clock()).expect("engine");
     (engine, clock)
 }
 
 pub fn build(cfg: Config) -> (Engram, ManualClock) {
-    build_with(cfg, Box::new(FakeEmbedder::new()), Box::new(MemoryStore::default()))
+    build_with(cfg, Box::new(FakeEmbedder::new()), Box::new(Store::in_memory().unwrap()))
 }
 
 /// Inserts `text` and returns the new trace's id (panics on any other outcome).

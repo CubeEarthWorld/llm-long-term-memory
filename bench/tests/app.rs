@@ -79,9 +79,9 @@ fn turn_saves_recalls_and_cites() {
     s.run_turn("matcha ice cream again?", "").unwrap();
     let m2 = s.metrics.back().unwrap().clone();
     assert!(!m2.recalled.is_empty() && m2.pack_text.contains("user likes matcha ice cream"));
-    assert!(!m2.cited.is_empty() && s.memory.memory(&m2.cited[0]).unwrap().stability > 2.0 * DAY);
+    assert!(!m2.cited.is_empty() && s.memory.memory(&m2.cited[0]).unwrap().unwrap().stability > 2.0 * DAY);
     assert!(m2.records() == 2 && m2.total_ms() >= 0.0);
-    let first = s.memory.memory(m1.written[0]["id"].as_str().unwrap()).unwrap();
+    let first = s.memory.memory(m1.written[0]["id"].as_str().unwrap()).unwrap().unwrap();
     assert_eq!(first.cue, "why user likes matcha ice cream");
     assert_eq!(s.log[1]["system"]["records"], 2);
 }
@@ -115,7 +115,7 @@ fn delete_tool() {
     let id = support::insert(&mut s.memory, "delete me later", 1.0, "");
     s.run_turn(&format!("forget:{id} delete me later"), "").unwrap(); // recalled, so it may be deleted
     assert_eq!(s.metrics.back().unwrap().written[0]["action"], "deleted");
-    assert!(s.memory.memories().is_empty());
+    assert!(ltm::all_traces(&s.memory).is_empty());
 }
 
 fn item(text: &str, note: &str, advance: &str) -> SeedItem {
@@ -163,7 +163,7 @@ fn turn_log_survives_restart_and_a_wipe_clears_it() {
     drop(s);
     let s2 = session(&dir, config(), Scripted::new(1, &[]).0, false);
     assert!(s2.turn == 1 && s2.log[0]["note"] == "n1" && s2.log[0]["system"]["records"] == 1);
-    assert_eq!(s2.memory.memories().len(), 1);
+    assert_eq!(ltm::all_traces(&s2.memory).len(), 1);
     drop(s2);
     assert!(session(&dir, config(), Scripted::new(1, &[]).0, true).log.is_empty()); // a wipe clears it
 }
@@ -179,7 +179,7 @@ fn dream_reports_are_readable() {
     assert_eq!(reports.len(), 1);
     assert_eq!(reports[0]["action"], "keep");
     assert_eq!(reports[0]["before"][0]["text"], "trip kyoto hotel schedule note");
-    assert!(s.memory.clusters(None).is_empty()); // settled
+    assert!(s.memory.clusters(None).unwrap().is_empty()); // settled
     assert_eq!(s.snapshot().len(), 2);
 }
 
@@ -192,7 +192,7 @@ fn the_model_cannot_delete_what_it_was_not_shown() {
     let id = support::insert(&mut s.memory, "a memory the model never saw", 1.0, "");
     s.run_turn(&format!("forget:{id}"), "").unwrap();
     assert_eq!(s.metrics.back().unwrap().written[0]["action"], "not_injected");
-    assert_eq!(s.memory.memories().len(), 1);
+    assert_eq!(ltm::all_traces(&s.memory).len(), 1);
 }
 
 #[test]
@@ -200,7 +200,7 @@ fn a_session_starts_without_an_embedding_model() {
     let dir = temp_dir("offline");
     let mut s = Session::with_parts(config(), Box::new(ltm::Offline), "ERROR — no model".into(), Box::new(Scripted::new(1, &[]).0), &dir.join("o.db"), true).unwrap();
     s.run_turn("user likes tea", "").unwrap();
-    let m = s.memory.memories();
+    let m = ltm::all_traces(&s.memory);
     assert_eq!(m.len(), 1);
     assert!(m[0].vector.is_empty()); // kept, unindexed until a model is back
 }
@@ -231,5 +231,5 @@ fn a_save_without_a_cue_is_refused_and_the_fallback_keeps_the_fact() {
     s.run_turn("user likes green tea", "").unwrap();
     let written = &s.metrics.back().unwrap().written;
     assert_eq!(written[0]["action"], "missing_cue");
-    assert_eq!(s.memory.memories().len(), 1); // kept through the extraction fallback
+    assert_eq!(ltm::all_traces(&s.memory).len(), 1); // kept through the extraction fallback
 }

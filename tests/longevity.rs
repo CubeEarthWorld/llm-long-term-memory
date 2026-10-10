@@ -4,7 +4,8 @@
 
 mod support;
 
-use engram::{fmt_local, Config, MemoryStore};
+use support::rows;
+use engram::{fmt_local, Config, Store};
 use support::{build_with, cfg, merge_to_gist, FakeEmbedder, DAY};
 
 #[test]
@@ -13,7 +14,7 @@ fn three_thousand_years() {
     // theta_related is calibrated per model; the token-overlap fake scores unrelated text far
     // higher than a real model, so the band is raised to keep the same selectivity.
     let config = Config { capacity: 300, writes_per_day: 50, theta_related: 0.75, ..cfg() };
-    let (mut s, clock) = build_with(config.clone(), Box::new(FakeEmbedder::with(32, "fake/token-overlap")), Box::new(MemoryStore::default()));
+    let (mut s, clock) = build_with(config.clone(), Box::new(FakeEmbedder::with(32, "fake/token-overlap")), Box::new(Store::in_memory().unwrap()));
     let mut rng: u64 = 7;
     let mut rand = |n: u64| {
         rng = rng.wrapping_mul(6_364_136_223_846_793_005).wrapping_add(1_442_695_040_888_963_407);
@@ -47,11 +48,11 @@ fn three_thousand_years() {
         d += 3;
     }
     let now = clock.get();
-    assert!(s.memories().len() <= config.capacity);
-    for m in s.memories() {
+    assert!(rows(&s).len() <= config.capacity);
+    for m in rows(&s) {
         assert!((1.0..=config.max_stability).contains(&m.stability));
         assert!((1..=config.text_max).contains(&m.text.chars().count()));
-        assert!((0.0..=1.0).contains(&s.retrievability(m, now))); // a NaN already fails this
+        assert!((0.0..=1.0).contains(&s.retrievability(&m, now))); // a NaN already fails this
     }
     for f in facts {
         let top = &s.recall(f).unwrap().recalled[0];
@@ -59,5 +60,5 @@ fn three_thousand_years() {
     }
     assert!(fmt_local(now as i64, "UTC;+00:00")[..4].parse::<i64>().unwrap() > 5000);
     assert!((now - start) / (365.0 * DAY) >= 3000.0);
-    assert_eq!(s.store().load_all().unwrap().len(), s.memories().len());
+    assert_eq!(s.stats().unwrap().records, rows(&s).len());
 }

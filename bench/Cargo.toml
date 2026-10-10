@@ -21,7 +21,7 @@ cuda = ["llama-cpp-2/cuda"]
 [dependencies]
 llm-long-term-memory = { path = ".." }
 llama-cpp-2 = { version = "0.1.159", default-features = false, features = ["openmp"] }
-rusqlite = { version = "0.40.2", features = ["bundled", "backup"] }
 serde_json = { version = "1.0.151", features = ["preserve_order"] }
 ulid = "3.0.0"
 rand = "0.10.3"
+redb = "2.6.4"

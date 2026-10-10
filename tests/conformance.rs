@@ -3,7 +3,8 @@
 
 mod support;
 
-use engram::{Remembered, Config, MemoryStore};
+use support::rows;
+use engram::{Config, Remembered, Store};
 use serde_json::{json, Value};
 use std::path::PathBuf;
 use support::{merge_to_gist, FakeEmbedder};
@@ -34,7 +35,7 @@ fn scripted_scenario_reproduced() {
         ..Config::default()
     };
     let dim = scenario["dimension"].as_u64().unwrap() as usize;
-    let (mut s, clock) = support::build_with(cfg, Box::new(FakeEmbedder::with(dim, "fake/token-overlap")), Box::new(MemoryStore::default()));
+    let (mut s, clock) = support::build_with(cfg, Box::new(FakeEmbedder::with(dim, "fake/token-overlap")), Box::new(Store::in_memory().unwrap()));
     let mut trace = Vec::new();
     for step in scenario["steps"].as_array().unwrap() {
         let op = step["op"].as_str().unwrap();
@@ -63,7 +64,7 @@ fn scripted_scenario_reproduced() {
             }
             "cite" => {
                 let texts: Vec<&str> = step["texts"].as_array().unwrap().iter().map(|t| t.as_str().unwrap()).collect();
-                let ids: Vec<String> = s.memories().iter().filter(|m| texts.contains(&m.text.as_str())).map(|m| format!("《id:{}》", m.id)).collect();
+                let ids: Vec<String> = rows(&s).iter().filter(|m| texts.contains(&m.text.as_str())).map(|m| format!("《id:{}》", m.id)).collect();
                 row["cited"] = json!(s.cite(&ids.join(" ")).unwrap().len());
             }
             "dream" => {
@@ -79,14 +80,13 @@ fn scripted_scenario_reproduced() {
                     .collect::<Vec<_>>());
             }
             "forget" => {
-                let id = s.memories().iter().find(|m| m.text == step["text"].as_str().unwrap()).map(|m| m.id.clone());
+                let id = rows(&s).iter().find(|m| m.text == step["text"].as_str().unwrap()).map(|m| m.id.clone());
                 row["forgot"] = json!(id.is_some_and(|id| s.forget(&id).unwrap().is_some()));
             }
             other => panic!("unknown op {other}"),
         }
         let now = clock.get();
-        row["state"] = json!(s
-            .memories()
+        row["state"] = json!(rows(&s)
             .iter()
             .map(|m| json!({"text": m.text, "S": r6(m.stability), "R": r6(s.retrievability(m, now)), "c": m.consolidated}))
             .collect::<Vec<_>>());

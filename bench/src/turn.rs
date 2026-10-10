@@ -21,7 +21,6 @@ pub struct TurnMetrics {
     pub write_ms: f64,
     pub counts: Option<Stats>,
     pub db_size_bytes: u64,
-    pub vector_mb: f64,
     pub recalled: Vec<Value>,
     pub pack_text: String,
     pub prompt: String,
@@ -70,7 +69,7 @@ impl TurnMetrics {
 
     /// One row of the metrics table.
     pub fn row(&self) -> Value {
-        let c = self.counts.unwrap_or(Stats { records: 0, labile: 0, unindexed: 0 });
+        let c = self.counts.unwrap_or(Stats { records: 0, labile: 0 });
         json!({
             "turn": self.turn,
             "system": crate::SYSTEM_ID,
@@ -82,11 +81,9 @@ impl TurnMetrics {
             "total_ms": round_to(self.total_ms(), 1),
             "records": c.records,
             "labile": c.labile,
-            "unindexed": c.unindexed,
             "pack_chars": self.pack_chars(),
             "pack_n": self.recalled.len(),
             "db_kb": round_to(self.db_size_bytes as f64 / 1024.0, 1),
-            "vector_mb": round_to(self.vector_mb, 3),
         })
     }
 }
@@ -254,7 +251,6 @@ pub fn run_turn(m: &mut Engram, llm: &mut dyn Llm, timer: &EmbedTimer, glob: &Se
     mt.write_note = summarize(&events);
     mt.written = events;
     mt.cited = m.cite(&answer.text).unwrap_or_default();
-    mt.counts = Some(m.stats());
-    mt.vector_mb = m.vector_mb();
+    mt.counts = m.stats().ok();
     mt
 }

@@ -9,7 +9,7 @@
 use crate::llm::client;
 use crate::settings::AppConfig;
 use super::{bench_dir, load_updates, percentile, r4, Flags, Update, DAY};
-use engram::{Config, DreamAction, Embedder, Engram, ManualClock, MemoryStore, Result};
+use engram::{Config, DreamAction, Embedder, Engram, ManualClock, Result, Store};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 
@@ -17,7 +17,7 @@ const GAP_DAYS: f64 = 30.0;
 
 fn scenario(pairs: &[Update], cfg: Config, embedder: Box<dyn Embedder>) -> Result<(Engram, ManualClock)> {
     let clock = ManualClock::new(1_700_000_000.0);
-    let mut m = Engram::with_clock(Box::new(MemoryStore::default()), embedder, cfg, "Asia/Tokyo", clock.clock())?;
+    let mut m = Engram::with_clock(Box::new(Store::in_memory()?), embedder, cfg, "Asia/Tokyo", clock.clock())?;
     m.set_ids(crate::ids::reproducible(1)); // same ids → same dream prompts → cached verdicts replay
     for p in pairs {
         clock.advance(600.0);
@@ -34,7 +34,7 @@ fn scenario(pairs: &[Update], cfg: Config, embedder: Box<dyn Embedder>) -> Resul
 /// How many pairs the dream's cue-driven clusters seat together (shared with `generality`).
 pub fn cluster_capture(pairs: &[Update], cfg: Config, embedder: Box<dyn Embedder>) -> Result<Value> {
     let (mut m, _) = scenario(pairs, cfg, embedder)?;
-    let clusters: Vec<HashSet<String>> = m.clusters(Some(pairs.len())).into_iter().map(|c| c.into_iter().map(|t| t.text).collect()).collect();
+    let clusters: Vec<HashSet<String>> = m.clusters(Some(pairs.len()))?.into_iter().map(|c| c.into_iter().map(|t| t.text).collect()).collect();
     let got = pairs.iter().filter(|p| clusters.iter().any(|c| c.contains(&p.old) && c.contains(&p.new))).count();
     Ok(json!({"captured": got, "pairs": pairs.len(), "rate": crate::round_to(got as f64 / pairs.len() as f64, 3), "clusters": clusters.len()}))
 }
@@ -75,11 +75,11 @@ fn measure(pairs: &[Update], cfg: AppConfig) -> Result<Value> {
     }
     println!("live dream via {}", llm.status());
     let (mut m, _) = scenario(pairs, cfg.memory.clone(), crate::embedder(&cfg.glob)?.0)?;
-    let before: HashSet<String> = m.memories().iter().map(|t| t.text.clone()).collect();
+    let before: HashSet<String> = crate::all_traces(&m).into_iter().map(|t| t.text).collect();
     let mut judge = |r: &engram::DreamRequest| llm.adjudicate(r);
     let reports = m.dream(&mut judge, Some(1_000_000))?;
     let retry = m.dream(&mut judge, Some(1_000_000))?;
-    let after: HashSet<String> = m.memories().iter().map(|t| t.text.clone()).collect();
+    let after: HashSet<String> = crate::all_traces(&m).into_iter().map(|t| t.text).collect();
     let gists: HashSet<&String> = after.difference(&before).collect();
     let count = |rs: &[engram::DreamReport], a: DreamAction| rs.iter().filter(|r| r.action == a).count();
     let mut errors: Vec<String> = reports.iter().chain(&retry).filter_map(|r| r.error.clone()).collect::<HashSet<_>>().into_iter().collect();
@@ -95,7 +95,7 @@ fn measure(pairs: &[Update], cfg: AppConfig) -> Result<Value> {
     let judged: Vec<HashSet<&str>> = reports.iter().chain(&retry).map(|r| r.before.iter().map(|b| b.text.as_str()).collect()).collect();
     let (mut groups, mut samples): ([Vec<[bool; 4]>; 2], Vec<Value>) = ([Vec::new(), Vec::new()], Vec::new());
     for p in pairs {
-        let pack: Vec<String> = m.peek(&p.probe).recalled.into_iter().map(|c| c.trace.text).collect();
+        let pack: Vec<String> = m.peek(&p.probe)?.recalled.into_iter().map(|c| c.trace.text).collect();
         let captured = judged.iter().any(|c| c.contains(p.old.as_str()) && c.contains(p.new.as_str()));
         let current = pack.contains(&p.new) || pack.iter().any(|t| gists.contains(t));
         groups[usize::from(captured)].push([after.contains(&p.old), pack.contains(&p.old), current, pack.is_empty()]);

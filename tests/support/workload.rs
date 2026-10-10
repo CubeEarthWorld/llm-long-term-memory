@@ -1,8 +1,9 @@
 //! The seeded workload behind `tests/equivalence/golden.json`: remember with cues,
 //! recall, cite, clusters, dream with both verdicts, eviction.
 
+use super::rows;
 use super::{always_keep, merge_to_gist, FakeEmbedder, START};
-use engram::{Config, Engram, ManualClock, MemoryStore, Recall, Remembered};
+use engram::{Config, Engram, ManualClock, Recall, Remembered, Store};
 use serde_json::{json, Value};
 
 const TOPICS: [[&str; 6]; 6] = [
@@ -21,7 +22,7 @@ pub fn config() -> Config {
 /// Runs the workload on a fresh in-RAM engine; `after_step` sees the engine after every step.
 pub fn run(mut after_step: impl FnMut(&Engram)) -> Vec<Value> {
     let clock = ManualClock::new(START);
-    let mut m = Engram::with_clock(Box::new(MemoryStore::default()), Box::new(FakeEmbedder::new()), config(), "Asia/Tokyo", clock.clock()).unwrap();
+    let mut m = Engram::with_clock(Box::new(Store::in_memory().unwrap()), Box::new(FakeEmbedder::new()), config(), "Asia/Tokyo", clock.clock()).unwrap();
     let mut seed: u64 = 0x5EED;
     let mut next = |n: u64| {
         seed = (seed * 1_103_515_245 + 12_345) & 0x7FFF_FFFF;
@@ -66,7 +67,7 @@ pub fn run(mut after_step: impl FnMut(&Engram)) -> Vec<Value> {
             let reply: String = last.iter().flat_map(|r| &r.recalled).map(|c| format!("《id:{}》", c.trace.id)).collect();
             trace.push(json!({"op": "cite", "cited": m.cite(&reply).unwrap().len()}));
         } else if op < 90 {
-            let clusters: Vec<Vec<String>> = m.clusters(Some(1 + next(4) as usize)).iter().map(|c| c.iter().map(|t| t.text.clone()).collect()).collect();
+            let clusters: Vec<Vec<String>> = m.clusters(Some(1 + next(4) as usize)).unwrap().iter().map(|c| c.iter().map(|t| t.text.clone()).collect()).collect();
             trace.push(json!({"op": "clusters", "clusters": clusters}));
         } else {
             let merge = next(2) == 0;
@@ -86,7 +87,7 @@ pub fn run(mut after_step: impl FnMut(&Engram)) -> Vec<Value> {
         }
         after_step(&m);
     }
-    let memories: Vec<Value> = m.memories().iter().map(|t| json!([t.text, t.stability, t.last_recall, t.consolidated])).collect();
+    let memories: Vec<Value> = rows(&m).iter().map(|t| json!([t.text, t.stability, t.last_recall, t.consolidated])).collect();
     trace.push(json!({"op": "final", "memories": memories}));
     trace
 }
