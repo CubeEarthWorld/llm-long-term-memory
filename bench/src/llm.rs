@@ -46,11 +46,13 @@ pub(crate) const EXTRACT_INSTRUCTION: &str = concat!(
     "# 既に記憶している事実\n{known}\n\n# ユーザー発話\n{user_text}\n\n# アシスタント応答\n{assistant_text}",
 );
 
-/// The answer to one turn and the prompt that produced it.
+/// The answer to one turn and the prompt that produced it. `failed`: the model could
+/// not be reached, so `text` is an error note, not an answer.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Converse {
     pub text: String,
     pub prompt: String,
+    pub failed: bool,
 }
 
 /// Executes a tool call: `(name, arguments)` → the JSON result shown to the model.
@@ -71,15 +73,37 @@ pub trait Llm: Send {
 }
 
 /// The configured language model: Claude through the Claude Code CLI.
-pub fn client(s: &Settings) -> Box<dyn Llm> {
-    Box::new(crate::claude::ClaudeCode::new(s))
+pub fn client(s: &Settings) -> engram::Result<Box<dyn Llm>> {
+    Ok(Box::new(crate::claude::ClaudeCode::new(s)?))
+}
+
+/// `template` with every `{name}` found in `vars` replaced, in one left-to-right pass:
+/// inserted text is never scanned again, so a user text containing `{known}` stays
+/// literal. Other braces are kept as they are.
+pub(crate) fn fill(template: &str, vars: &[(&str, &str)]) -> String {
+    let mut out = String::with_capacity(template.len());
+    let mut rest = template;
+    while let Some(i) = rest.find('{') {
+        out.push_str(&rest[..i]);
+        rest = &rest[i + 1..];
+        let var = rest.find('}').and_then(|j| vars.iter().find(|(k, _)| *k == &rest[..j]));
+        match var {
+            Some((k, v)) => {
+                out.push_str(v);
+                rest = &rest[k.len() + 1..];
+            }
+            None => out.push('{'),
+        }
+    }
+    out.push_str(rest);
+    out
 }
 
 /// The turn prompt.
 pub fn build_prompt(pack: &str, user: &str, current_time: &str) -> String {
     let pack = if pack.trim().is_empty() { "(関連する記憶なし)" } else { pack.trim() };
     let time = if current_time.is_empty() { "(不明)" } else { current_time };
-    USER_TEMPLATE.replace("{memory_pack}", pack).replace("{user_text}", user).replace("{current_time}", time)
+    fill(USER_TEMPLATE, &[("memory_pack", pack), ("user_text", user), ("current_time", time)])
 }
 
 /// The extraction answer: `{"memories": [...]}` or a bare list, items as strings or `{text}`.
@@ -166,5 +190,20 @@ mod tests {
         assert_eq!(parse_texts(r#"[{"text":"c"}]"#), ["c"]);
         assert!(parse_texts("nope").is_empty());
         assert!(build_prompt("", "hi", "").contains("(関連する記憶なし)"));
+    }
+
+    #[test]
+    fn templates_are_filled_in_one_pass() {
+        assert_eq!(fill("{a}-{b}-{c}-{", &[("a", "{b}"), ("b", "x")]), "{b}-x-{c}-{");
+        let p = build_prompt("《id:1》 {user_text}", "say {current_time}", "T");
+        assert!(p.contains("《id:1》 {user_text}") && p.contains("say {current_time}") && p.starts_with("# 現在日時
+T
+"));
+        let e = fill(EXTRACT_INSTRUCTION, &[("known", "k"), ("user_text", "{assistant_text}"), ("assistant_text", "a"), ("current_time", "t")]);
+        assert!(e.contains("# ユーザー発話
+{assistant_text}
+") && e.ends_with("# アシスタント応答
+a"));
+        assert!(e.contains(r#"{"memories": []}"#)); // literal JSON braces survive
     }
 }

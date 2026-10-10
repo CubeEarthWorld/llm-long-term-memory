@@ -24,13 +24,25 @@ pub fn shorten(text: &str, max_chars: usize) -> String {
     cut.iter().collect()
 }
 
-/// Normalises a proposition for storage: strips the pack delimiters `《》` (so a
-/// stored text can never spoof an injected id), collapses whitespace runs to one
-/// space, trims and shortens.
+/// Characters a stored text never keeps: the pack delimiters `《》` (a stored text can
+/// never spoof an injected id), control characters (C0, DEL, C1) and the bidirectional
+/// embedding / override / isolate controls (they reorder what the LLM and a reader see).
+fn is_dropped(c: char) -> bool {
+    matches!(c, '《' | '》' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}') || (c.is_control() && !is_space(c))
+}
+
+/// Whether `id` may name a trace: non-empty, no pack delimiters and no control or
+/// bidirectional control character (an id is cited verbatim inside `《id:…》`).
+pub fn valid_id(id: &str) -> bool {
+    !id.is_empty() && !id.chars().any(is_dropped)
+}
+
+/// Normalises a proposition for storage: drops the characters of [`is_dropped`],
+/// collapses whitespace runs to one space, trims and shortens.
 pub fn clean_text(text: &str, max_chars: usize) -> String {
     let mut out = String::with_capacity(text.len());
     let mut space = false;
-    for c in text.chars().filter(|&c| c != '《' && c != '》') {
+    for c in text.chars().filter(|&c| !is_dropped(c)) {
         if is_space(c) {
             space = true;
         } else {

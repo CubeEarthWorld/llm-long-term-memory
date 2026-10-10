@@ -11,11 +11,11 @@
 use crate::storage::{Hit, Storage, View, Write};
 use crate::vector::{dot, normalized};
 use crate::{Result, Trace};
-use redb::{Database, ReadableTable, TableDefinition, WriteTransaction};
+use redb::{Database, ReadableTable, TableDefinition, TableHandle, WriteTransaction};
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::Path;
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
 /// Vectors per similarity list before it is split in two.
 pub const LIST_MAX: u64 = 512;
@@ -27,8 +27,10 @@ const PROBE_VECTORS: u64 = 8192;
 
 /// id → the trace without its vector (JSON).
 const ROWS: TableDefinition<&str, &[u8]> = TableDefinition::new("rows");
-/// text → id.
-const TEXT: TableDefinition<&str, &str> = TableDefinition::new("text");
+/// (text, id): several traces may share a text.
+const TEXT: TableDefinition<(&str, &str), ()> = TableDefinition::new("texts");
+/// The text → id table of the first v2.2 files (one id per text), migrated at open.
+const OLD_TEXT: TableDefinition<&str, &str> = TableDefinition::new("text");
 /// (model, id) of the labile traces.
 const LABILE: TableDefinition<(&str, &str), ()> = TableDefinition::new("labile");
 /// (model, id) of every trace.
@@ -57,7 +59,7 @@ struct List {
 /// The bundled [`Storage`]: a redb file with an IVF index (see the module docs).
 pub struct Store {
     db: Database,
-    lists: RwLock<HashMap<String, Vec<List>>>,
+    lists: RwLock<HashMap<String, Arc<Vec<List>>>>,
 }
 
 fn floats(b: &[u8]) -> Vec<f32> {
@@ -96,8 +98,21 @@ fn centroid_entry(size: u64, c: &[f32]) -> Vec<u8> {
     size.to_le_bytes().into_iter().chain(bytes(c)).collect()
 }
 
-fn decode_list(list: u32, raw: &[u8]) -> List {
-    List { id: list, size: u64::from_le_bytes(raw[..8].try_into().expect("8 bytes")), centroid: floats(&raw[8..]) }
+/// The leading 8-byte little-endian number of an entry and the floats after it (`None`
+/// for an entry too short to hold one: a damaged file is an error, never a panic).
+fn split_entry(raw: &[u8]) -> Option<(u64, &[u8])> {
+    let (n, rest) = raw.split_first_chunk::<8>()?;
+    Some((u64::from_le_bytes(*n), rest))
+}
+
+fn decode_list(list: u32, raw: &[u8]) -> Result<List> {
+    let (size, c) = split_entry(raw).ok_or("damaged centroid entry")?;
+    Ok(List { id: list, size, centroid: floats(c) })
+}
+
+/// The least string sorting after `s` (`s` + U+0000): a range from it skips exactly `s`.
+fn after(s: &str) -> String {
+    format!("{s}\0")
 }
 
 /// Creates every table (a no-op for those that exist).
@@ -132,23 +147,39 @@ impl Store {
     fn init(db: Database) -> Result<Self> {
         let tx = db.begin_write()?;
         create_tables(&tx)?;
+        // A file an older version wrote has the one-id text table (and maybe a stale
+        // `texts` from an earlier migration, since the old version kept writing rows):
+        // rebuild `texts` from the rows, once. The only full pass, at the first open.
+        if tx.list_tables()?.any(|t| t.name() == OLD_TEXT.name()) {
+            tx.delete_table(TEXT)?;
+            let (rows, mut text) = (tx.open_table(ROWS)?, tx.open_table(TEXT)?);
+            for item in rows.iter()? {
+                let (id, row) = item?;
+                if let Some(t) = trace(id.value(), row.value(), Vec::new()) {
+                    text.insert((t.text.as_str(), id.value()), ())?;
+                }
+            }
+            drop((rows, text));
+            tx.delete_table(OLD_TEXT)?;
+        }
         tx.commit()?;
         Ok(Self { db, lists: RwLock::new(HashMap::new()) })
     }
 
-    /// The lists of `model` (centroids are read once, then kept).
-    fn lists_of(&self, model: &str) -> Result<Vec<List>> {
+    /// The lists of `model` (centroids are read once, then shared).
+    fn lists_of(&self, model: &str) -> Result<Arc<Vec<List>>> {
         if let Some(l) = self.lists.read().unwrap_or_else(|e| e.into_inner()).get(model) {
-            return Ok(l.clone());
+            return Ok(Arc::clone(l));
         }
         let rx = self.db.begin_read()?;
         let table = rx.open_table(CENTROIDS)?;
         let mut lists = Vec::new();
         for item in table.range((model, 0u32)..=(model, u32::MAX))? {
             let (k, v) = item?;
-            lists.push(decode_list(k.value().1, v.value()));
+            lists.push(decode_list(k.value().1, v.value())?);
         }
-        self.lists.write().unwrap_or_else(|e| e.into_inner()).insert(model.to_owned(), lists.clone());
+        let lists = Arc::new(lists);
+        self.lists.write().unwrap_or_else(|e| e.into_inner()).insert(model.to_owned(), Arc::clone(&lists));
         Ok(lists)
     }
 
@@ -163,78 +194,83 @@ impl Store {
             if let Some(list) = listed.get(id.as_str())?
                 && let Some(entry) = lists.get((t.model_id.as_str(), list.value(), id.as_str()))?
             {
-                t.vector = floats(&entry.value()[8..]);
+                t.vector = floats(split_entry(entry.value()).ok_or("damaged list entry")?.1);
             }
             out.push(t);
         }
         Ok(out)
     }
 
-    /// Ids of `view`, in the view's order, at most `limit`.
-    fn ids(&self, view: View<'_>, limit: usize) -> Result<Vec<String>> {
+    /// Calls `f` with the ids of `view`, in the view's order, until it returns false.
+    fn scan(&self, view: View<'_>, mut f: impl FnMut(&str) -> bool) -> Result<()> {
         let rx = self.db.begin_read()?;
-        let mut out = Vec::new();
         match view {
             View::All => {
-                for item in rx.open_table(ROWS)?.iter()?.take(limit) {
-                    out.push(item?.0.value().to_owned());
+                for item in rx.open_table(ROWS)?.iter()? {
+                    if !f(item?.0.value()) {
+                        break;
+                    }
                 }
             }
             View::Id(id) => {
                 if rx.open_table(ROWS)?.get(id)?.is_some() {
-                    out.push(id.to_owned());
+                    f(id);
                 }
             }
             View::Text(text) => {
-                if let Some(id) = rx.open_table(TEXT)?.get(text)? {
-                    out.push(id.value().to_owned());
+                for item in rx.open_table(TEXT)?.range((text, "")..)? {
+                    let key = item?.0;
+                    let (t, id) = key.value();
+                    if t != text || !f(id) {
+                        break;
+                    }
                 }
             }
             View::Labile { model_id } => {
-                for item in rx.open_table(LABILE)?.range((model_id, "")..)?.take(limit) {
-                    let (k, _) = item?;
-                    let (m, id) = k.value();
-                    if m != model_id {
+                for item in rx.open_table(LABILE)?.range((model_id, "")..)? {
+                    let key = item?.0;
+                    let (m, id) = key.value();
+                    if m != model_id || !f(id) {
                         break;
                     }
-                    out.push(id.to_owned());
                 }
             }
             View::Stale { model_id } => {
                 let table = rx.open_table(MODEL)?;
-                for range in [table.range(..(model_id, ""))?, table.range((model_id, "\u{10FFFF}")..)?] {
-                    for item in range.rev().take(limit) {
-                        out.push(item?.0.value().1.to_owned());
+                let later = after(model_id);
+                'models: for range in [table.range((later.as_str(), "")..)?, table.range(..(model_id, ""))?] {
+                    for item in range.rev() {
+                        if !f(item?.0.value().1) {
+                            break 'models;
+                        }
                     }
                 }
-                out.sort_unstable_by(|a, b| b.cmp(a));
-                out.truncate(limit);
             }
             View::Band { band, created_by } => {
-                for item in rx.open_table(BAND)?.range((band, i64::MIN, "")..=(band, i64::MAX, "\u{10FFFF}"))? {
-                    if out.len() >= limit {
-                        break;
-                    }
+                for item in rx.open_table(BAND)?.range((band, i64::MIN, "")..)? {
                     let (k, created_at) = item?;
-                    if created_at.value() <= created_by {
-                        out.push(k.value().2.to_owned());
+                    let (b, _, id) = k.value();
+                    if b != band || (created_at.value() <= created_by && !f(id)) {
+                        break;
                     }
                 }
             }
             View::Young { created_after } => {
-                for item in rx.open_table(CREATED)?.range((created_after.saturating_add(1), "")..)?.take(limit) {
-                    out.push(item?.0.value().1.to_owned());
+                for item in rx.open_table(CREATED)?.range((created_after.saturating_add(1), "")..)? {
+                    if !f(item?.0.value().1) {
+                        break;
+                    }
                 }
             }
         }
-        Ok(out)
+        Ok(())
     }
 }
 
 /// One write transaction's tables, and the lists it changed.
 struct Tx<'t> {
     rows: redb::Table<'t, &'static str, &'static [u8]>,
-    text: redb::Table<'t, &'static str, &'static str>,
+    text: redb::Table<'t, (&'static str, &'static str), ()>,
     labile: redb::Table<'t, (&'static str, &'static str), ()>,
     model: redb::Table<'t, (&'static str, &'static str), ()>,
     band: redb::Table<'t, (u8, i64, &'static str), i64>,
@@ -247,15 +283,10 @@ struct Tx<'t> {
 }
 
 impl Tx<'_> {
+    /// The row of `id`, without its vector (no write needs it).
     fn get(&self, id: &str) -> Result<Option<Trace>> {
         let Some(row) = self.rows.get(id)? else { return Ok(None) };
-        let mut t = trace(id, row.value(), Vec::new()).ok_or("unreadable row")?;
-        if let Some(list) = self.listed.get(id)?
-            && let Some(entry) = self.lists.get((t.model_id.as_str(), list.value(), id))?
-        {
-            t.vector = floats(&entry.value()[8..]);
-        }
-        Ok(Some(t))
+        Ok(Some(trace(id, row.value(), Vec::new()).ok_or("unreadable row")?))
     }
 
     fn bump(&mut self, key: &str, delta: i64) -> Result<u64> {
@@ -270,7 +301,7 @@ impl Tx<'_> {
             let mut lists = Vec::new();
             for item in self.centroids.range((model, 0u32)..=(model, u32::MAX))? {
                 let (k, v) = item?;
-                lists.push(decode_list(k.value().1, v.value()));
+                lists.push(decode_list(k.value().1, v.value())?);
             }
             self.touched.insert(model.to_owned(), lists);
         }
@@ -287,6 +318,8 @@ impl Tx<'_> {
     }
 
     /// Files the vector of `t` in the list with the nearest centroid; splits it when full.
+    /// A list that cannot be split (duplicate vectors) is retried only when its size has
+    /// doubled, so the attempts cost O(1) per insert amortized.
     fn list(&mut self, t: &Trace) -> Result<()> {
         let model = t.model_id.as_str();
         let lists = self.lists_of(model)?;
@@ -311,7 +344,8 @@ impl Tx<'_> {
         self.lists.insert((model, l.id, t.id.as_str()), list_entry(t.created_at, &t.vector).as_slice())?;
         self.listed.insert(t.id.as_str(), l.id)?;
         self.save_list(model, &l)?;
-        if l.size > LIST_MAX {
+        let over = l.size.saturating_sub(1);
+        if over >= LIST_MAX && over % LIST_MAX == 0 && (over / LIST_MAX).is_power_of_two() {
             self.split(model, l.id)?;
         }
         Ok(())
@@ -333,14 +367,18 @@ impl Tx<'_> {
         Ok(())
     }
 
-    /// Splits a full list in two by 2-means over its members (a few passes over at most
-    /// `LIST_MAX + 1` vectors: the cost of one split is bounded, whatever the store size).
+    /// Splits a full list in two by 2-means over its members (a few passes over the list,
+    /// whatever the store size).
     fn split(&mut self, model: &str, list: u32) -> Result<()> {
         let mut members: Vec<(String, i64, Vec<f32>)> = Vec::new();
-        for item in self.lists.range((model, list, "")..=(model, list, "\u{10FFFF}"))? {
+        for item in self.lists.range((model, list, "")..)? {
             let (k, v) = item?;
-            let raw = v.value();
-            members.push((k.value().2.to_owned(), i64::from_le_bytes(raw[..8].try_into()?), floats(&raw[8..])));
+            let (m, l, id) = k.value();
+            if m != model || l != list {
+                break;
+            }
+            let (created_at, vector) = split_entry(v.value()).ok_or("damaged list entry")?;
+            members.push((id.to_owned(), created_at as i64, floats(vector)));
         }
         let Some(first) = members.first().map(|m| m.2.clone()) else { return Ok(()) };
         let far = members.iter().min_by(|a, b| dot(&a.2, &first).total_cmp(&dot(&b.2, &first))).expect("members").2.clone();
@@ -380,33 +418,52 @@ impl Tx<'_> {
         self.save_list(model, &fresh)
     }
 
-    fn link(&mut self, t: &Trace) -> Result<()> {
-        self.rows.insert(t.id.as_str(), meta(t).as_slice())?;
-        if self.text.get(t.text.as_str())?.is_none() {
-            self.text.insert(t.text.as_str(), t.id.as_str())?;
+    /// The row and the state indexes (band, labile) of `t`.
+    fn put_state(&mut self, t: &Trace) -> Result<()> {
+        if !t.stability.is_finite() || !t.vector.iter().all(|x| x.is_finite()) {
+            return Err(format!("trace {}: stability and vector must be finite", t.id).into());
         }
-        self.model.insert((t.model_id.as_str(), t.id.as_str()), ())?;
+        self.rows.insert(t.id.as_str(), meta(t).as_slice())?;
         if !t.consolidated {
             self.labile.insert((t.model_id.as_str(), t.id.as_str()), ())?;
         }
         self.band.insert((t.band(), t.last_recall, t.id.as_str()), t.created_at)?;
-        self.created.insert((t.created_at, t.id.as_str()), ())?;
+        Ok(())
+    }
+
+    fn drop_state(&mut self, t: &Trace) -> Result<()> {
+        self.labile.remove((t.model_id.as_str(), t.id.as_str()))?;
+        self.band.remove((t.band(), t.last_recall, t.id.as_str()))?;
+        Ok(())
+    }
+
+    /// Files `t` under `model` (its vector, when it has one, in a similarity list).
+    fn index(&mut self, t: &Trace) -> Result<()> {
+        self.model.insert((t.model_id.as_str(), t.id.as_str()), ())?;
         if !t.vector.is_empty() {
             self.list(t)?;
         }
         Ok(())
     }
 
-    fn unlink(&mut self, t: &Trace) -> Result<()> {
-        self.rows.remove(t.id.as_str())?;
-        if self.text.get(t.text.as_str())?.is_some_and(|id| id.value() == t.id) {
-            self.text.remove(t.text.as_str())?;
-        }
+    fn unindex(&mut self, t: &Trace) -> Result<()> {
         self.model.remove((t.model_id.as_str(), t.id.as_str()))?;
-        self.labile.remove((t.model_id.as_str(), t.id.as_str()))?;
-        self.band.remove((t.band(), t.last_recall, t.id.as_str()))?;
-        self.created.remove((t.created_at, t.id.as_str()))?;
         self.unlist(&t.id, &t.model_id)
+    }
+
+    fn link(&mut self, t: &Trace) -> Result<()> {
+        self.put_state(t)?;
+        self.text.insert((t.text.as_str(), t.id.as_str()), ())?;
+        self.created.insert((t.created_at, t.id.as_str()), ())?;
+        self.index(t)
+    }
+
+    fn unlink(&mut self, t: &Trace) -> Result<()> {
+        self.drop_state(t)?;
+        self.rows.remove(t.id.as_str())?;
+        self.text.remove((t.text.as_str(), t.id.as_str()))?;
+        self.created.remove((t.created_at, t.id.as_str()))?;
+        self.unindex(t)
     }
 
     fn apply(&mut self, w: &Write<'_>) -> Result<()> {
@@ -420,15 +477,19 @@ impl Tx<'_> {
                 }
                 self.link(t)
             }
+            // Strengthening rewrites the row and two small indexes, never the vector.
             Write::State { id, last_recall, stability, consolidated } => {
                 let Some(old) = self.get(id)? else { return Ok(()) };
-                self.unlink(&old)?;
-                self.link(&Trace { last_recall, stability, consolidated, ..old })
+                self.drop_state(&old)?;
+                self.put_state(&Trace { last_recall, stability, consolidated, ..old })
             }
             Write::Index { id, model_id, vector } => {
                 let Some(old) = self.get(id)? else { return Ok(()) };
-                self.unlink(&old)?;
-                self.link(&Trace { model_id: model_id.to_owned(), vector: vector.to_vec(), ..old })
+                self.drop_state(&old)?;
+                self.unindex(&old)?;
+                let t = Trace { model_id: model_id.to_owned(), vector: vector.to_vec(), ..old };
+                self.put_state(&t)?;
+                self.index(&t)
             }
             Write::Remove(id) => {
                 if let Some(old) = self.get(id)? {
@@ -443,62 +504,81 @@ impl Tx<'_> {
 
 impl Storage for Store {
     fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>> {
-        self.rows(&self.ids(view, limit)?)
+        let mut ids = Vec::new();
+        if limit > 0 {
+            self.scan(view, |id| {
+                ids.push(id.to_owned());
+                ids.len() < limit
+            })?;
+        }
+        if ids.is_empty() {
+            return Ok(Vec::new()); // empty bands are common: skip the second read
+        }
+        self.rows(&ids)
     }
 
     fn count(&self, view: View<'_>) -> Result<usize> {
-        let rx = self.db.begin_read()?;
-        Ok(match view {
-            View::All => rx.open_table(META)?.get("count")?.map_or(0, |v| v.value()) as usize,
-            View::Young { created_after } => rx.open_table(CREATED)?.range((created_after.saturating_add(1), "")..)?.count(),
-            View::Stale { model_id } => {
-                let table = rx.open_table(MODEL)?;
-                table.range(..(model_id, ""))?.count() + table.range((model_id, "\u{10FFFF}")..)?.count()
-            }
-            other => self.ids(other, usize::MAX)?.len(),
-        })
+        if view == View::All {
+            return Ok(self.db.begin_read()?.open_table(META)?.get("count")?.map_or(0, |v| v.value()) as usize);
+        }
+        let mut n = 0;
+        self.scan(view, |_| {
+            n += 1;
+            true
+        })?;
+        Ok(n)
     }
 
     /// Reads the lists with the nearest centroids until [`PROBE_VECTORS`] vectors have been
     /// read, so the cost is bounded (plus one dot product per centroid), not the store size.
     fn near(&self, q: &[f32], model_id: &str, min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
-        let mut lists = self.lists_of(model_id)?;
-        lists.retain(|l| l.centroid.len() == q.len());
-        lists.sort_by(|a, b| dot(&b.centroid, q).total_cmp(&dot(&a.centroid, q)));
+        let all = self.lists_of(model_id)?;
+        let mut lists: Vec<(f64, &List)> = all.iter().filter(|l| l.centroid.len() == q.len()).map(|l| (dot(&l.centroid, q), l)).collect();
+        lists.sort_by(|a, b| b.0.total_cmp(&a.0));
         let rx = self.db.begin_read()?;
         let table = rx.open_table(LISTS)?;
         let mut best: Vec<(f64, String)> = Vec::new();
         let mut buf = vec![0.0f32; q.len()]; // one buffer: no allocation per vector read
         let mut read = 0;
-        for l in &lists {
+        for (_, l) in &lists {
             if read >= PROBE_VECTORS {
                 break;
             }
             read += l.size;
-            for item in table.range((model_id, l.id, "")..=(model_id, l.id, "\u{10FFFF}"))? {
+            for item in table.range((model_id, l.id, "")..)? {
                 let (key, v) = item?;
-                let raw = v.value();
-                if stated_by.is_some_and(|s| i64::from_le_bytes(raw[..8].try_into().expect("8 bytes")) > s) || raw.len() != 8 + 4 * q.len() {
+                let (m, list, id) = key.value();
+                if m != model_id || list != l.id {
+                    break;
+                }
+                let Some((created_at, raw)) = split_entry(v.value()).filter(|(_, r)| r.len() == 4 * q.len()) else { continue };
+                if stated_by.is_some_and(|s| created_at as i64 > s) {
                     continue;
                 }
-                for (x, c) in buf.iter_mut().zip(raw[8..].as_chunks::<4>().0) {
+                for (x, c) in buf.iter_mut().zip(raw.as_chunks::<4>().0) {
                     *x = f32::from_le_bytes(*c);
                 }
                 let cos = dot(&buf, q);
                 if cos >= min_cos {
-                    best.push((cos, key.value().2.to_owned()));
+                    best.push((cos, id.to_owned()));
                 }
             }
         }
         let order = |a: &(f64, String), b: &(f64, String)| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1));
-        if best.len() > k && k > 0 {
-            best.select_nth_unstable_by(k - 1, order);
+        best.sort_unstable_by(order);
+        // Rows are read k at a time: an unreadable one is skipped and the next best takes
+        // its place (matched by id, so no cosine shifts onto another trace).
+        let mut out = Vec::with_capacity(k);
+        for chunk in best.chunks(k.max(1)) {
+            if out.len() >= k {
+                break;
+            }
+            let ids: Vec<String> = chunk.iter().map(|b| b.1.clone()).collect();
+            let mut traces: HashMap<String, Trace> = self.rows(&ids)?.into_iter().map(|t| (t.id.clone(), t)).collect();
+            out.extend(chunk.iter().filter_map(|(cos, id)| traces.remove(id).map(|trace| Hit { cos: *cos, trace })));
         }
-        best.truncate(k);
-        best.sort_by(order);
-        let ids: Vec<String> = best.iter().map(|b| b.1.clone()).collect();
-        let traces = self.rows(&ids)?;
-        Ok(traces.into_iter().zip(best).map(|(trace, (cos, _))| Hit { cos, trace }).collect())
+        out.truncate(k);
+        Ok(out)
     }
 
     /// One atomic commit. Durability is "eventual" (like SQLite's WAL with
@@ -527,7 +607,7 @@ impl Storage for Store {
         };
         wx.commit()?;
         let mut cache = self.lists.write().unwrap_or_else(|e| e.into_inner());
-        cache.extend(touched);
+        cache.extend(touched.into_iter().map(|(m, l)| (m, Arc::new(l))));
         Ok(())
     }
 

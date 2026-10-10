@@ -137,7 +137,7 @@ pub fn main(args: &[String]) -> i32 {
             print_dream(&s.dream(Some(budget))?);
         }
         if a.inspect {
-            let dump = serde_json::to_string_pretty(&s.snapshot())?;
+            let dump = serde_json::to_string_pretty(&s.snapshot()?)?;
             println!("{}", dump.chars().take(8000).collect::<String>());
         }
         println!("\n{}\n# サマリ\n{}", rule('#'), rule('#'));

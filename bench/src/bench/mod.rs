@@ -5,7 +5,7 @@
 //! * `supersede`  — overwrite forgetting through the dream (`--analyze` / `--run`, real LLM)
 //! * `generality` — embedding models and dimensions, with and without calibration
 //! * `cache`      — embed the corpus once with the configured model (`bench/embeddings*.bin`)
-//! * `perf`       — latency, memory and disk of every operation per store (memory / sqlite / ann)
+//! * `perf`       — latency, memory and disk of every operation on the bundled `Store`
 //!
 //! Measurements run through [`engram::Engram::peek`], so probing never strengthens what it measures.
 
@@ -74,12 +74,14 @@ impl Flags {
     pub fn str(&self, k: &str, default: &str) -> String {
         self.0.get(k).filter(|v| !v.is_empty()).cloned().unwrap_or_else(|| default.to_owned())
     }
-    pub fn num<T: std::str::FromStr>(&self, k: &str, default: T) -> T {
-        self.0.get(k).and_then(|v| v.parse().ok()).unwrap_or(default)
+    /// `--k`'s value, `default` when absent; a value that does not parse is an error.
+    pub fn num<T: std::str::FromStr>(&self, k: &str, default: T) -> Result<T> {
+        self.0.get(k).map_or(Ok(default), |v| v.parse().map_err(|_| format!("--{k}: cannot parse {v:?}").into()))
     }
-    /// A whitespace- or comma-separated list.
-    pub fn list<T: std::str::FromStr>(&self, k: &str) -> Vec<T> {
-        self.0.get(k).map_or_else(Vec::new, |v| v.split([',', ' ']).filter_map(|x| x.parse().ok()).collect())
+    /// A whitespace- or comma-separated list (empty when absent); every item must parse.
+    pub fn list<T: std::str::FromStr>(&self, k: &str) -> Result<Vec<T>> {
+        let items = self.0.get(k).map_or_else(Vec::new, |v| v.split([',', ' ']).filter(|x| !x.is_empty()).collect());
+        items.into_iter().map(|x| x.parse().map_err(|_| format!("--{k}: cannot parse {x:?}").into())).collect()
     }
 }
 
@@ -97,12 +99,23 @@ pub struct Corpus {
     pub noise: Vec<String>,
 }
 
-fn json_files(dir: &Path) -> Vec<Value> {
-    let mut files: Vec<PathBuf> = std::fs::read_dir(dir)
-        .map(|d| d.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension().is_some_and(|x| x == "json")).collect())
-        .unwrap_or_default();
+/// Every `*.json` in `dir`, by name; a shard that cannot be read or parsed is an error
+/// (the corpus must not shrink silently).
+fn json_files(dir: &Path) -> Result<Vec<Value>> {
+    let entries = std::fs::read_dir(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+    let mut files = Vec::new();
+    for e in entries {
+        let p = e.map_err(|e| format!("{}: {e}", dir.display()))?.path();
+        if p.extension().is_some_and(|x| x == "json") {
+            files.push(p);
+        }
+    }
     files.sort();
-    files.iter().filter_map(|f| serde_json::from_str(&std::fs::read_to_string(f).ok()?).ok()).collect()
+    let read = |f: &PathBuf| -> Result<Value> {
+        let text = std::fs::read_to_string(f).map_err(|e| format!("{}: {e}", f.display()))?;
+        Ok(serde_json::from_str(&text).map_err(|e| format!("{}: {e}", f.display()))?)
+    };
+    files.iter().map(read).collect()
 }
 
 fn s(v: &Value) -> String {
@@ -111,9 +124,9 @@ fn s(v: &Value) -> String {
 
 /// The shards merged, duplicate texts dropped (first wins), and any distractor that is
 /// itself a gold fact cleared.
-pub fn load_corpus(dir: &Path) -> Corpus {
+pub fn load_corpus(dir: &Path) -> Result<Corpus> {
     let (mut gold, mut noise, mut seen) = (Vec::new(), Vec::new(), HashSet::new());
-    for shard in json_files(dir) {
+    for shard in json_files(dir)? {
         for g in shard["gold"].as_array().into_iter().flatten() {
             let fact = s(&g["fact"]);
             let probes: Vec<String> = g["probes"].as_array().into_iter().flatten().map(s).take(2).collect();
@@ -133,7 +146,7 @@ pub fn load_corpus(dir: &Path) -> Corpus {
             g.distractor.clear();
         }
     }
-    Corpus { gold, noise }
+    Ok(Corpus { gold, noise })
 }
 
 /// An old → new fact update with the probe that should now find the new one, and the
@@ -147,13 +160,13 @@ pub struct Update {
     pub cue_new: String,
 }
 
-pub fn load_updates(dir: &Path) -> Vec<Update> {
-    json_files(dir)
+pub fn load_updates(dir: &Path) -> Result<Vec<Update>> {
+    Ok(json_files(dir)?
         .iter()
         .flat_map(|f| f["pairs"].as_array().cloned().unwrap_or_default())
         .map(|p| Update { old: s(&p["old"]), new: s(&p["new"]), probe: s(&p["probe"]), cue_old: s(&p["cue_old"]), cue_new: s(&p["cue_new"]) })
         .filter(|u| !u.old.is_empty() && !u.new.is_empty() && !u.probe.is_empty() && u.old != u.new)
-        .collect()
+        .collect())
 }
 
 /// Every document text and every query cue the forgetting benchmark embeds.
@@ -233,7 +246,7 @@ impl CachedEmbedder {
             put_text(&mut out, k);
             out.extend(v.iter().flat_map(|x| x.to_le_bytes()));
         }
-        std::fs::write(path, out)?;
+        crate::write_atomic(path, out)?; // `generality` skips a cache that exists
         Ok(())
     }
 
@@ -258,7 +271,8 @@ impl Embedder for CachedEmbedder {
 }
 
 /// Matryoshka truncation: the first `dimension` components, renormalised. The model id
-/// carries the dimension, so stored vectors of another length are re-embedded.
+/// carries the dimension, so stored vectors of another length are re-embedded. Only a
+/// cut is possible: `dimension` must be in `1..=base.dimension()`.
 pub struct Truncated<E> {
     pub base: E,
     pub dimension: usize,
@@ -266,9 +280,12 @@ pub struct Truncated<E> {
 }
 
 impl<E: Embedder> Truncated<E> {
-    pub fn new(base: E, dimension: usize) -> Self {
+    pub fn new(base: E, dimension: usize) -> Result<Self> {
+        if !(1..=base.dimension()).contains(&dimension) {
+            return Err(format!("dimension {dimension} is not in 1..={} ({})", base.dimension(), base.model_id()).into());
+        }
         let model_id = format!("{}#d{dimension}", base.model_id());
-        Self { base, dimension, model_id }
+        Ok(Self { base, dimension, model_id })
     }
     fn cut(&self, vs: Vec<Vec<f32>>) -> Vec<Vec<f32>> {
         vs.into_iter().map(|v| crate::normalized(&v[..self.dimension.min(v.len())])).collect()
@@ -334,7 +351,7 @@ fn cache_main(args: &[String]) -> Result<()> {
         cfg.glob.embed_document_prefix = f.str("document-prefix", "");
     }
     let path = f.0.get("out").filter(|o| !o.is_empty()).map_or_else(|| cache_path(&cfg.glob.embedding_model), PathBuf::from);
-    build_cache(&load_corpus(&bench_dir().join("corpus")), &cfg, &path)
+    build_cache(&load_corpus(&bench_dir().join("corpus"))?, &cfg, &path)
 }
 
 // ------------------------------------------------------------------ helpers
@@ -456,6 +473,34 @@ mod tests {
         assert_eq!((0..3).map(|_| r.randrange(1 << 30)).collect::<Vec<_>>(), [695_425_564, 323_946_139, 847_876_999]);
         let mut r = PyRandom::new((1 << 40) + 5);
         assert_eq!((0..5).map(|_| r.randrange(97)).collect::<Vec<_>>(), [64, 66, 34, 84, 3]);
+    }
+
+    #[test]
+    fn bad_flags_are_errors_not_defaults() {
+        let f = Flags::parse(&["--theta", "0.6x", "--n", "5", "--dims", "768, 512", "--bad", "64,x"].map(String::from));
+        assert!(f.num::<f64>("theta", 0.55).unwrap_err().to_string().contains("--theta"));
+        assert_eq!((f.num("n", 1).unwrap(), f.num("absent", 7).unwrap()), (5, 7));
+        assert_eq!(f.list::<usize>("dims").unwrap(), [768, 512]);
+        assert!(f.list::<usize>("bad").is_err());
+        assert!(f.list::<usize>("absent").unwrap().is_empty());
+    }
+
+    #[test]
+    fn unreadable_shards_are_errors() {
+        let dir = std::env::temp_dir().join(format!("ltm-shards-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        std::fs::write(dir.join("a.json"), r#"{"gold": [], "noise": ["n"]}"#).unwrap();
+        assert_eq!(load_corpus(&dir).unwrap().noise, ["n"]);
+        std::fs::write(dir.join("b.json"), "{torn").unwrap();
+        assert!(load_corpus(&dir).err().unwrap().to_string().contains("b.json"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn truncation_cannot_grow_a_vector() {
+        let base = CachedEmbedder { model_id: "m".into(), dimension: 4, docs: Arc::default(), queries: Arc::default() };
+        assert!(Truncated::new(base.clone(), 5).is_err() && Truncated::new(base.clone(), 0).is_err());
+        assert_eq!(Truncated::new(base, 2).unwrap().dimension(), 2);
     }
 
     #[test]

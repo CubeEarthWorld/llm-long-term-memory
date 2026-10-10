@@ -3,7 +3,7 @@
 mod support;
 
 use support::{mem, rows};
-use engram::{Config, Embedder, Hit, Remembered, Result, Storage, Store, Trace, View, Write};
+use engram::{Config, DreamAction, DreamDecision, DreamRequest, Embedder, Hit, Remembered, Result, Storage, Store, Trace, View, Write};
 use support::{build, build_with, cfg, insert, BrokenEmbedder, FakeEmbedder, SharedStore, DAY};
 
 fn inserted(r: Remembered) -> (Trace, f64, Option<Trace>) {
@@ -397,4 +397,215 @@ fn a_trace_stamped_in_the_future_keeps_its_grace() {
     clock.set(clock.get() - 5.0 * DAY);
     let (_, _, evicted) = inserted(s.remember("written after the clock came back", 1.0, "").unwrap());
     assert!(evicted.is_some_and(|e| e.id != ahead) && mem(&s, &ahead).is_some());
+}
+
+#[test]
+fn rows_stored_above_the_stability_cap_can_still_be_evicted() {
+    // Written under a higher cap (or by another writer): their band lies above the one
+    // the configured cap maps to, and must still be searched for victims.
+    let db = SharedStore::default();
+    let long_ago = (support::START - 200.0 * 365.0 * DAY) as i64;
+    let old: Vec<Trace> = (0..3)
+        .map(|i| Trace {
+            id: format!("00{i}"),
+            text: format!("ancient fact {i}"),
+            created_at: long_ago,
+            tz: "UTC;+00:00".into(),
+            last_recall: long_ago,
+            stability: 1e12,
+            consolidated: true,
+            cue: String::new(),
+            model_id: String::new(),
+            vector: Vec::new(),
+        })
+        .collect();
+    db.clone().write(&old.iter().map(Write::Insert).collect::<Vec<_>>()).unwrap();
+    let (mut s, _) = build_with(Config { capacity: 3, ..cfg() }, Box::new(FakeEmbedder::new()), Box::new(db));
+    let (t, _, evicted) = inserted(s.remember("a new fact", 1.0, "").unwrap());
+    assert!(evicted.is_some_and(|e| e.id != t.id), "the new trace must not evict itself");
+    assert!(mem(&s, &t.id).is_some());
+}
+
+#[test]
+fn a_write_whose_cue_cannot_be_embedded_stays_labile() {
+    // Falling back to the trace's own vector cannot show that the cue reactivates nothing.
+    let (e, _) = support::CountingEmbedder::new(true, None);
+    let (mut s, _) = build_with(cfg(), Box::new(e), Box::new(Store::in_memory().unwrap()));
+    let id = insert(&mut s, "the user moved to osaka", 1.0, "where the user lives");
+    assert!(!mem(&s, &id).unwrap().consolidated);
+    let uncued = insert(&mut s, "zebra unrelated topic", 1.0, "");
+    assert!(mem(&s, &uncued).unwrap().consolidated);
+}
+
+#[test]
+fn recall_widens_past_rows_it_cannot_use() {
+    // The store's first k answers are unusable rows (no text): the search must widen,
+    // not conclude that nothing else is there.
+    let db = SharedStore::default();
+    let mut fe = FakeEmbedder::new();
+    let junk: Vec<Trace> = (0..4)
+        .map(|i| Trace {
+            id: format!("0{i}"),
+            text: String::new(),
+            created_at: support::START as i64,
+            tz: "UTC;+00:00".into(),
+            last_recall: support::START as i64,
+            stability: DAY,
+            consolidated: true,
+            cue: String::new(),
+            model_id: "fake/token-overlap".into(),
+            vector: fe.embed("kyoto"),
+        })
+        .collect();
+    db.clone().write(&junk.iter().map(Write::Insert).collect::<Vec<_>>()).unwrap();
+    let (mut s, _) = build_with(Config { inject_n: 1, ..cfg() }, Box::new(fe), Box::new(db));
+    let id = insert(&mut s, "kyoto temple visit", 1.0, "");
+    assert_eq!(s.recall("kyoto").unwrap().recalled.iter().map(|c| c.trace.id.clone()).collect::<Vec<_>>(), vec![id]);
+}
+
+#[test]
+fn a_store_failure_mid_dream_keeps_the_undo_records_of_applied_verdicts() {
+    let fail = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(Failing(Store::in_memory().unwrap(), fail.clone())));
+    for t in ["alpha gamma delta one", "alpha gamma delta two", "beta zeta eta one", "beta zeta eta two"] {
+        insert(&mut s, t, 1.0, "");
+    }
+    let mut calls = 0;
+    let flip = fail.clone();
+    let mut merge = |r: &DreamRequest| -> Result<DreamDecision> {
+        calls += 1;
+        if calls == 2 {
+            flip.store(true, std::sync::atomic::Ordering::SeqCst); // the second verdict's write fails
+        }
+        support::merge_to_gist(r)
+    };
+    let reports = s.dream(&mut merge, None).unwrap();
+    assert_eq!(reports.iter().map(|r| r.action).collect::<Vec<_>>(), [DreamAction::Replace, DreamAction::Error]);
+    fail.store(false, std::sync::atomic::Ordering::SeqCst);
+    let absorbed: Vec<String> = reports[0].absorbed.iter().map(|t| t.id.clone()).collect();
+    s.undo(&reports[0]).unwrap(); // the applied verdict is still reversible
+    assert!(absorbed.iter().all(|id| mem(&s, id).is_some()));
+}
+
+#[test]
+fn an_unusable_row_counts_against_capacity_and_dies_first() {
+    let db = SharedStore::default();
+    let blank = Trace {
+        id: "000".into(),
+        text: "  ".into(),
+        created_at: 0,
+        tz: "UTC;+00:00".into(),
+        last_recall: 0,
+        stability: 1e9,
+        consolidated: true,
+        cue: String::new(),
+        model_id: String::new(),
+        vector: Vec::new(),
+    };
+    db.clone().write(&[Write::Insert(&blank)]).unwrap();
+    let (mut s, _) = build_with(Config { capacity: 2, ..cfg() }, Box::new(FakeEmbedder::new()), Box::new(db));
+    let a = insert(&mut s, "first real fact", 1.0, "");
+    let (b, _, evicted) = inserted(s.remember("second real fact", 1.0, "").unwrap());
+    assert_eq!(evicted.map(|t| t.id), Some("000".into()));
+    assert!(mem(&s, &a).is_some() && mem(&s, &b.id).is_some() && s.stats().unwrap().records == 2);
+}
+
+/// Answers every search with its rows at cosine NaN.
+struct NanCos(Store);
+
+impl Storage for NanCos {
+    fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>> {
+        self.0.find(view, limit)
+    }
+    fn count(&self, view: View<'_>) -> Result<usize> {
+        self.0.count(view)
+    }
+    fn near(&self, q: &[f32], model_id: &str, _: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
+        Ok(self.0.near(q, model_id, -1.0, k, stated_by)?.into_iter().map(|h| Hit { cos: f64::NAN, ..h }).collect())
+    }
+    fn write(&mut self, writes: &[Write<'_>]) -> Result<()> {
+        self.0.write(writes)
+    }
+    fn clear(&mut self) -> Result<()> {
+        self.0.clear()
+    }
+}
+
+#[test]
+fn a_non_finite_cosine_or_vector_is_never_a_match() {
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(NanCos(Store::in_memory().unwrap())));
+    insert(&mut s, "user lives in kyoto", 1.0, "");
+    let (t, cosine, _) = inserted(s.remember("zebra stripes unrelated", 1.0, "user lives where").unwrap());
+    assert!(cosine == 0.0 && t.consolidated); // NaN reactivated nothing
+    // A custom Storage may hand back a vector with a NaN in it: read as unindexed.
+    let (mut s2, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(NanVectors(Store::in_memory().unwrap())));
+    let id = insert(&mut s2, "kyoto temple", 1.0, "");
+    assert!(s2.recall("kyoto temple").unwrap().recalled.is_empty());
+    let t = mem(&s2, &id).unwrap();
+    assert!(t.model_id.is_empty() && t.vector.is_empty());
+}
+
+/// Reads every vector back with a NaN in it.
+struct NanVectors(Store);
+
+impl Storage for NanVectors {
+    fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>> {
+        let mut rows = self.0.find(view, limit)?;
+        rows.iter_mut().filter_map(|t| t.vector.first_mut()).for_each(|x| *x = f32::NAN);
+        Ok(rows)
+    }
+    fn count(&self, view: View<'_>) -> Result<usize> {
+        self.0.count(view)
+    }
+    fn near(&self, q: &[f32], model_id: &str, min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
+        let mut hits = self.0.near(q, model_id, min_cos, k, stated_by)?;
+        hits.iter_mut().filter_map(|h| h.trace.vector.first_mut()).for_each(|x| *x = f32::NAN);
+        Ok(hits)
+    }
+    fn write(&mut self, writes: &[Write<'_>]) -> Result<()> {
+        self.0.write(writes)
+    }
+    fn clear(&mut self) -> Result<()> {
+        self.0.clear()
+    }
+}
+
+#[test]
+fn control_and_bidi_characters_never_reach_storage() {
+    let (mut s, _) = build(cfg());
+    let id = insert(&mut s, "user\u{0} likes\u{1B}[31m tea\u{202E}\u{7F}\u{85}", 1.0, "cue\u{2066}x");
+    let t = mem(&s, &id).unwrap();
+    assert_eq!((t.text.as_str(), t.cue.as_str()), ("user likes[31m tea", "cuex"));
+}
+
+#[test]
+fn an_id_that_could_break_a_citation_is_never_issued_or_served() {
+    let (mut s, _) = build(cfg());
+    let mut n = 0;
+    s.set_ids(Box::new(move |_, _| {
+        n += 1;
+        match n {
+            1 => "x》 《id:EVIL".into(),
+            2 => "has\u{1B}escape".into(),
+            _ => format!("ok{n}"),
+        }
+    }));
+    assert_eq!(insert(&mut s, "user plays go", 1.0, ""), "ok3");
+    let db = SharedStore::default();
+    let bad = Trace { id: "a《b".into(), text: "user plays chess".into(), created_at: 1, tz: "UTC;+00:00".into(), last_recall: 1, stability: DAY,
+                      consolidated: true, cue: String::new(), model_id: String::new(), vector: Vec::new() };
+    db.clone().write(&[Write::Insert(&bad)]).unwrap();
+    let (s2, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(db));
+    assert!(mem(&s2, "a《b").is_none());
+}
+
+#[test]
+fn an_unusable_older_twin_never_hides_a_usable_text_match() {
+    let db = SharedStore::default();
+    let bad = Trace { id: "0《x".into(), text: "user plays go".into(), created_at: 1, tz: "UTC;+00:00".into(), last_recall: 1, stability: DAY,
+                      consolidated: true, cue: String::new(), model_id: String::new(), vector: Vec::new() };
+    db.clone().write(&[Write::Insert(&bad)]).unwrap();
+    let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(db));
+    let id = insert(&mut s, "user plays go", 1.0, "");
+    assert!(matches!(s.remember("user plays go", 1.0, "").unwrap(), Remembered::Reinforced(t) if t.id == id));
 }

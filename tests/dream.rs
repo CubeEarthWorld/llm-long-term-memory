@@ -151,3 +151,53 @@ fn a_dream_verdict_can_be_undone() {
     s.undo(&reports[0]).unwrap(); // the report is the journal: no snapshot needed
     assert_eq!(rows(&s), before);
 }
+
+#[test]
+fn a_seed_the_llm_cannot_judge_does_not_block_the_queue() {
+    let (mut s, _) = build(cfg());
+    insert(&mut s, "poison alpha gamma delta", 1.0, "");
+    let poison = insert(&mut s, "poison alpha gamma epsilon", 1.0, "");
+    insert(&mut s, "good beta zeta eta", 1.0, "");
+    insert(&mut s, "good beta zeta theta", 1.0, "");
+    let mut picky = |r: &DreamRequest| -> Result<DreamDecision> {
+        if r.members.iter().any(|m| m.text.starts_with("poison")) { Err("unparseable".into()) } else { merge_to_gist(r) }
+    };
+    assert_eq!(s.dream(&mut picky, Some(1)).unwrap()[0].action, DreamAction::Error);
+    let second = s.dream(&mut picky, Some(1)).unwrap();
+    assert!(second[0].action == DreamAction::Replace && second[0].before[0].text.starts_with("good"));
+    assert!(!mem(&s, &poison).unwrap().consolidated); // still queued for a later try
+    assert_eq!(s.dream(&mut picky, Some(1)).unwrap()[0].action, DreamAction::Error);
+}
+
+#[test]
+fn a_seed_whose_cue_cannot_be_embedded_is_not_settled() {
+    let (e, _) = support::CountingEmbedder::new(true, None);
+    let (mut s, _) = build_with(cfg(), Box::new(e), Box::new(engram::Store::in_memory().unwrap()));
+    let id = insert(&mut s, "the user moved to osaka", 1.0, "where the user lives");
+    assert!(s.dream(&mut always_keep, None).unwrap().is_empty());
+    assert!(!mem(&s, &id).unwrap().consolidated);
+}
+
+#[test]
+fn a_replace_whose_texts_clean_to_nothing_is_an_error_not_a_keep() {
+    let (mut s, _) = seeded();
+    let mut empty = |_: &DreamRequest| -> Result<DreamDecision> { Ok(DreamDecision { memories: vec!["《》 \u{0}".into()], absorbed_ids: vec![] }) };
+    assert_eq!(s.dream(&mut empty, None).unwrap()[0].action, DreamAction::Error);
+    assert!(!s.clusters(None).unwrap().is_empty()); // still labile
+}
+
+#[test]
+fn seeds_whose_cue_cannot_be_embedded_never_starve_the_queue() {
+    // With cue embedding down, cued seeds that find nothing stay labile; they must move
+    // behind the uncued seeds, which a budget-1 dream then reaches.
+    let (e, _) = support::CountingEmbedder::new(true, None);
+    let (mut s, _) = build_with(cfg(), Box::new(e), Box::new(engram::Store::in_memory().unwrap()));
+    for i in 0..8 {
+        insert(&mut s, &format!("u{i}a v{i}b w{i}c"), 1.0, &format!("x{i}d y{i}e"));
+    }
+    insert(&mut s, "pair alpha gamma one", 1.0, "");
+    insert(&mut s, "pair alpha gamma two", 1.0, "");
+    assert!(s.dream(&mut merge_to_gist, Some(1)).unwrap().is_empty()); // the first window: 8 cued seeds, nothing decided
+    let second = s.dream(&mut merge_to_gist, Some(1)).unwrap();
+    assert!(second.len() == 1 && second[0].action == DreamAction::Replace);
+}

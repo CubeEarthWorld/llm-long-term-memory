@@ -13,7 +13,7 @@ pub enum View<'a> {
     All,
     /// The trace with this id.
     Id(&'a str),
-    /// The trace with exactly this text.
+    /// The traces with exactly this text, oldest id first (gists and undo can repeat a text).
     Text(&'a str),
     /// Labile traces indexed under `model_id`, oldest id first: the dream's queue.
     Labile { model_id: &'a str },

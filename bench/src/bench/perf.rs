@@ -9,7 +9,7 @@
 use super::Flags;
 use engram::{Config, DreamDecision, Embedder, Engram, ManualClock, Result, Storage, Store, Trace, Write};
 use serde_json::json;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 
 const MODEL: &str = "synthetic";
@@ -152,17 +152,30 @@ fn bulk_fill(store: &mut dyn Storage, n: u64, dim: usize) -> Result<()> {
     Ok(())
 }
 
+/// A scratch directory removed on every exit path, errors included.
+struct ScratchDir(PathBuf);
+
+impl Drop for ScratchDir {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
 fn disk_mb(dir: &Path) -> f64 {
     std::fs::read_dir(dir).map_or(0.0, |d| d.filter_map(|e| e.ok()?.metadata().ok()).map(|m| m.len()).sum::<u64>() as f64 / 1_048_576.0)
 }
 
 pub fn main(args: &[String]) -> Result<()> {
     let f = Flags::parse(args);
-    let (n, dim) = (f.num("n", 10_000) as u64, f.num("dim", 768));
+    let (n, dim): (u64, usize) = (f.num("n", 10_000)?, f.num("dim", 768)?);
+    if n == 0 || dim == 0 {
+        return Err("--n and --dim must be positive".into());
+    }
     let base_rss = rss_mb().0;
     let dir = std::env::temp_dir().join(format!("engram-perf-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir)?;
+    let scratch = ScratchDir(dir.clone()); // declared before the stores, so dropped after them
     let db = dir.join("p.redb");
     let cfg = Config { capacity: n as usize, writes_per_day: usize::MAX, ..Config::default() };
     let clock = ManualClock::new(T0);
@@ -212,7 +225,7 @@ pub fn main(args: &[String]) -> Result<()> {
     let _ = reopened.memory("nothing")?;
     let first_ms = ms(first);
     drop(reopened);
-    let _ = std::fs::remove_dir_all(&dir);
+    drop(scratch);
     println!("{}", serde_json::to_string_pretty(&json!({
         "n": n, "dim": dim, "fill": if bulk { "bulk" } else { "remember" },
         "fill_ms_per_op": fill_ms / n as f64, "remember_at_capacity_ms": remember_ms, "recall_ms": recall_ms, "recall_hits": hits,

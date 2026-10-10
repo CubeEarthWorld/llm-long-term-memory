@@ -7,7 +7,7 @@
 //!
 //! `ltm bench generality [--dims 768,512,256,128,64] [--model X.gguf --query-prefix … --document-prefix …]`
 
-use super::forget::{run, Spec};
+use super::forget::{run, violations, Spec};
 use super::supersede::cluster_capture;
 use super::{bench_dir, build_cache, cache_path, load_corpus, load_updates, percentile, CachedEmbedder, Corpus, Flags, PyRandom, Truncated};
 use crate::settings::AppConfig;
@@ -45,8 +45,8 @@ fn calibrate(dist: &Value) -> Config {
 
 pub fn main(args: &[String]) -> Result<()> {
     let f = Flags::parse(args);
-    let corpus = load_corpus(&bench_dir().join("corpus"));
-    let pairs = load_updates(&bench_dir().join("updates"));
+    let corpus = load_corpus(&bench_dir().join("corpus"))?;
+    let pairs = load_updates(&bench_dir().join("updates"))?;
     let mut app = AppConfig::default();
     if f.has("model") {
         app.glob.embedding_model = f.str("model", "");
@@ -62,26 +62,29 @@ pub fn main(args: &[String]) -> Result<()> {
         build_cache(&corpus, &app, &cache)?; // embed the timeline's texts once per model
     }
     let base = CachedEmbedder::load(&cache)?;
-    let dims: Vec<usize> = Some(f.list("dims")).filter(|d: &Vec<usize>| !d.is_empty()).unwrap_or_else(|| vec![base.dimension()]);
-    let (span, capacity, seed) = (f.num("span-days", 365.0), f.num("capacity", 1000), f.num("seed", 1));
+    let dims: Vec<usize> = Some(f.list("dims")?).filter(|d: &Vec<usize>| !d.is_empty()).unwrap_or_else(|| vec![base.dimension()]);
+    if let Some(d) = dims.iter().find(|&&d| d == 0 || d > base.dimension()) {
+        return Err(format!("--dims {d}: a Matryoshka cut must be in 1..={}", base.dimension()).into());
+    }
+    let (span, capacity, seed) = (f.num("span-days", 365.0)?, f.num("capacity", 1000)?, f.num("seed", 1)?);
     let live = || -> Result<Box<dyn Embedder>> { Ok(crate::embedder(&app.glob)?.0) }; // updates and cues are not cached
-    let cut = |e: Box<dyn Embedder>, d: usize| -> Box<dyn Embedder> { if d == e.dimension() { e } else { Box::new(Truncated::new(e, d)) } };
+    let cut = |e: Box<dyn Embedder>, d: usize| -> Result<Box<dyn Embedder>> { Ok(if d == e.dimension() { e } else { Box::new(Truncated::new(e, d)?) }) };
     println!("model={} dim={}", base.model_id(), base.dimension());
     println!("年表（既定閾値 0.4/0.55/0.5 と、そのモデルで較正した閾値）:");
     let mut rows = Vec::new();
     for &dim in &dims {
-        let dist = distribution(cut(Box::new(base.clone()), dim).as_mut(), &corpus)?;
+        let dist = distribution(cut(Box::new(base.clone()), dim)?.as_mut(), &corpus)?;
         let mut row = json!({"dimension": dim, "cosine": dist});
         for (label, cfg) in [("default", Config::default()), ("calibrated", calibrate(&dist))] {
             let spec = Spec { arm: "engram".into(), seed, span_days: span, capacity, rehearsed_frac: 0.5, salience: 1.0, dream: true };
-            let r = run(&corpus, &spec, cfg.clone(), cut(Box::new(base.clone()), dim))?;
+            let r = run(&corpus, &spec, cfg.clone(), cut(Box::new(base.clone()), dim)?)?;
             let x = json!({
                 "thresholds": [cfg.cosine_floor, cfg.theta_related, cfg.gist_min_cosine],
                 "rehearsed": r["final"]["rehearsed"], "dormant_survival": r["final"]["dormant"]["survival"],
                 "evict_precision": r["evict_precision"], "invariants": r["invariants"], "forget_api": r["forget_api"],
-                "capture": cluster_capture(&pairs, cfg, cut(live()?, dim))?,
+                "capture": cluster_capture(&pairs, cfg, cut(live()?, dim)?)?,
             });
-            let bad: i64 = x["invariants"].as_object().map_or(0, |o| o.values().filter_map(Value::as_i64).sum());
+            let bad = violations(&x);
             println!(
                 "  d={dim:4} {label:10} floor/θ/gist={}  top1={:.3} hit5={:.3} surv={:.3} evict_prec={:.3} capture={:.0}% bad={bad}",
                 x["thresholds"], x["rehearsed"]["top1"].as_f64().unwrap_or(0.0), x["rehearsed"]["hit@5"].as_f64().unwrap_or(0.0),
@@ -95,7 +98,7 @@ pub fn main(args: &[String]) -> Result<()> {
     }
     let stem = std::path::Path::new(base.model_id()).file_stem().map_or_else(String::new, |s| s.to_string_lossy().into_owned());
     let out = bench_dir().join(format!("generality_{stem}.json"));
-    std::fs::write(&out, serde_json::to_string_pretty(&json!({"model_id": base.model_id(), "dimension": base.dimension(), "runs": rows}))?)?;
+    crate::write_atomic(&out, serde_json::to_string_pretty(&json!({"model_id": base.model_id(), "dimension": base.dimension(), "runs": rows}))?)?;
     println!("wrote {}", out.display());
     Ok(())
 }

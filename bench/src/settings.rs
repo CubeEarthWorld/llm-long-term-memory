@@ -26,7 +26,7 @@ pub fn root() -> PathBuf {
     .clone()
 }
 
-/// Runtime output: the SQLite DB, the seed CSV, CLI results.
+/// Runtime output: the store file, the seed CSV, CLI results.
 pub fn data_dir() -> PathBuf {
     std::env::var_os("MEMORY_DATA_DIR").map_or_else(|| root().join("data"), PathBuf::from)
 }

@@ -230,7 +230,8 @@ pub fn run_turn(m: &mut Engram, llm: &mut dyn Llm, timer: &EmbedTimer, glob: &Se
             }
         };
         let answer = llm.converse(&recall.pack_text, utterance, &mut tool, &current_time);
-        let fallback: Vec<String> = if saved(&events) == 0 && glob.tool_fallback {
+        // A failed converse never reached the model: extracting would only retry it.
+        let fallback: Vec<String> = if !answer.failed && saved(&events) == 0 && glob.tool_fallback {
             llm.extract(utterance, &answer.text, &current_time, &recall.pack_text).into_iter().take(max_writes).collect()
         } else {
             Vec::new()

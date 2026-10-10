@@ -16,6 +16,7 @@ pub mod turn;
 pub use llama::LlamaEmbedder;
 
 use engram::{Embedder, Engram, Result, Trace, View};
+use std::io::Write as _;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
@@ -26,8 +27,20 @@ pub const TITLE: &str = "LLM Long-Term Memory";
 
 /// Every trace in `m`'s store, oldest first: for benchmarks that simulate other
 /// eviction policies and for inspection (the engine itself never lists everything).
-pub fn all_traces(m: &Engram) -> Vec<Trace> {
-    m.store().find(View::All, usize::MAX).expect("the store is readable")
+pub fn all_traces(m: &Engram) -> Result<Vec<Trace>> {
+    m.store().find(View::All, usize::MAX)
+}
+
+/// Writes `bytes` to a sibling `<path>.tmp`, syncs it and renames it over `path`: a crash
+/// leaves the old file or the new one, never half of one.
+pub fn write_atomic(path: &Path, bytes: impl AsRef<[u8]>) -> std::io::Result<()> {
+    let mut tmp = path.as_os_str().to_owned();
+    tmp.push(".tmp");
+    let mut f = std::fs::File::create(&tmp)?;
+    f.write_all(bytes.as_ref())?;
+    f.sync_all()?;
+    drop(f);
+    std::fs::rename(&tmp, path)
 }
 
 /// Worker threads the tools may use: 80% of the logical CPUs (at least one), so the
@@ -64,6 +77,18 @@ mod tests {
         assert_eq!(super::round_to(0.81875, 4), 0.8187);
         assert_eq!(super::round_to(2.5, 0), 2.0);
         assert_eq!(super::round_to(1.23456, 3), 1.235);
+    }
+
+    #[test]
+    fn atomic_write_replaces_the_whole_file() {
+        let dir = std::env::temp_dir().join(format!("ltm-atomic-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let p = dir.join("r.json");
+        super::write_atomic(&p, "a long first version").unwrap();
+        super::write_atomic(&p, "v2").unwrap();
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "v2");
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1); // no temp file left behind
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }
 

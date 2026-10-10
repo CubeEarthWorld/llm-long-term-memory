@@ -8,8 +8,8 @@
 use crate::dream::{Adjudicator, DreamDecision, DreamMember, DreamRequest};
 use crate::id::{ulid_ids, IdGen};
 use crate::storage::{Hit, Storage, View, Write};
-use crate::text::{clean_text, cues};
-use crate::time::{fmt_local, system_clock, tz_field, Clock};
+use crate::text::{clean_text, cues, valid_id};
+use crate::time::{clean_tz, fmt_local, system_clock, tz_field, Clock};
 use crate::vector::{dot, normalized};
 use crate::{Config, Embedder, Result, Trace};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -21,6 +21,8 @@ const REINDEX_BATCH: usize = 64;
 /// Candidates read per stability band beyond those needed (a band spans a factor of
 /// √2 in stability, so its least recently recalled traces are its weakest but for ties).
 const BAND_DEPTH: usize = 8;
+/// Traces with one text read to find a usable one before a write counts as new.
+const TEXT_PROBE: usize = 8;
 /// Longest stored timezone field (`'IANA name;+HH:MM'`).
 const TZ_MAX: usize = 64;
 
@@ -28,7 +30,8 @@ const TZ_MAX: usize = 64;
 #[derive(Clone, Debug, PartialEq)]
 pub enum Remembered {
     /// A new trace. `cosine` is how strongly its cue reactivated the nearest older
-    /// trace (0 when none did); `evicted` is the last trace forgotten to make room.
+    /// trace (0 when none did); `evicted` is the last trace forgotten to make room —
+    /// `trace` itself when it was the weakest (then it is not stored).
     Inserted { trace: Trace, cosine: f64, evicted: Option<Trace> },
     /// The exact text was already stored: rehearsed instead (full activation).
     Reinforced(Trace),
@@ -95,6 +98,12 @@ pub struct Stats {
     pub labile: usize,
 }
 
+/// One cluster's report, and whether it failed because the store refused the write.
+struct Adjudicated {
+    report: DreamReport,
+    stored_error: bool,
+}
+
 /// What one recall cue left behind for [`Engram::cite`].
 #[derive(Clone, Copy, Debug)]
 struct Exposure {
@@ -113,6 +122,11 @@ pub struct Engram {
     timezone: String,
     write_times: Vec<f64>,
     exposures: HashMap<String, Exposure>,
+    /// Seeds whose last dream decided nothing (the verdict failed, or the cue could not be
+    /// embedded), oldest first: queued after the others, so a seed that cannot be settled
+    /// never blocks the ones behind it. At most
+    /// `SEEDS_PER_BUDGET × dream_budget` (the oldest failures are forgotten first).
+    failed: Vec<String>,
 }
 
 impl Engram {
@@ -124,7 +138,7 @@ impl Engram {
     /// [`Engram::open`] with an injected clock.
     pub fn with_clock(store: Box<dyn Storage>, embedder: Box<dyn Embedder>, cfg: Config, timezone: &str, clock: Clock) -> Result<Self> {
         cfg.validate()?;
-        Ok(Self { cfg, store, embedder, clock, ids: ulid_ids(), timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new() })
+        Ok(Self { cfg, store, embedder, clock, ids: ulid_ids(), timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new(), failed: Vec::new() })
     }
 
     // ------------------------------------------------------------------ clock
@@ -186,20 +200,24 @@ impl Engram {
 
     /// A row as the engine may use it. The store is outside the engine's control (an
     /// older version or a hand edit may have written it), so every row read is held to
-    /// the write-time rules: text, cue and timezone cleaned, stability and times clamped.
+    /// the write-time rules: id valid, text, cue and timezone cleaned, stability and
+    /// times clamped, a vector with a non-finite component unindexed. `None`: unusable.
     fn checked(&self, t: Trace, now: f64) -> Option<Trace> {
         let text = clean_text(&t.text, self.cfg.text_max);
-        if t.id.is_empty() || text.is_empty() {
+        if !valid_id(&t.id) || text.is_empty() {
             return None;
         }
         let now = now as i64;
+        let (model_id, vector) = if t.vector.iter().all(|x| x.is_finite()) { (t.model_id, t.vector) } else { (String::new(), Vec::new()) };
         Some(Trace {
             text,
             cue: clean_text(&t.cue, self.cfg.text_max),
-            tz: clean_text(&t.tz, TZ_MAX),
+            tz: clean_tz(&t.tz, TZ_MAX),
             stability: self.clamp_stability(t.stability),
             last_recall: t.last_recall.min(now),
             created_at: t.created_at.min(now),
+            model_id,
+            vector,
             ..t
         })
     }
@@ -209,10 +227,15 @@ impl Engram {
         Ok(self.store.find(view, limit)?.into_iter().filter_map(|t| self.checked(t, now)).collect())
     }
 
-    fn near(&self, q: &[f32], min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
+    /// The usable hits, and the cosine of the k-th hit the store returned when it
+    /// returned k (a row dropped by [`Self::checked`] still proves there may be more).
+    /// A cosine is never above 1, and a non-finite one is no match (`NaN.min(1)` is 1).
+    fn near(&self, q: &[f32], min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<(Vec<Hit>, Option<f64>)> {
         let now = self.now();
         let hits = self.store.near(q, self.embedder.model_id(), min_cos, k, stated_by)?;
-        Ok(hits.into_iter().filter_map(|h| Some(Hit { trace: self.checked(h.trace, now)?, cos: h.cos.min(1.0) })).collect())
+        let kth = if hits.len() >= k { hits.last().map(|h| if h.cos.is_finite() { h.cos.min(1.0) } else { 1.0 }) } else { None };
+        let usable = hits.into_iter().filter(|h| h.cos.is_finite() && h.trace.vector.len() == q.len());
+        Ok((usable.filter_map(|h| Some(Hit { trace: self.checked(h.trace, now)?, cos: h.cos.min(1.0) })).filter(|h| !h.trace.vector.is_empty()).collect(), kth))
     }
 
     /// The trace with `id`.
@@ -241,20 +264,22 @@ impl Engram {
         self.store.clear()?;
         self.write_times.clear();
         self.exposures.clear();
+        self.failed.clear();
         Ok(())
     }
 
-    /// A fresh id no trace (nor `taken`) has: a gist that repeats its seed's text in the
-    /// same millisecond must not inherit — and then lose — the seed's id under a
-    /// generator derived from text and time. A generator stuck on used ids is an error.
+    /// A fresh, valid ([`valid_id`]) id no trace (nor `taken`) has: a gist that repeats
+    /// its seed's text in the same millisecond must not inherit — and then lose — the
+    /// seed's id under a generator derived from text and time. A generator stuck on
+    /// invalid or used ids is an error.
     fn new_id(&mut self, millis: i64, text: &str, taken: &[String]) -> Result<String> {
         for _ in 0..64 {
             let id = (self.ids)(millis, text);
-            if !id.is_empty() && !taken.contains(&id) && self.store.find(View::Id(&id), 1)?.is_empty() {
+            if valid_id(&id) && !taken.contains(&id) && self.store.find(View::Id(&id), 1)?.is_empty() {
                 return Ok(id);
             }
         }
-        Err("the id generator keeps returning ids that are empty or in use".into())
+        Err("the id generator keeps returning ids that are invalid or in use".into())
     }
 
     /// A freshly embedded vector, normalised — or `None` when the embedder contradicted
@@ -297,7 +322,8 @@ impl Engram {
         if text.is_empty() {
             return Ok(Remembered::Rejected);
         }
-        if let Some(t) = self.find(View::Text(&text), 1)?.pop() {
+        // The first usable trace with this text (an unusable older one must not hide it).
+        if let Some(t) = self.find(View::Text(&text), TEXT_PROBE)?.into_iter().next() {
             let w = self.retrieved(&t, now, 1.0);
             self.store.write(&[w])?;
             return Ok(Remembered::Reinforced(self.memory(&t.id)?.unwrap_or(t)));
@@ -311,22 +337,23 @@ impl Engram {
         self.write_times.push(now);
         let v = self.embedder.embed_documents(&[&text]).ok().and_then(|vs| vs.into_iter().next()).and_then(|v| self.vector(&v));
         let model_id = self.embedder.model_id().to_owned();
-        let nearest = match &v {
+        let (nearest, cued) = match &v {
             Some(v) => {
-                let q = self.cue_vectors(&[(cue.as_str(), v.as_slice())]).remove(0);
-                self.near(&q, self.cfg.theta_related, 1, None)?.pop()
+                let (q, cued) = self.cue_vectors(&[(cue.as_str(), v.as_slice())]).remove(0);
+                (self.near(&q, self.cfg.theta_related, 1, None)?.0.pop(), cued)
             }
-            None => None,
+            None => (None, false),
         };
-        // An unindexed trace might be what this write reactivates: then it is not
-        // known to reactivate nothing, and stays labile until a dream can tell.
-        let consolidated = v.is_some() && nearest.is_none() && self.store.find(View::Stale { model_id: &model_id }, 1)?.is_empty();
+        // A cue that could not be embedded, or an unindexed trace, might be what this
+        // write reactivates: then it is not known to reactivate nothing, and it stays
+        // labile until a dream can tell.
+        let consolidated = cued && nearest.is_none() && self.store.find(View::Stale { model_id: &model_id }, 1)?.is_empty();
         let sal = if salience.is_nan() { 1.0 } else { salience.clamp(0.0, 10.0) };
         let trace = Trace {
             id: self.new_id((now * 1000.0) as i64, &text, &[])?,
             text,
             created_at: now as i64,
-            tz: tz_field(&self.timezone, now),
+            tz: clean_tz(&tz_field(&self.timezone, now), TZ_MAX),
             last_recall: now as i64,
             stability: self.clamp_stability(self.cfg.initial_stability * sal),
             consolidated,
@@ -345,7 +372,10 @@ impl Engram {
     /// among the traces past the grace period. Traces inside it are protected unless
     /// they exceed a tenth of the capacity (a flood evicts its own members) or too few
     /// older traces exist. `new` itself may be the victim. The candidates are the heads
-    /// of the stability bands ([`Trace::band`]): one short index read per band.
+    /// of every stability band ([`Trace::band`]) — every band, not only those up to the
+    /// configured maximum: a row stored above it (a lowered cap, another writer) must
+    /// still die. One short index read per band. Rows are ranked as [`Self::checked`]
+    /// reads them; a row it cannot use counts against the capacity and dies first.
     fn victims(&self, new: &Trace, now: f64) -> Result<Vec<Trace>> {
         let total = self.store.count(View::All)? + 1;
         let excess = total.saturating_sub(self.cfg.capacity);
@@ -354,23 +384,26 @@ impl Engram {
         }
         let cutoff = (now - self.cfg.grace_period) as i64;
         let young = self.store.count(View::Young { created_after: cutoff })? + usize::from(new.created_at > cutoff);
-        let top = Trace { stability: self.cfg.max_stability, ..new.clone() }.band();
-        let heads = |created_by: i64| -> Result<Vec<Trace>> {
+        let rank = |t: &Trace| t.stability.log2() - (now - t.last_recall as f64).max(0.0) / t.stability;
+        let ranked = |t: Trace| match self.checked(t.clone(), now) {
+            Some(c) => (rank(&c), c),
+            None => (f64::NEG_INFINITY, t),
+        };
+        let heads = |created_by: i64| -> Result<Vec<(f64, Trace)>> {
             let mut pool = Vec::new();
-            for band in 0..=top {
-                pool.extend(self.store.find(View::Band { band, created_by }, excess + BAND_DEPTH)?);
+            for band in 0..=u8::MAX {
+                pool.extend(self.store.find(View::Band { band, created_by }, excess + BAND_DEPTH)?.into_iter().map(ranked));
             }
             Ok(pool)
         };
         let mut pool = if young <= self.cfg.capacity / 10 { heads(cutoff)? } else { Vec::new() };
         if pool.len() < excess {
             pool = heads(i64::MAX)?;
-            pool.push(new.clone());
+            pool.push((rank(new), new.clone()));
         }
-        let rank = |t: &Trace| t.stability.log2() - (now - t.last_recall as f64).max(0.0) / t.stability;
-        pool.sort_by(|a, b| rank(a).total_cmp(&rank(b)).then_with(|| a.id.cmp(&b.id)));
+        pool.sort_by(|a, b| a.0.total_cmp(&b.0).then_with(|| a.1.id.cmp(&b.1.id)));
         pool.truncate(excess);
-        Ok(pool)
+        Ok(pool.into_iter().map(|(_, t)| t).collect())
     }
 
     /// Retrieves up to `inject_n` traces relevant to `query` and packs them for prompt
@@ -416,9 +449,9 @@ impl Engram {
             let mut seen: BTreeMap<String, Trace> = BTreeMap::new(); // id order = insertion order
             let mut unseen_cos = f64::NEG_INFINITY; // the most a trace not returned could have
             for q in &qs {
-                let hits = self.near(q, min_cos, k, None)?;
-                if hits.len() == k {
-                    unseen_cos = unseen_cos.max(hits[k - 1].cos);
+                let (hits, kth) = self.near(q, min_cos, k, None)?;
+                if let Some(c) = kth {
+                    unseen_cos = unseen_cos.max(c);
                 }
                 seen.extend(hits.into_iter().map(|h| (h.trace.id.clone(), h.trace)));
             }
@@ -426,7 +459,7 @@ impl Engram {
                 .into_values()
                 .filter(|t| t.vector.len() == qs[0].len())
                 .map(|t| {
-                    let cos = qs.iter().map(|q| dot(&t.vector, q).min(1.0)).fold(f64::NEG_INFINITY, f64::max);
+                    let cos = qs.iter().map(|q| dot(&t.vector, q).min(1.0)).fold(f64::NEG_INFINITY, f64::max); // vectors are finite (checked)
                     let rv = self.retrievability(&t, now);
                     let score = self.activation(cos) * (self.cfg.alpha + (1.0 - self.cfg.alpha) * rv);
                     (t, score, cos, rv)
@@ -507,10 +540,11 @@ impl Engram {
     // ------------------------------------------------- reactivation candidates
 
     /// Each (cue, own vector) pair's query vector: the cue's, or the trace's own vector
-    /// when it has no cue. The distinct non-empty cues are embedded in one call; when it
-    /// fails every pair falls back to its own vector, and a missing or wrong-dimension
-    /// result falls back for its own pairs only.
-    fn cue_vectors(&mut self, pairs: &[(&str, &[f32])]) -> Vec<Vec<f32>> {
+    /// when it has no cue — and whether that is the query the pair asked for. The
+    /// distinct non-empty cues are embedded in one call; when it fails every cued pair
+    /// falls back to its own vector, and a missing or wrong-dimension result falls back
+    /// for its own pairs only. A fallback search cannot prove "reactivates nothing".
+    fn cue_vectors(&mut self, pairs: &[(&str, &[f32])]) -> Vec<(Vec<f32>, bool)> {
         let mut slot: HashMap<&str, usize> = HashMap::new();
         let mut distinct: Vec<&str> = Vec::new();
         for &(cue, _) in pairs {
@@ -529,7 +563,10 @@ impl Engram {
         };
         pairs
             .iter()
-            .map(|&(cue, own)| slot.get(cue).and_then(|&s| embedded.get(s).cloned().flatten()).unwrap_or_else(|| own.to_vec()))
+            .map(|&(cue, own)| match slot.get(cue).and_then(|&s| embedded.get(s).cloned().flatten()) {
+                Some(q) => (q, true),
+                None => (own.to_vec(), cue.is_empty() && !own.is_empty()),
+            })
             .collect()
     }
 
@@ -537,17 +574,24 @@ impl Engram {
     /// θ_related and not stated after the seed (facts of the same second — one turn's
     /// saves — are simultaneous), at most `dream_max_members − 1`.
     fn candidates(&self, q: &[f32], seed: &Trace) -> Result<Vec<Trace>> {
-        let hits = self.near(q, self.cfg.theta_related, self.cfg.dream_max_members, Some(seed.created_at))?;
+        let (hits, _) = self.near(q, self.cfg.theta_related, self.cfg.dream_max_members, Some(seed.created_at))?;
         Ok(hits.into_iter().map(|h| h.trace).filter(|t| t.id != seed.id).take(self.cfg.dream_max_members - 1).collect())
     }
 
     // ------------------------------------------------------ sleep phase (§5)
 
     /// The labile traces a dream of `budget` takes: first in, first out, at most
-    /// 8·budget. FIFO needs no ranking and never starves a seed.
+    /// 8·budget, except that seeds whose verdict failed go after the rest. FIFO needs no
+    /// ranking, and moving failures back keeps a seed the LLM cannot judge from starving
+    /// the queue.
     fn seeds(&self, budget: usize) -> Result<Vec<Trace>> {
         let model_id = self.embedder.model_id();
-        self.find(View::Labile { model_id }, SEEDS_PER_BUDGET.saturating_mul(budget))
+        let want = SEEDS_PER_BUDGET.saturating_mul(budget);
+        let (mut fresh, failed): (Vec<Trace>, Vec<Trace>) =
+            self.find(View::Labile { model_id }, want.saturating_add(self.failed.len()))?.into_iter().partition(|t| !self.failed.contains(&t.id));
+        fresh.extend(failed);
+        fresh.truncate(want);
+        Ok(fresh)
     }
 
     /// The clusters the next [`Engram::dream`] would hand to the LLM (seed first),
@@ -556,7 +600,7 @@ impl Engram {
         let seeds = self.seeds(budget.unwrap_or(self.cfg.dream_budget))?;
         let qs = self.cue_vectors(&seeds.iter().map(|t| (t.cue.as_str(), t.vector.as_slice())).collect::<Vec<_>>());
         let mut out = Vec::new();
-        for (seed, q) in seeds.into_iter().zip(&qs) {
+        for (seed, (q, _)) in seeds.into_iter().zip(&qs) {
             let near = self.candidates(q, &seed)?;
             if !near.is_empty() {
                 out.push(std::iter::once(seed).chain(near).collect());
@@ -567,7 +611,10 @@ impl Engram {
 
     /// Offline consolidation — the only place traces are rewritten: re-index a batch of
     /// stale traces, then up to `budget` LLM verdicts (keep / replace, one atomic write
-    /// each). Every report is its own undo record ([`Engram::undo`]).
+    /// each). Every report is its own undo record ([`Engram::undo`]), so once a verdict is
+    /// applied the dream no longer returns `Err`: a later failure (the store, the LLM, the
+    /// embedder) is the last report, an [`DreamAction::Error`] that changed nothing, and
+    /// ends the dream. Only a failure before any verdict (re-indexing) is an `Err`.
     pub fn dream(&mut self, adjudicator: &mut dyn Adjudicator, budget: Option<usize>) -> Result<Vec<DreamReport>> {
         let now = self.now();
         let mut left = budget.unwrap_or(self.cfg.dream_budget);
@@ -581,28 +628,77 @@ impl Engram {
         // Seeds that reactivate nothing are settled together in one write at the end: the
         // flag changes no later search, and a lost write only repeats a cheap check.
         let mut settled: Vec<Trace> = Vec::new();
-        for (seed, q) in seeds.iter().zip(&qs) {
+        for (seed, (q, cued)) in seeds.iter().zip(&qs) {
             if left == 0 {
                 break;
             }
-            let Some(seed) = self.memory(&seed.id)?.filter(|s| !s.consolidated) else { continue };
-            let near = self.candidates(q, &seed)?;
+            let near = match self.memory(&seed.id).and_then(|s| Ok(match s.filter(|s| !s.consolidated) {
+                Some(s) => Some((self.candidates(q, &s)?, s)),
+                None => None,
+            })) {
+                Ok(Some(found)) => found,
+                Ok(None) => continue,
+                Err(e) => {
+                    reports.push(self.failure(std::slice::from_ref(seed), now, &e));
+                    break;
+                }
+            };
+            let (near, seed) = near;
             if near.is_empty() {
-                settled.push(seed);
+                if *cued {
+                    settled.push(seed);
+                } else {
+                    self.defer(seed.id); // a fallback search proves nothing: labile, behind the rest
+                }
                 continue;
             }
             left -= 1;
+            let id = seed.id.clone();
             let cluster: Vec<Trace> = std::iter::once(seed).chain(near).collect();
-            reports.push(self.adjudicate(adjudicator, cluster, now)?); // an error leaves the seed labile
-        }
-        let mut writes = Vec::new();
-        for t in &settled {
-            if self.memory(&t.id)?.is_some() {
-                writes.push(Write::State { id: &t.id, last_recall: t.last_recall, stability: t.stability, consolidated: true });
+            let report = self.adjudicate(adjudicator, cluster, now); // an error leaves the seed labile
+            let stored = report.stored_error;
+            if report.report.action == DreamAction::Error {
+                self.defer(id);
+            } else {
+                self.failed.retain(|f| *f != id);
+            }
+            reports.push(report.report);
+            if stored {
+                return Ok(reports); // the store is failing: stop, keep what was applied
             }
         }
-        self.store.write(&writes)?;
+        // A lost settle write only repeats a cheap check at the next dream: never an error.
+        let writes: Vec<Write<'_>> =
+            settled.iter().map(|t| Write::State { id: &t.id, last_recall: t.last_recall, stability: t.stability, consolidated: true }).collect();
+        if let Err(e) = self.store.write(&writes) {
+            reports.push(DreamReport { action: DreamAction::Error, before: Vec::new(), absorbed: Vec::new(), after: Vec::new(), error: Some(e.to_string()) });
+        }
         Ok(reports)
+    }
+
+    /// Queues `id` after the other seeds (most recent deferral last, oldest forgotten first).
+    fn defer(&mut self, id: String) {
+        self.failed.retain(|f| *f != id);
+        self.failed.push(id);
+        let over = self.failed.len().saturating_sub(SEEDS_PER_BUDGET.saturating_mul(self.cfg.dream_budget.max(1)));
+        self.failed.drain(..over);
+    }
+
+    /// One trace as a dream request member.
+    fn member(&self, t: &Trace, now: f64) -> DreamMember {
+        DreamMember {
+            id: t.id.clone(),
+            text: t.text.clone(),
+            local_time: fmt_local(t.created_at, &t.tz),
+            timezone: t.tz.clone(),
+            retrievability: (self.retrievability(t, now) * 100.0).round() / 100.0,
+        }
+    }
+
+    /// The report of a cluster that failed before anything was written.
+    fn failure(&self, cluster: &[Trace], now: f64, e: &crate::Error) -> DreamReport {
+        let before = cluster.iter().map(|t| self.member(t, now)).collect();
+        DreamReport { action: DreamAction::Error, before, absorbed: Vec::new(), after: Vec::new(), error: Some(e.to_string()) }
     }
 
     /// Reverses one dream verdict: a replace removes its gists and restores what it
@@ -626,40 +722,36 @@ impl Engram {
         }
     }
 
-    fn adjudicate(&mut self, adjudicator: &mut dyn Adjudicator, cluster: Vec<Trace>, now: f64) -> Result<DreamReport> {
-        let request = DreamRequest {
-            current_time: self.local_at(now),
-            members: cluster
-                .iter()
-                .map(|t| DreamMember {
-                    id: t.id.clone(),
-                    text: t.text.clone(),
-                    local_time: fmt_local(t.created_at, &t.tz),
-                    timezone: t.tz.clone(),
-                    retrievability: (self.retrievability(t, now) * 100.0).round() / 100.0,
-                })
-                .collect(),
-        };
+    /// One cluster's verdict, applied in one atomic write. Never fails: a failure is an
+    /// `Error` report that changed nothing (`stored_error` when the store refused the write).
+    fn adjudicate(&mut self, adjudicator: &mut dyn Adjudicator, cluster: Vec<Trace>, now: f64) -> Adjudicated {
+        let request = DreamRequest { current_time: self.local_at(now), members: cluster.iter().map(|t| self.member(t, now)).collect() };
         let report = |action, absorbed, after, error| DreamReport { action, before: request.members.clone(), absorbed, after, error };
         // The embedder call inside gists() is as fallible as the LLM: both leave the seed labile.
         let verdict = adjudicator.adjudicate(&request).and_then(|d| self.verdict(d, &cluster, now));
         let (absorbed, gists) = match verdict {
             Ok(v) => v,
-            Err(e) => return Ok(report(DreamAction::Error, Vec::new(), Vec::new(), Some(e.to_string()))),
+            Err(e) => return Adjudicated { report: report(DreamAction::Error, Vec::new(), Vec::new(), Some(e.to_string())), stored_error: false },
         };
-        if gists.is_empty() {
+        let written = if gists.is_empty() {
             let s = &cluster[0];
-            self.store.write(&[Write::State { id: &s.id, last_recall: s.last_recall, stability: s.stability, consolidated: true }])?;
-            return Ok(report(DreamAction::Keep, Vec::new(), Vec::new(), None));
-        }
-        let mut writes: Vec<Write<'_>> = absorbed.iter().map(|t| Write::Remove(&t.id)).collect();
-        writes.extend(gists.iter().map(Write::Insert));
-        self.store.write(&writes)?;
-        Ok(report(DreamAction::Replace, absorbed, gists, None))
+            self.store.write(&[Write::State { id: &s.id, last_recall: s.last_recall, stability: s.stability, consolidated: true }])
+        } else {
+            let mut writes: Vec<Write<'_>> = absorbed.iter().map(|t| Write::Remove(&t.id)).collect();
+            writes.extend(gists.iter().map(Write::Insert));
+            self.store.write(&writes)
+        };
+        let applied = match written {
+            Err(e) => report(DreamAction::Error, Vec::new(), Vec::new(), Some(e.to_string())),
+            Ok(()) if gists.is_empty() => report(DreamAction::Keep, Vec::new(), Vec::new(), None),
+            Ok(()) => report(DreamAction::Replace, absorbed, gists, None),
+        };
+        Adjudicated { stored_error: applied.error.is_some(), report: applied }
     }
 
     /// The absorbed traces (the seed and the candidates the verdict names) and their
-    /// gists — no gists means keep.
+    /// gists — no gists means keep. A replace whose every text cleans to nothing is an
+    /// error, not a keep: silence never settles a seed.
     fn verdict(&mut self, d: DreamDecision, cluster: &[Trace], now: f64) -> Result<(Vec<Trace>, Vec<Trace>)> {
         let mut texts: Vec<String> = Vec::new();
         for t in &d.memories {
@@ -667,6 +759,9 @@ impl Engram {
             if !c.is_empty() && !texts.contains(&c) {
                 texts.push(c);
             }
+        }
+        if texts.is_empty() && !d.memories.is_empty() {
+            return Err("the verdict's memories are empty after cleaning".into());
         }
         let picked: HashSet<&str> = d.absorbed_ids.iter().map(String::as_str).collect();
         let absorbed: Vec<Trace> =

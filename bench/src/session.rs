@@ -12,7 +12,9 @@ use serde_json::{json, Value};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 
-/// The runner's turn log: a small redb file beside the store, one row per turn.
+/// The runner's turn log: a small redb file beside the store, one row per turn. Each
+/// save is one redb transaction, so a crash never leaves a torn row; but the log and the
+/// store commit separately, so after a crash the log may lag the store by one turn.
 struct TurnLog(redb::Database);
 
 const TURNS: redb::TableDefinition<u64, &str> = redb::TableDefinition::new("turns");
@@ -82,7 +84,7 @@ impl Session {
         // SPEC §2: a missing model is no reason not to start — memories are kept unindexed
         // and indexed once the model is back.
         let (embedder, status) = crate::embedder(&cfg.glob).unwrap_or_else(|e| (Box::new(crate::Offline), format!("ERROR — {e}")));
-        let llm = client(&cfg.glob);
+        let llm = client(&cfg.glob)?;
         Self::with_parts(cfg, embedder, status, llm, &crate::settings::db_path(), wipe)
     }
 
@@ -181,7 +183,7 @@ impl Session {
         })
     }
 
-    /// Bytes of the database file and its WAL / SHM companions.
+    /// Bytes of the store file and the turn log beside it.
     pub fn db_size_bytes(&self) -> u64 {
         [self.db_path.clone(), self.db_path.with_extension("turns")].iter().filter_map(|p| std::fs::metadata(p).ok()).map(|m| m.len()).sum()
     }
@@ -203,19 +205,20 @@ impl Session {
     }
 
     /// Every trace, strongest first, as `ltm run --inspect` prints it.
-    pub fn snapshot(&self) -> Vec<Value> {
+    pub fn snapshot(&self) -> engram::Result<Vec<Value>> {
         let m = &self.memory;
         let now = m.now();
-        let all = crate::all_traces(m);
+        let all = crate::all_traces(m)?;
         let mut rows: Vec<(f64, &engram::Trace)> = all.iter().map(|t| (m.strength(t, now), t)).collect();
         rows.sort_by(|a, b| b.0.total_cmp(&a.0));
-        rows.iter()
+        Ok(rows
+            .iter()
             .map(|(strength, t)| {
                 json!({"id": t.id, "text": t.text, "local": fmt_local(t.created_at, &t.tz), "tz": t.tz,
                        "stability_days": round_to(t.stability / 86_400.0, 2), "R": round_to(m.retrievability(t, now), 3),
                        "strength_days": round_to(strength / 86_400.0, 2), "consolidated": t.consolidated,
                        "last_recall": t.last_recall, "model_id": t.model_id})
             })
-            .collect()
+            .collect())
     }
 }

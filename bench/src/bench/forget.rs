@@ -28,6 +28,27 @@ pub struct Spec {
     pub dream: bool,
 }
 
+impl Spec {
+    /// Rejects a timeline that cannot be run (an unknown arm, a non-positive span or
+    /// capacity, a rehearsed fraction outside [0, 1], a non-finite salience).
+    pub fn validate(&self) -> Result<()> {
+        let bad = if !ARMS.contains(&self.arm.as_str()) {
+            format!("unknown arm {}", self.arm)
+        } else if !(self.span_days.is_finite() && self.span_days > 0.0) {
+            format!("--span-days must be positive, got {}", self.span_days)
+        } else if self.capacity == 0 {
+            "--capacity must be positive".into()
+        } else if !(0.0..=1.0).contains(&self.rehearsed_frac) {
+            format!("--rehearsed-frac must be in [0, 1], got {}", self.rehearsed_frac)
+        } else if !self.salience.is_finite() {
+            format!("--salience must be finite, got {}", self.salience)
+        } else {
+            return Ok(());
+        };
+        Err(bad.into())
+    }
+}
+
 enum Event {
     Noise(usize),
     Rehearse(usize),
@@ -58,7 +79,7 @@ impl Run<'_> {
             "none" => {}
             arm => {
                 loop {
-                    let rows = crate::all_traces(&self.m);
+                    let rows = crate::all_traces(&self.m)?;
                     if rows.len() <= self.spec.capacity {
                         break;
                     }
@@ -69,7 +90,7 @@ impl Run<'_> {
                         _ => self.rng.randrange(rows.len()),
                     };
                     let id = rows[i].id.clone();
-                    victims.push(self.m.forget(&id)?.expect("present").text);
+                    victims.push(self.m.forget(&id)?.ok_or("listed trace vanished")?.text);
                 }
             }
         }
@@ -81,15 +102,15 @@ impl Run<'_> {
 }
 
 /// Probes every gold fact without side effects and summarises survival and ranking.
-fn measure(m: &mut Engram, corpus: &Corpus, rehearsed: &HashSet<&str>, t0: f64) -> Value {
-    let alive: HashSet<String> = crate::all_traces(m).into_iter().map(|t| t.text).collect();
+fn measure(m: &mut Engram, corpus: &Corpus, rehearsed: &HashSet<&str>, t0: f64) -> Result<Value> {
+    let alive: HashSet<String> = crate::all_traces(m)?.into_iter().map(|t| t.text).collect();
     let mut out = json!({"records": alive.len(), "day": ((m.now() - t0) / DAY).round() as i64});
     for (group, used) in [("rehearsed", true), ("dormant", false)] {
         let items: Vec<_> = corpus.gold.iter().filter(|g| rehearsed.contains(g.fact.as_str()) == used).collect();
         let (mut top1, mut hit5, mut mrr, mut probes, mut beaten) = (0.0, 0.0, 0.0, 0.0, 0.0);
         for g in &items {
             for p in &g.probes {
-                let texts: Vec<String> = m.peek(p).expect("peek").recalled.into_iter().map(|c| c.trace.text).collect();
+                let texts: Vec<String> = m.peek(p)?.recalled.into_iter().map(|c| c.trace.text).collect();
                 probes += 1.0;
                 let has_distractor = !g.distractor.is_empty();
                 if let Some(i) = texts.iter().position(|t| *t == g.fact) {
@@ -115,37 +136,49 @@ fn measure(m: &mut Engram, corpus: &Corpus, rehearsed: &HashSet<&str>, t0: f64) 
     let distractors: Vec<&str> = corpus.gold.iter().map(|g| g.distractor.as_str()).filter(|d| !d.is_empty()).collect();
     out["noise_survival"] = json!(r4(corpus.noise.iter().filter(|n| alive.contains(*n)).count() as f64 / corpus.noise.len().max(1) as f64));
     out["distractor_survival"] = json!(r4(distractors.iter().filter(|d| alive.contains(**d)).count() as f64 / distractors.len().max(1) as f64));
-    out
+    Ok(out)
 }
 
-/// Violations of SPEC §7 at `now` (all zero when healthy).
-pub fn invariants(m: &Engram, capacity: usize) -> Value {
+/// Violations of SPEC §7 at `now` (all zero when healthy; `store_mismatch` is -1 when
+/// the store could not count).
+pub fn invariants(m: &Engram, capacity: usize) -> Result<Value> {
     let now = m.now();
-    let all = crate::all_traces(m);
+    let all = crate::all_traces(m)?;
     let rs: Vec<f64> = all.iter().map(|t| m.retrievability(t, now)).collect();
     let max_s = m.config().max_stability;
-    json!({
+    Ok(json!({
         "nan": rs.iter().filter(|r| r.is_nan()).count(),
         "r_out_of_range": rs.iter().filter(|r| !(0.0..=1.0).contains(*r)).count(),
         "stability_out_of_range": all.iter().filter(|t| !(1.0..=max_s).contains(&t.stability)).count(),
         "over_capacity": all.len().saturating_sub(capacity),
         "store_mismatch": m.stats().map_or(-1, |s| s.records as i64 - all.len() as i64),
-    })
+    }))
+}
+
+/// How many violations a run's `invariants` and `forget_api` record: every count by
+/// magnitude, so a negative mismatch or the -1 sentinel adds instead of cancelling.
+pub fn violations(run: &Value) -> u64 {
+    let sum = |v: &Value| v.as_object().map_or(0, |o| o.values().filter_map(Value::as_i64).map(i64::unsigned_abs).sum::<u64>());
+    sum(&run["invariants"]) + run["forget_api"]["leaked"].as_u64().unwrap_or(0) + run["forget_api"]["store_mismatch"].as_i64().map_or(0, i64::unsigned_abs)
 }
 
 /// Explicit forgetting (SPEC §4 forget): a deleted fact is never recalled again.
 fn forget_api_check(m: &mut Engram, corpus: &Corpus) -> Result<Value> {
-    let alive: HashMap<String, String> = crate::all_traces(m).into_iter().map(|t| (t.text, t.id)).collect();
+    let alive: HashMap<String, String> = crate::all_traces(m)?.into_iter().map(|t| (t.text, t.id)).collect();
     let targets: Vec<_> = corpus.gold.iter().filter(|g| alive.contains_key(&g.fact)).take(10).collect();
     for g in &targets {
         m.forget(&alive[&g.fact])?;
     }
-    let leaked = targets.iter().flat_map(|g| g.probes.iter().map(move |p| (g, p))).filter(|(g, p)| m.peek(p).expect("peek").recalled.iter().any(|c| c.trace.text == g.fact)).count();
-    Ok(json!({"deleted": targets.len(), "leaked": leaked, "store_mismatch": m.stats()?.records as i64 - crate::all_traces(m).len() as i64}))
+    let mut leaked = 0;
+    for (g, p) in targets.iter().flat_map(|g| g.probes.iter().map(move |p| (g, p))) {
+        leaked += usize::from(m.peek(p)?.recalled.iter().any(|c| c.trace.text == g.fact));
+    }
+    Ok(json!({"deleted": targets.len(), "leaked": leaked, "store_mismatch": m.stats()?.records as i64 - crate::all_traces(m)?.len() as i64}))
 }
 
 /// Runs one timeline and returns its result record.
 pub fn run(corpus: &Corpus, spec: &Spec, mut cfg: Config, embedder: Box<dyn Embedder>) -> Result<Value> {
+    spec.validate()?;
     let engine_cap = if spec.arm == "engram" { spec.capacity } else { 1_000_000_000 };
     let arm_cap = if spec.arm == "none" { engine_cap } else { spec.capacity };
     cfg.capacity = engine_cap;
@@ -206,7 +239,7 @@ pub fn run(corpus: &Corpus, spec: &Spec, mut cfg: Config, embedder: Box<dyn Embe
             Event::Dream => {
                 run.m.dream(&mut keep, Some(2))?;
             }
-            Event::Measure => series.push(measure(&mut run.m, corpus, &rehearsed, t0)),
+            Event::Measure => series.push(measure(&mut run.m, corpus, &rehearsed, t0)?),
         }
     }
     let total: usize = run.evicted.values().sum();
@@ -220,7 +253,7 @@ pub fn run(corpus: &Corpus, spec: &Spec, mut cfg: Config, embedder: Box<dyn Embe
         "rehearsals": rehearsals, "rehearsal_hits": hits,
         "evicted": {"gold": ev["gold"], "distractor": ev["distractor"], "noise": ev["noise"]},
         "final": series.last().cloned().unwrap_or_else(|| json!({})), "series": series,
-        "invariants": invariants(&run.m, arm_cap),
+        "invariants": invariants(&run.m, arm_cap)?,
         "evict_precision": if total > 0 { json!(r4(ev["noise"] as f64 / total as f64)) } else { Value::Null },
     });
     result["forget_api"] = forget_api_check(&mut run.m, corpus)?;
@@ -233,26 +266,50 @@ pub fn main(args: &[String]) -> Result<()> {
         println!("ltm bench forget [--arm engram|fifo|lru|random|none] [--seed 1] [--span-days 365] [--capacity 500] [--rehearsed-frac 0.5] [--salience 1] [--dream keep|off] [--cache PATH] [--out PATH]");
         return Ok(());
     }
-    let arm = f.str("arm", "engram");
-    if !ARMS.contains(&arm.as_str()) {
-        return Err(format!("unknown arm {arm}").into());
-    }
     let spec = Spec {
-        arm,
-        seed: f.num("seed", 1),
-        span_days: f.num("span-days", 365.0),
-        capacity: f.num("capacity", 500),
-        rehearsed_frac: f.num("rehearsed-frac", 0.5),
-        salience: f.num("salience", 1.0),
+        arm: f.str("arm", "engram"),
+        seed: f.num("seed", 1)?,
+        span_days: f.num("span-days", 365.0)?,
+        capacity: f.num("capacity", 500)?,
+        rehearsed_frac: f.num("rehearsed-frac", 0.5)?,
+        salience: f.num("salience", 1.0)?,
         dream: f.str("dream", "keep") != "off",
     };
-    let corpus = load_corpus(&bench_dir().join("corpus"));
+    spec.validate()?;
+    let corpus = load_corpus(&bench_dir().join("corpus"))?;
     let cache = CachedEmbedder::load(&f.0.get("cache").filter(|c| !c.is_empty()).map_or_else(|| bench_dir().join("embeddings.bin"), Into::into))?;
     let res = run(&corpus, &spec, Config::default(), Box::new(cache))?;
     let text = serde_json::to_string_pretty(&res)?;
     if f.has("out") {
-        std::fs::write(f.str("out", ""), &text)?;
+        crate::write_atomic(std::path::Path::new(&f.str("out", "")), &text)?;
     }
     println!("{text}");
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn unrunnable_specs_are_rejected() {
+        let ok = Spec { arm: "engram".into(), seed: 1, span_days: 365.0, capacity: 500, rehearsed_frac: 0.5, salience: 1.0, dream: true };
+        assert!(ok.validate().is_ok());
+        for bad in [
+            Spec { rehearsed_frac: 1.5, ..ok.clone() },
+            Spec { rehearsed_frac: f64::NAN, ..ok.clone() },
+            Spec { span_days: 0.0, ..ok.clone() },
+            Spec { capacity: 0, ..ok.clone() },
+            Spec { arm: "lifo".into(), ..ok.clone() },
+        ] {
+            assert!(bad.validate().is_err(), "{bad:?}");
+        }
+    }
+
+    #[test]
+    fn violations_never_cancel() {
+        let r = json!({"invariants": {"nan": 0, "over_capacity": 1, "store_mismatch": -1}, "forget_api": {"leaked": 2, "store_mismatch": -3}});
+        assert_eq!(violations(&r), 7);
+        assert_eq!(violations(&json!({"invariants": {"nan": 0}, "forget_api": {"leaked": 0, "store_mismatch": 0}})), 0);
+    }
 }

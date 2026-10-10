@@ -3,7 +3,7 @@
 secrets/
 
 # Generated data & caches
-# data/ holds runtime artifacts only (the built-in seed scenario lives in src/app/seed.rs).
+# data/ holds runtime artifacts only (the built-in seed scenario lives in bench/src/seed.rs).
 data/seed.csv
 data/*.db
 data/*.db-*

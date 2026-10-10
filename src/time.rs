@@ -1,6 +1,7 @@
 //! Clocks and the timezone field: `'IANA;+HH:MM'` is stamped once (the offset is
 //! frozen into the field), then formatted with pure arithmetic valid for any year.
 
+use crate::text::clean_text;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -53,6 +54,15 @@ pub fn tz_field(name: &str, now: f64) -> String {
     format!("{name};{}", fmt_offset(i64::from(offset.unwrap_or(0))))
 }
 
+/// A stored timezone field held to `max` characters without losing its offset: the
+/// name is cleaned and shortened, the `;+HH:MM` after the last `;` is kept whole.
+pub fn clean_tz(field: &str, max: usize) -> String {
+    let Some((name, offset)) = field.rsplit_once(';') else { return clean_text(field, max) };
+    let offset = clean_text(offset, max.saturating_sub(1));
+    let name = clean_text(name, max.saturating_sub(offset.chars().count() + 1));
+    format!("{name};{offset}")
+}
+
 fn fmt_offset(seconds: i64) -> String {
     let a = seconds.abs();
     format!("{}{:02}:{:02}", if seconds < 0 { '-' } else { '+' }, a / 3600, a % 3600 / 60)
@@ -86,7 +96,7 @@ pub fn parse_offset(text: &str) -> i64 {
 /// `'2026-06-11 21:30 +09:00'` from Unix seconds and a stored `'IANA;+offset'`
 /// field: pure offset arithmetic (no tz database), valid for any year (SPEC §2).
 pub fn fmt_local(unix: i64, tz_field: &str) -> String {
-    let seconds = parse_offset(tz_field.split(';').nth(1).unwrap_or("+00:00"));
+    let seconds = parse_offset(tz_field.rsplit_once(';').map_or("+00:00", |(_, o)| o));
     let local = unix.saturating_add(seconds);
     let (days, sod) = (local.div_euclid(86_400), local.rem_euclid(86_400));
     let (y, m, d) = civil_from_days(days);
@@ -124,6 +134,15 @@ mod tests {
         assert_eq!(parse_offset("+12345"), 0);
         assert_eq!(parse_offset("+1あ"), 0); // a multi-byte offset is malformed, not a panic
         assert!(fmt_local(0, "X;+é1").ends_with("+00:00"));
+    }
+
+    #[test]
+    fn a_long_or_odd_zone_name_keeps_its_offset() {
+        let long = format!("{};+09:00", "Very/Long_Zone".repeat(10));
+        let kept = clean_tz(&long, 64);
+        assert!(kept.chars().count() <= 64 && kept.ends_with(";+09:00"));
+        assert_eq!(fmt_local(0, &kept), "1970-01-01 09:00 +09:00");
+        assert_eq!(fmt_local(0, "odd;name;-05:00"), "1969-12-31 19:00 -05:00");
     }
 
     #[test]

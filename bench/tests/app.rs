@@ -14,17 +14,19 @@ use std::sync::{Arc, Mutex};
 use support::{temp_dir, FakeEmbedder, DAY};
 
 /// Saves the utterance (with a salience and a cue), deletes on `forget:<id> …`, cites
-/// every memory it was shown, and returns canned extraction candidates.
+/// every memory it was shown, and returns canned extraction candidates. With `fails`
+/// every converse reports an unreachable model.
 struct Scripted {
     saves: usize,
     extract: Vec<String>,
     known: Arc<Mutex<Option<String>>>,
+    fails: bool,
 }
 
 impl Scripted {
     fn new(saves: usize, extract: &[&str]) -> (Self, Arc<Mutex<Option<String>>>) {
         let known = Arc::new(Mutex::new(None));
-        (Self { saves, extract: extract.iter().map(|s| s.to_string()).collect(), known: known.clone() }, known)
+        (Self { saves, extract: extract.iter().map(|s| s.to_string()).collect(), known: known.clone(), fails: false }, known)
     }
 }
 
@@ -44,7 +46,7 @@ impl Llm for Scripted {
             tool("delete_memory", &json!({"id": id}));
         }
         let cited: Vec<String> = pack.lines().filter_map(|l| l.find('《').map(|i| l[i..].to_owned())).collect();
-        Converse { text: format!("ok {}", cited.join(" ")), prompt: format!("[pack]{pack}[/pack]") }
+        Converse { text: format!("ok {}", cited.join(" ")), prompt: format!("[pack]{pack}[/pack]"), failed: self.fails }
     }
     fn extract(&mut self, _: &str, _: &str, _: &str, known: &str) -> Vec<String> {
         *self.known.lock().unwrap() = Some(known.to_owned());
@@ -109,13 +111,24 @@ fn per_turn_cap_and_fallback() {
 }
 
 #[test]
+fn a_failed_converse_skips_the_extraction_fallback() {
+    let (mut llm, known) = Scripted::new(0, &["extracted fact"]);
+    llm.fails = true;
+    let dir = temp_dir("failed-converse");
+    let mut s = session(&dir, config(), llm, true);
+    s.run_turn("user likes tea", "").unwrap();
+    assert!(s.metrics.back().unwrap().written.is_empty());
+    assert!(known.lock().unwrap().is_none()); // extract was never asked
+}
+
+#[test]
 fn delete_tool() {
     let dir = temp_dir("delete");
     let mut s = session(&dir, config(), Scripted::new(0, &[]).0, true);
     let id = support::insert(&mut s.memory, "delete me later", 1.0, "");
     s.run_turn(&format!("forget:{id} delete me later"), "").unwrap(); // recalled, so it may be deleted
     assert_eq!(s.metrics.back().unwrap().written[0]["action"], "deleted");
-    assert!(ltm::all_traces(&s.memory).is_empty());
+    assert!(ltm::all_traces(&s.memory).unwrap().is_empty());
 }
 
 fn item(text: &str, note: &str, advance: &str) -> SeedItem {
@@ -163,7 +176,7 @@ fn turn_log_survives_restart_and_a_wipe_clears_it() {
     drop(s);
     let s2 = session(&dir, config(), Scripted::new(1, &[]).0, false);
     assert!(s2.turn == 1 && s2.log[0]["note"] == "n1" && s2.log[0]["system"]["records"] == 1);
-    assert_eq!(ltm::all_traces(&s2.memory).len(), 1);
+    assert_eq!(ltm::all_traces(&s2.memory).unwrap().len(), 1);
     drop(s2);
     assert!(session(&dir, config(), Scripted::new(1, &[]).0, true).log.is_empty()); // a wipe clears it
 }
@@ -180,7 +193,7 @@ fn dream_reports_are_readable() {
     assert_eq!(reports[0]["action"], "keep");
     assert_eq!(reports[0]["before"][0]["text"], "trip kyoto hotel schedule note");
     assert!(s.memory.clusters(None).unwrap().is_empty()); // settled
-    assert_eq!(s.snapshot().len(), 2);
+    assert_eq!(s.snapshot().unwrap().len(), 2);
 }
 
 #[test]
@@ -192,7 +205,7 @@ fn the_model_cannot_delete_what_it_was_not_shown() {
     let id = support::insert(&mut s.memory, "a memory the model never saw", 1.0, "");
     s.run_turn(&format!("forget:{id}"), "").unwrap();
     assert_eq!(s.metrics.back().unwrap().written[0]["action"], "not_injected");
-    assert_eq!(ltm::all_traces(&s.memory).len(), 1);
+    assert_eq!(ltm::all_traces(&s.memory).unwrap().len(), 1);
 }
 
 #[test]
@@ -200,7 +213,7 @@ fn a_session_starts_without_an_embedding_model() {
     let dir = temp_dir("offline");
     let mut s = Session::with_parts(config(), Box::new(ltm::Offline), "ERROR — no model".into(), Box::new(Scripted::new(1, &[]).0), &dir.join("o.db"), true).unwrap();
     s.run_turn("user likes tea", "").unwrap();
-    let m = ltm::all_traces(&s.memory);
+    let m = ltm::all_traces(&s.memory).unwrap();
     assert_eq!(m.len(), 1);
     assert!(m[0].vector.is_empty()); // kept, unindexed until a model is back
 }
@@ -217,7 +230,7 @@ fn a_save_without_a_cue_is_refused_and_the_fallback_keeps_the_fact() {
         }
         fn converse(&mut self, _: &str, user: &str, tool: &mut ToolFn<'_>, _: &str) -> Converse {
             tool("save_memory", &json!({"text": user}));
-            Converse { text: "ok".into(), prompt: String::new() }
+            Converse { text: "ok".into(), ..Converse::default() }
         }
         fn extract(&mut self, user: &str, _: &str, _: &str, _: &str) -> Vec<String> {
             vec![user.to_owned()]
@@ -231,5 +244,5 @@ fn a_save_without_a_cue_is_refused_and_the_fallback_keeps_the_fact() {
     s.run_turn("user likes green tea", "").unwrap();
     let written = &s.metrics.back().unwrap().written;
     assert_eq!(written[0]["action"], "missing_cue");
-    assert_eq!(ltm::all_traces(&s.memory).len(), 1); // kept through the extraction fallback
+    assert_eq!(ltm::all_traces(&s.memory).unwrap().len(), 1); // kept through the extraction fallback
 }

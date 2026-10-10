@@ -3,7 +3,7 @@ name = "ltm-bench"
 version = "1.0.0"
 edition = "2024"
 rust-version = "1.88"
-description = "Benchmarks and a headless runner for the engram crate: SQLite store, llama.cpp embeddings, Claude Code as the LLM."
+description = "Benchmarks and a headless runner for the engram crate: redb-backed Store, llama.cpp embeddings, Claude Code as the LLM."
 license = "MIT"
 publish = false
 

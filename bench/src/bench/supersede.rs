@@ -4,7 +4,7 @@
 //! adjudicates. Only the verdict needs the real LLM.
 //!
 //! `ltm bench supersede --analyze`   cosine distribution and cluster capture, no LLM
-//! `ltm bench supersede --run [--theta 0.65]`   live dream, stale rate (needs an API key)
+//! `ltm bench supersede --run [--theta 0.65]`   live dream, stale rate (needs the Claude Code CLI or a cache that answers every prompt)
 
 use crate::llm::client;
 use crate::settings::AppConfig;
@@ -69,17 +69,18 @@ fn analyze(pairs: &[Update], mut cfg: AppConfig) -> Result<()> {
 /// Lets the real LLM dream (twice: failed seeds are retried) and measures how often a
 /// probe still surfaces the superseded version.
 fn measure(pairs: &[Update], cfg: AppConfig) -> Result<Value> {
-    let mut llm = client(&cfg.glob);
-    if !llm.status().starts_with("OK") {
-        return Err(format!("LLM unavailable: {}", llm.status()).into());
+    let mut llm = client(&cfg.glob)?;
+    let status = llm.status();
+    if !status.starts_with("OK") {
+        return Err(format!("LLM unavailable: {status}").into());
     }
-    println!("live dream via {}", llm.status());
+    println!("live dream via {status}");
     let (mut m, _) = scenario(pairs, cfg.memory.clone(), crate::embedder(&cfg.glob)?.0)?;
-    let before: HashSet<String> = crate::all_traces(&m).into_iter().map(|t| t.text).collect();
+    let before: HashSet<String> = crate::all_traces(&m)?.into_iter().map(|t| t.text).collect();
     let mut judge = |r: &engram::DreamRequest| llm.adjudicate(r);
     let reports = m.dream(&mut judge, Some(1_000_000))?;
     let retry = m.dream(&mut judge, Some(1_000_000))?;
-    let after: HashSet<String> = crate::all_traces(&m).into_iter().map(|t| t.text).collect();
+    let after: HashSet<String> = crate::all_traces(&m)?.into_iter().map(|t| t.text).collect();
     let gists: HashSet<&String> = after.difference(&before).collect();
     let count = |rs: &[engram::DreamReport], a: DreamAction| rs.iter().filter(|r| r.action == a).count();
     let mut errors: Vec<String> = reports.iter().chain(&retry).filter_map(|r| r.error.clone()).collect::<HashSet<_>>().into_iter().collect();
@@ -119,11 +120,14 @@ fn measure(pairs: &[Update], cfg: AppConfig) -> Result<Value> {
 pub fn main(args: &[String]) -> Result<()> {
     let f = Flags::parse(args);
     let mut cfg = AppConfig::default();
-    let theta: f64 = f.num("theta", 0.0);
-    if theta > 0.0 {
+    if f.has("theta") {
+        let theta: f64 = f.num("theta", 0.0)?;
+        if !(theta > 0.0 && theta <= 1.0) {
+            return Err(format!("--theta must be in (0, 1], got {theta}").into());
+        }
         cfg.memory.theta_related = theta;
     }
-    let pairs = load_updates(&bench_dir().join("updates"));
+    let pairs = load_updates(&bench_dir().join("updates"))?;
     if f.has("analyze") {
         return analyze(&pairs, cfg);
     }
@@ -132,7 +136,7 @@ pub fn main(args: &[String]) -> Result<()> {
     }
     let res = measure(&pairs, cfg.clone())?;
     let out = bench_dir().join(format!("supersede_result_theta{}.json", cfg.memory.theta_related));
-    std::fs::write(&out, serde_json::to_string_pretty(&res)?)?;
+    crate::write_atomic(&out, serde_json::to_string_pretty(&res)?)?;
     let mut summary = res.clone();
     summary.as_object_mut().map(|o| o.remove("samples"));
     println!("{}", serde_json::to_string_pretty(&summary)?);
