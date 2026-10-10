@@ -4,7 +4,7 @@ const { useState, useEffect, useCallback } = React;
 async function api(path, opts) {
   const r = await fetch("/api" + path, opts);
   const data = await r.json().catch(() => ({}));
-  // FastAPI/pydantic 422 bodies put a list in `detail`; stringify so it is readable.
+  // Error bodies carry `detail`; a non-string one is stringified so it is readable.
   if (!r.ok) throw new Error(typeof data.detail === "string" ? data.detail
     : JSON.stringify(data.detail) || ("HTTP " + r.status));
   return data;
@@ -371,9 +371,9 @@ function MetricsView({ state }) {
 
 const LABELS = {
   // global
-  llm_provider: "LLMプロバイダー", deepseek_model: "Deepseekモデル", gemini_model: "Geminiモデル",
+  llm_provider: "LLMプロバイダー", claude_model: "Claudeモデル", llm_cache: "LLM応答キャッシュ", deepseek_model: "Deepseekモデル", gemini_model: "Geminiモデル",
   deepseek_base_url: "Deepseek Base URL", temperature: "temperature", max_output_tokens: "最大出力token",
-  embedding_model: "埋め込みモデル(GGUF)", default_timezone: "既定タイムゾーン",
+  embedding_model: "埋め込みモデル(GGUF / モデル名)", embedding_url: "埋め込みURL(空=ローカルGGUF)", default_timezone: "既定タイムゾーン",
   max_writes_per_turn: "1ターン保存上限", tool_fallback: "保存フォールバック(抽出)",
   // ENGRAM v2 parameters (SPEC §6)
   capacity: "容量(件)", initial_stability: "初期安定度 S0(秒/1日)", spacing_gain: "間隔効果ゲイン",
@@ -386,8 +386,8 @@ const LABELS = {
 };
 
 const GLOB_GROUPS = [
-  ["LLM", ["llm_provider", "deepseek_model", "gemini_model", "deepseek_base_url", "temperature", "max_output_tokens"]],
-  ["埋め込み・ターン", ["embedding_model", "default_timezone", "max_writes_per_turn", "tool_fallback"]],
+  ["LLM", ["llm_provider", "claude_model", "llm_cache", "deepseek_model", "gemini_model", "deepseek_base_url", "temperature", "max_output_tokens"]],
+  ["埋め込み・ターン", ["embedding_model", "embedding_url", "default_timezone", "max_writes_per_turn", "tool_fallback"]],
 ];
 
 function SettingsView({ state, busy, onApplied }) {
@@ -412,7 +412,7 @@ function SettingsView({ state, busy, onApplied }) {
     const label = LABELS[key] || key;
     if (sec === "glob" && key === "llm_provider")
       return html`<div class="field" key=${id}><label>${label}</label>
-        <div class="seg">${["deepseek", "gemini"].map((o) => html`
+        <div class="seg">${["claude-code", "deepseek", "gemini"].map((o) => html`
           <button key=${o} class=${"segbtn " + (val === o ? "on" : "")} onClick=${() => setField(sec, key, o)}>${o}</button>`)}
         </div></div>`;
     if (typeof val === "boolean")
@@ -496,7 +496,7 @@ function SeedEditor({ busy, onChanged }) {
 
   const save = async (alsoSeed) => {
     setErr(null); setMsg(null);
-    // The server normalises via core.seed.clean(); only the instant "empty list" check is ours.
+    // The server normalises the items; only the instant "empty list" check is ours.
     if (!items.some((r) => r.text.trim())) { setErr("少なくとも1件の発話が必要です。"); return; }
     try {
       await apiPost("/seed-utterances", { items });
@@ -612,7 +612,7 @@ function App() {
           <div class="brand-mark"><${Icon} name="sparkle" size=${18} /></div>
           <div class="brand-text">
             <h1>LLM Long-Term Memory</h1>
-            <span class="brand-sub">ENGRAM v2 — EmbeddingGemma GGUF（ローカル） + Deepseek / Gemini</span>
+            <span class="brand-sub">ENGRAM v2.1 — EmbeddingGemma GGUF（ローカル） + Claude (Claude Code) / Deepseek / Gemini</span>
           </div>
         </div>
         <div class="topstatus">

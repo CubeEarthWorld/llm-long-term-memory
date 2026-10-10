@@ -1,0 +1,7 @@
+# The app is built where it runs: use every instruction the CPU has. llama.cpp keys
+# its SIMD kernels off this flag (without it the embedding model runs ~10x slower).
+# Scores stay bit-identical: Rust never fuses a multiply and an add on its own.
+[build]
+rustflags = ["-C", "target-cpu=native"]
+# Leave a fifth of the machine free while compiling (llama.cpp's CMake build inherits this).
+jobs = -4
