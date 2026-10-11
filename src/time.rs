@@ -90,7 +90,11 @@ pub fn parse_offset(text: &str) -> i64 {
     if !digits(h, 1, 2) || !(m.is_empty() || digits(m, 2, 2)) {
         return 0;
     }
-    sign * (h.parse::<i64>().unwrap_or(0) * 3600 + m.parse::<i64>().unwrap_or(0) * 60)
+    let (h, m) = (h.parse::<i64>().unwrap_or(0), m.parse::<i64>().unwrap_or(0));
+    if h > 23 || m > 59 {
+        return 0; // no zone is further than ±23:59 from UTC
+    }
+    sign * (h * 3600 + m * 60)
 }
 
 /// `'2026-06-11 21:30 +09:00'` from Unix seconds and a stored `'IANA;+offset'`

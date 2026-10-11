@@ -2,6 +2,9 @@
 
 use serde_json::Value;
 
+/// Openers tried before giving up on a text.
+const SPAN_TRIES: usize = 8;
+
 /// Best-effort parse: strips ```` ``` ```` fences, then tries the whole text, then the
 /// first `{…}` / `[…]` span. `None` when nothing parses.
 pub fn relaxed_json(text: &str) -> Option<Value> {
@@ -24,37 +27,35 @@ pub fn relaxed_json(text: &str) -> Option<Value> {
     // The leftmost opener that has a closer after it, through the last such closer (one
     // pass: the last closers are found once, not once per opener).
     let (last_brace, last_bracket) = (unfenced.rfind('}'), unfenced.rfind(']'));
-    let span = unfenced.char_indices().find_map(|(i, c)| {
-        let close = match c {
-            '{' => last_brace,
-            '[' => last_bracket,
-            _ => return None,
-        };
-        close.filter(|&j| j > i).map(|j| &unfenced[i..=j])
-    })?;
-    serde_json::from_str(span).ok()
+    unfenced
+        .char_indices()
+        .filter_map(|(i, c)| {
+            let close = match c {
+                '{' => last_brace,
+                '[' => last_bracket,
+                _ => return None,
+            };
+            close.filter(|&j| j > i).map(|j| &unfenced[i..=j])
+        })
+        .take(SPAN_TRIES) // prose such as "[reason] {…}": the next opener may be the object
+        .find_map(|span| serde_json::from_str(span).ok())
 }
 
-/// The non-empty texts of a JSON list whose items are strings or `{"text": …}` objects.
-pub fn json_texts(v: &Value) -> Vec<String> {
+/// The first `max` non-empty texts of a JSON list whose items are strings or
+/// `{"text": "…"}` objects. A number, boolean, list or nested object is not a text.
+pub fn json_texts(v: &Value, max: usize) -> Vec<String> {
     let Some(items) = v.as_array() else { return Vec::new() };
     items
         .iter()
-        .map(|item| match item {
-            Value::Object(o) => o.get("text").map_or(String::new(), scalar),
-            other => scalar(other),
+        .filter_map(|item| match item {
+            Value::String(s) => Some(s.as_str()),
+            Value::Object(o) => o.get("text").and_then(Value::as_str),
+            _ => None,
         })
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
+        .take(max)
         .collect()
-}
-
-fn scalar(v: &Value) -> String {
-    match v {
-        Value::String(s) => s.clone(),
-        Value::Null => String::new(),
-        other => other.to_string(),
-    }
 }
 
 #[cfg(test)]
@@ -68,6 +69,7 @@ mod tests {
         assert_eq!(relaxed_json("x {\"a\":[1]} y"), Some(json!({"a": [1]})));
         assert_eq!(relaxed_json("garbage"), None);
         assert_eq!(relaxed_json(""), None);
-        assert_eq!(json_texts(&json!(["a", " ", {"text": "b"}, null])), ["a", "b"]);
+        assert_eq!(json_texts(&json!(["a", " ", {"text": "b"}, null, 1, true, [2], {"text": 3}]), 8), ["a", "b"]);
+        assert_eq!(json_texts(&json!(["a", "b", "c"]), 2), ["a", "b"]);
     }
 }

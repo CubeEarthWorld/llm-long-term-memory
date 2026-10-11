@@ -61,7 +61,7 @@ The seams:
 
 ## Parameters
 
-All 19 engine parameters live in `engram::Config` (JSON round trip with `to_json` / `merge_json`); see [`SPEC.md`](SPEC.md) §6. Three depend on the embedding model's cosine distribution and are pre-set for EmbeddingGemma: `cosine_floor = 0.4`, `theta_related = 0.55`, `gist_min_cosine = 0.5`.
+All 19 engine parameters live in `engram::Config`; see [`SPEC.md`](SPEC.md) §6. Three depend on the embedding model's cosine distribution and are pre-set for EmbeddingGemma: `cosine_floor = 0.4`, `theta_related = 0.55`, `gist_min_cosine = 0.5`.
 
 ## Performance
 

@@ -61,7 +61,7 @@ memory.dream(&mut |req: &DreamRequest| {                            // JSON を�
 
 ## パラメータ
 
-19 個のエンジンパラメータはすべて `engram::Config` にあります（`to_json` / `merge_json` で JSON と相互変換）。[`SPEC.md`](SPEC.md) §6 を参照してください。埋め込みモデルのコサイン分布に依存する 3 つは EmbeddingGemma 向けに設定済みです: `cosine_floor = 0.4`、`theta_related = 0.55`、`gist_min_cosine = 0.5`。
+19 個のエンジンパラメータはすべて `engram::Config` にあります。[`SPEC.md`](SPEC.md) §6 を参照してください。埋め込みモデルのコサイン分布に依存する 3 つは EmbeddingGemma 向けに設定済みです: `cosine_floor = 0.4`、`theta_related = 0.55`、`gist_min_cosine = 0.5`。
 
 ## 性能
 

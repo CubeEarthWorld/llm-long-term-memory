@@ -55,7 +55,7 @@ fn every_view_matches_a_direct_computation() {
         v.into_iter().map(|t| t.id.clone()).take(25).collect::<Vec<_>>()
     };
     let by_id = |t: &Trace| (0, t.id.clone());
-    assert_eq!(ids(st.find(View::Labile { model_id: "m" }, 25).unwrap()), want(&|t| !t.consolidated && t.model_id == "m", &by_id));
+    assert_eq!(ids(st.find(View::Labile { model_id: "m", after: "" }, 25).unwrap()), want(&|t| !t.consolidated && t.model_id == "m", &by_id));
     let band = live[0].band();
     assert_eq!(ids(st.find(View::Band { band, created_by: 1_500 }, 25).unwrap()), want(&|t| t.band() == band && t.created_at <= 1_500, &|t| (t.last_recall, t.id.clone())));
     assert_eq!(ids(st.find(View::Young { created_after: 1_800 }, 25).unwrap()), want(&|t| t.created_at > 1_800, &|t| (t.created_at, t.id.clone())));
@@ -173,7 +173,7 @@ fn strengthening_keeps_the_vector_where_it_is() {
     st.write(&[Write::Insert(&t), Write::State { id: &t.id, last_recall: 9_000, stability: 5e6, consolidated: false }]).unwrap();
     let got = st.near(&t.vector, &t.model_id, 0.99, 1, None).unwrap().remove(0).trace;
     assert_eq!((got.vector, got.last_recall, got.stability, got.consolidated), (t.vector.clone(), 9_000, 5e6, false));
-    assert_eq!(ids(st.find(View::Labile { model_id: &t.model_id }, 5).unwrap()), vec![t.id.clone()]);
+    assert_eq!(ids(st.find(View::Labile { model_id: &t.model_id, after: "" }, 5).unwrap()), vec![t.id.clone()]);
 }
 
 #[test]
@@ -239,7 +239,7 @@ fn strengthening_never_moves_a_vector_between_lists() {
 }
 
 #[test]
-fn a_damaged_entry_is_an_error_not_a_panic() {
+fn a_damaged_entry_costs_the_vector_not_the_store() {
     let path = temp_dir("short-entry").join("m.redb");
     let t = Trace { model_id: "m".into(), ..trace(1, 8) };
     Store::open(&path).unwrap().write(&[Write::Insert(&t)]).unwrap();
@@ -255,9 +255,10 @@ fn a_damaged_entry_is_an_error_not_a_panic() {
         }
         wx.commit().unwrap();
     }
+    // A damaged index entry costs the row its vector (it reads as unindexed); the store stays usable.
     let st = Store::open(&path).unwrap();
-    assert!(st.find(View::Id(&t.id), 1).is_err());
-    assert!(st.near(&t.vector, "m", 0.0, 5, None).is_err());
+    assert!(st.find(View::Id(&t.id), 1).unwrap()[0].vector.is_empty());
+    assert!(st.near(&t.vector, "m", 0.0, 5, None).unwrap().is_empty());
 }
 
 #[test]

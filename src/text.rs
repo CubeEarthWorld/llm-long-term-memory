@@ -1,6 +1,6 @@
 //! Text hygiene shared by the write and dream paths, and query cue splitting.
 
-/// The whitespace class shared with the Dart engine: Unicode `White_Space`, the
+/// The whitespace class: Unicode `White_Space`, the
 /// information separators U+001C–U+001F and U+FEFF.
 fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1C}'..='\u{1F}').contains(&c) || c == '\u{FEFF}'
@@ -31,10 +31,15 @@ fn is_dropped(c: char) -> bool {
     matches!(c, '《' | '》' | '\u{202A}'..='\u{202E}' | '\u{2066}'..='\u{2069}') || (c.is_control() && !is_space(c))
 }
 
+/// Longest id, in characters (a ULID is 26): an id is quoted in every pack and kept in every index.
+pub const ID_MAX: usize = 128;
+
 /// Whether `id` may name a trace: non-empty, no pack delimiters and no control or
-/// bidirectional control character (an id is cited verbatim inside `《id:…》`).
+/// bidirectional control character, and no whitespace but a plain space (an id is cited
+/// verbatim inside `《id:…》`, one trace per line of the pack: a line break, U+2028 or a
+/// tab inside it would split or reshape the line).
 pub fn valid_id(id: &str) -> bool {
-    !id.is_empty() && !id.chars().any(is_dropped)
+    !id.is_empty() && id.chars().count() <= ID_MAX && !id.chars().any(|c| is_dropped(c) || c.is_control() || (is_space(c) && c != ' '))
 }
 
 /// Normalises a proposition for storage: drops the characters of [`is_dropped`],
@@ -107,6 +112,11 @@ mod tests {
         assert_eq!(cues("1.5 kg is fine", 8), ["1.5 kg is fine"]);
         assert_eq!(cues("a\nb\nc\nd\ne", 2), ["a b", "c d e"]);
         assert!(cues("  \n ", 8).is_empty());
+    }
+
+    #[test]
+    fn ids_hold_no_line_breaking_or_control_character() {
+        assert!(valid_id("01J ABC") && !valid_id("") && !valid_id("a\nb") && !valid_id("a\u{2028}b") && !valid_id("a\tb") && !valid_id("a\u{85}b"));
     }
 
     #[test]

@@ -1,5 +1,7 @@
 //! The 19 engine parameters (SPEC §6).
 
+/// Largest value of a parameter that counts traces, cues or calls.
+const COUNT_MAX: usize = 1 << 20;
 const DAY: f64 = 86_400.0;
 const YEAR: f64 = 365.0 * DAY;
 
@@ -105,6 +107,10 @@ impl Config {
         }
         if self.dream_max_members < 2 || self.inject_n == 0 || self.budget_chars == 0 || self.text_max == 0 {
             return Err("dream_max_members ≥ 2; inject_n, budget_chars, text_max > 0".into());
+        }
+        // Counts that size a search or a batch must stay far from usize overflow.
+        if [self.inject_n, self.max_cues, self.dream_max_members, self.dream_budget].iter().any(|&n| n > COUNT_MAX) {
+            return Err("inject_n, max_cues, dream_max_members and dream_budget must be at most 2^20".into());
         }
         Ok(())
     }

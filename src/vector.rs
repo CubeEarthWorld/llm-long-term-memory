@@ -11,10 +11,17 @@ const LANES: usize = 16;
 /// L2-normalised copy of `v`; a zero vector is returned as-is.
 pub fn normalized(v: &[f32]) -> Vec<f32> {
     let norm = dot(v, v).sqrt();
-    if norm == 0.0 {
+    if norm.is_finite() && norm > 1e-15 {
+        return v.iter().map(|&x| (f64::from(x) / norm) as f32).collect();
+    }
+    // The squares overflowed or vanished in f32: scale by the largest component first.
+    let peak = v.iter().fold(0.0f32, |m, x| if x.abs() > m { x.abs() } else { m });
+    if peak == 0.0 || !peak.is_finite() {
         return v.to_vec();
     }
-    v.iter().map(|&x| (f64::from(x) / norm) as f32).collect()
+    let scaled: Vec<f32> = v.iter().map(|&x| (f64::from(x) / f64::from(peak)) as f32).collect();
+    let norm = dot(&scaled, &scaled).sqrt();
+    scaled.iter().map(|&x| (f64::from(x) / norm) as f32).collect()
 }
 
 /// Dot product (= cosine for unit vectors). Panics on a length mismatch: one model id

@@ -30,6 +30,10 @@ const DREAM_INSTRUCTION: &str = concat!(
     "# 記憶(先頭が新しい痕跡)\n{listing}\n",
 );
 
+/// Most texts or ids read from one answer: a cluster has at most `dream_max_members`
+/// traces, so more texts than this only come from a runaway model (and mean keep anyway).
+const MEMORIES_MAX: usize = 1024;
+
 /// One trace inside a [`DreamRequest`].
 #[derive(Clone, Debug, PartialEq)]
 pub struct DreamMember {
@@ -71,7 +75,26 @@ impl DreamRequest {
     /// pair it with [`DREAM_SYSTEM_PROMPT`] and parse the answer with [`DreamDecision::parse`].
     pub fn prompt(&self) -> String {
         let time = if self.current_time.is_empty() { "(不明)" } else { &self.current_time };
-        DREAM_INSTRUCTION.replace("{listing}", &self.listing()).replace("{current_time}", time)
+        // One pass over the template: text substituted for one placeholder is never read as another.
+        let listing = self.listing();
+        let mut out = String::with_capacity(DREAM_INSTRUCTION.len() + listing.len());
+        let mut rest = DREAM_INSTRUCTION;
+        while let Some(at) = rest.find('{') {
+            out.push_str(&rest[..at]);
+            let tail = &rest[at..];
+            if let Some(t) = tail.strip_prefix("{listing}") {
+                out.push_str(&listing);
+                rest = t;
+            } else if let Some(t) = tail.strip_prefix("{current_time}") {
+                out.push_str(time);
+                rest = t;
+            } else {
+                out.push('{');
+                rest = &tail[1..];
+            }
+        }
+        out.push_str(rest);
+        out
     }
 }
 
@@ -103,7 +126,7 @@ impl DreamDecision {
         if action.trim().eq_ignore_ascii_case("keep") {
             return Some(Self::keep());
         }
-        let memories = json_texts(obj.get("memories").filter(|m| m.is_array())?);
+        let memories = json_texts(obj.get("memories").filter(|m| m.is_array())?, MEMORIES_MAX);
         if memories.is_empty() {
             return None;
         }
@@ -112,6 +135,7 @@ impl DreamDecision {
                 .iter()
                 .map(|i| i.as_str().map_or_else(|| i.to_string(), str::to_owned))
                 .filter(|i| !i.is_empty())
+                .take(MEMORIES_MAX)
                 .collect(),
             _ => Vec::new(),
         };

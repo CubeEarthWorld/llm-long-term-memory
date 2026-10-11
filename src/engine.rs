@@ -6,6 +6,7 @@
 //! nothing and no operation touches more than the traces it is about.
 
 use crate::dream::{Adjudicator, DreamDecision, DreamMember, DreamRequest};
+use crate::guard::Guarded;
 use crate::id::{ulid_ids, IdGen};
 use crate::storage::{Hit, Storage, View, Write};
 use crate::text::{clean_text, cues, valid_id};
@@ -18,9 +19,23 @@ use std::collections::{BTreeMap, HashMap, HashSet};
 const SEEDS_PER_BUDGET: usize = 8;
 /// Traces re-embedded per embedder call.
 const REINDEX_BATCH: usize = 64;
-/// Candidates read per stability band beyond those needed (a band spans a factor of
-/// √2 in stability, so its least recently recalled traces are its weakest but for ties).
+/// Rows read per stability band beyond those needed, in the first window of an eviction
+/// (the window then grows while a weaker row could still lie beyond it).
 const BAND_DEPTH: usize = 8;
+/// Most rows read from one stability band to prove which trace is the weakest.
+const BAND_CAP: usize = 128;
+/// `log2 strength` at or below which a trace is dead (strength ≤ 2⁻⁶⁴ s): which
+/// of two dead traces goes first no longer matters.
+const DEAD: f64 = -64.0;
+/// Unusable rows read past before a read of an ordered view gives up widening.
+const JUNK_READ: usize = 1024;
+/// Most rows one similarity search asks a store for while widening past unusable ones.
+const NEAR_REACH_MAX: usize = 1 << 20;
+/// Labile rows read per page of the dream queue.
+const SEED_PAGE: usize = 64;
+/// How far from unit length a stored vector may be (‖v‖² − 1) before it is not trusted:
+/// room for a store that quantises its vectors, none for a rescaled or zero one.
+const VECTOR_DRIFT: f64 = 0.05;
 /// Traces with one text read to find a usable one before a write counts as new.
 const TEXT_PROBE: usize = 8;
 /// Longest stored timezone field (`'IANA name;+HH:MM'`).
@@ -104,6 +119,16 @@ struct Adjudicated {
     stored_error: bool,
 }
 
+/// One stability band's rows as read for eviction, ranked, and how far they got.
+struct Window {
+    rows: Vec<(f64, Trace)>,
+    /// Rows asked for, whether the band held at least that many, and the time since the
+    /// last row read was recalled.
+    limit: usize,
+    more: bool,
+    last_dt: f64,
+}
+
 /// What one recall cue left behind for [`Engram::cite`].
 #[derive(Clone, Copy, Debug)]
 struct Exposure {
@@ -122,11 +147,13 @@ pub struct Engram {
     timezone: String,
     write_times: Vec<f64>,
     exposures: HashMap<String, Exposure>,
-    /// Seeds whose last dream decided nothing (the verdict failed, or the cue could not be
-    /// embedded), oldest first: queued after the others, so a seed that cannot be settled
-    /// never blocks the ones behind it. At most
-    /// `SEEDS_PER_BUDGET × dream_budget` (the oldest failures are forgotten first).
-    failed: Vec<String>,
+    /// The id of the last seed a dream examined: the next dream continues after it and
+    /// wraps around, so the labile queue is served as a cycle. A seed that cannot be
+    /// settled (the verdict failed, the cue could not be embedded) is met again only
+    /// after the others, and never blocks the ones behind it — however many there are.
+    cursor: String,
+    /// Where the scrub in [`Engram::reindex`] resumes: the last row it checked.
+    scrub: String,
 }
 
 impl Engram {
@@ -138,14 +165,26 @@ impl Engram {
     /// [`Engram::open`] with an injected clock.
     pub fn with_clock(store: Box<dyn Storage>, embedder: Box<dyn Embedder>, cfg: Config, timezone: &str, clock: Clock) -> Result<Self> {
         cfg.validate()?;
-        Ok(Self { cfg, store, embedder, clock, ids: ulid_ids(), timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new(), failed: Vec::new() })
+        Ok(Self { cfg, store: Box::new(Guarded(store)), embedder, clock, ids: ulid_ids(), timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new(), cursor: String::new(), scrub: String::new() })
     }
 
     // ------------------------------------------------------------------ clock
 
     /// Current Unix time, seconds.
     pub fn now(&self) -> f64 {
-        (self.clock)()
+        let t = (self.clock)();
+        if t.is_nan() { 0.0 } else { t.clamp(f64::MIN, f64::MAX) } // every time the engine reads comes from here: finite
+    }
+
+    /// Where the dream's queue resumes (the last seed examined; `""`: the start). It lives
+    /// in the engine: a host that opens a fresh engine for every dream keeps it itself.
+    pub fn dream_cursor(&self) -> &str {
+        &self.cursor
+    }
+
+    /// Resumes the dream's queue after `id` (see [`Engram::dream_cursor`]).
+    pub fn set_dream_cursor(&mut self, id: &str) {
+        self.cursor = id.to_owned();
     }
 
     /// Replaces the time source (seed replays run on a virtual clock).
@@ -170,13 +209,23 @@ impl Engram {
     // ------------------------------------------------- the forgetting curve (§3)
 
     /// `R = 2^(−max(0, now − last_recall) / stability)`.
+    /// Stability is read as the engine reads every row ([`Self::clamp_stability`]), so a
+    /// row straight from the store (zero, negative, NaN) cannot leave `[0, 1]`.
     pub fn retrievability(&self, t: &Trace, now: f64) -> f64 {
-        (-(now - t.last_recall as f64).max(0.0) / t.stability).exp2()
+        (-(now - t.last_recall as f64).max(0.0) / self.clamp_stability(t.stability)).exp2()
     }
 
     /// `S·R` — proportional to the trace's total remaining retrievability.
     pub fn strength(&self, t: &Trace, now: f64) -> f64 {
-        t.stability * self.retrievability(t, now)
+        self.clamp_stability(t.stability) * self.retrievability(t, now)
+    }
+
+    /// A stored vector the engine can search with: the model's dimension, finite, and of
+    /// unit length up to what a quantising store loses (VECTOR_DRIFT). The store ranked and
+    /// thresholded by the very same numbers, so the engine neither rescales nor recomputes.
+    fn sound(&self, v: &[f32]) -> bool {
+        let n2 = dot(v, v);
+        v.len() == self.embedder.dimension() && n2.is_finite() && (n2 - 1.0).abs() <= VECTOR_DRIFT
     }
 
     /// NaN would survive min/max and never fade: an immortal trace.
@@ -192,50 +241,112 @@ impl Engram {
     /// The retrieval update as a state write: stability grows with the spacing achieved
     /// (`1 − R`) and the cue activation `a`; `last_recall` moves to now.
     fn retrieved<'a>(&self, t: &'a Trace, now: f64, a: f64) -> Write<'a> {
-        let s = t.stability * (1.0 + self.cfg.spacing_gain * a * (1.0 - self.retrievability(t, now)));
-        Write::State { id: &t.id, last_recall: now as i64, stability: self.clamp_stability(s), consolidated: t.consolidated }
+        Write::State { id: &t.id, last_recall: now as i64, stability: self.grown(t, now, a), consolidated: t.consolidated }
+    }
+
+    /// The stability after a retrieval at activation `a`.
+    fn grown(&self, t: &Trace, now: f64, a: f64) -> f64 {
+        self.clamp_stability(t.stability * (1.0 + self.cfg.spacing_gain * a * (1.0 - self.retrievability(t, now))))
     }
 
     // ---------------------------------------------------------------- reading
 
     /// A row as the engine may use it. The store is outside the engine's control (an
     /// older version or a hand edit may have written it), so every row read is held to
-    /// the write-time rules: id valid, text, cue and timezone cleaned, stability and
-    /// times clamped, a vector with a non-finite component unindexed. `None`: unusable.
-    fn checked(&self, t: Trace, now: f64) -> Option<Trace> {
+    /// the write-time rules: id valid, text, cue and timezone cleaned, stability
+    /// clamped, a vector with a non-finite component unindexed. `None`: unusable.
+    fn checked(&self, t: Trace) -> Option<Trace> {
         let text = clean_text(&t.text, self.cfg.text_max);
         if !valid_id(&t.id) || text.is_empty() {
             return None;
         }
-        let now = now as i64;
-        let (model_id, vector) = if t.vector.iter().all(|x| x.is_finite()) { (t.model_id, t.vector) } else { (String::new(), Vec::new()) };
+        // A vector the engine did not write (finite, unit length) cannot be trusted as an index.
+        let (model_id, vector) = if t.vector.is_empty() || self.sound(&t.vector) {
+            (t.model_id, t.vector)
+        } else {
+            (String::new(), Vec::new()) // unindexed: the scrub in reindex() embeds it again
+        };
         Some(Trace {
             text,
             cue: clean_text(&t.cue, self.cfg.text_max),
             tz: clean_tz(&t.tz, TZ_MAX),
             stability: self.clamp_stability(t.stability),
-            last_recall: t.last_recall.min(now),
-            created_at: t.created_at.min(now),
             model_id,
             vector,
             ..t
         })
     }
 
+    /// Up to `limit` usable rows of `view`. The store lists rows the engine cannot use
+    /// (empty text, bad id, an unsound vector), so when some are dropped the read widens
+    /// until `limit` usable rows are found or the view ends: no "first N" is ever
+    /// answered from junk alone. Every read of an ordered view goes through here.
     fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>> {
-        let now = self.now();
-        Ok(self.store.find(view, limit)?.into_iter().filter_map(|t| self.checked(t, now)).collect())
+        // Widening is bounded: a view headed by more unusable rows than JUNK_READ + 8·limit
+        // is read no further (eviction removes such rows first, so this is a damaged store).
+        let reach = limit.saturating_mul(8).saturating_add(JUNK_READ);
+        let mut ask = limit;
+        loop {
+            let rows = self.store.find(view, ask)?;
+            let exhausted = rows.len() < ask;
+            let usable: Vec<Trace> = rows.into_iter().filter_map(|t| self.checked(t)).collect();
+            if usable.len() >= limit || exhausted || ask >= reach {
+                return Ok(usable.into_iter().take(limit).collect());
+            }
+            ask = ask.saturating_mul(2).min(reach);
+        }
     }
 
-    /// The usable hits, and the cosine of the k-th hit the store returned when it
-    /// returned k (a row dropped by [`Self::checked`] still proves there may be more).
-    /// A cosine is never above 1, and a non-finite one is no match (`NaN.min(1)` is 1).
+    /// The `k` best usable hits, and the cosine of the k-th when the store may hold more.
+    /// The store ranks rows it cannot judge, so when some are dropped the search widens
+    /// until `k` usable hits are found or the store runs out: junk nearer than the real
+    /// answer never hides it. The cosine is recomputed from the vector that passed
+    /// [`Self::sound`] — with the same `dot` the store uses, so an honest store gives the
+    /// same number — and held to `min_cos`; it is never above 1 and a non-finite one is no match.
     fn near(&self, q: &[f32], min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<(Vec<Hit>, Option<f64>)> {
-        let now = self.now();
-        let hits = self.store.near(q, self.embedder.model_id(), min_cos, k, stated_by)?;
-        let kth = if hits.len() >= k { hits.last().map(|h| if h.cos.is_finite() { h.cos.min(1.0) } else { 1.0 }) } else { None };
-        let usable = hits.into_iter().filter(|h| h.cos.is_finite() && h.trace.vector.len() == q.len());
-        Ok((usable.filter_map(|h| Some(Hit { trace: self.checked(h.trace, now)?, cos: h.cos.min(1.0) })).filter(|h| !h.trace.vector.is_empty()).collect(), kth))
+        // No search can return more rows than the store holds, so that bounds the widening (and
+        // a store that answers every ask in full, however large, is not asked for ever more).
+        let reach = self.store.count(View::All)?.min(NEAR_REACH_MAX).max(k);
+        let mut ask = k;
+        let usable = loop {
+            let hits = self.store.near(q, self.embedder.model_id(), min_cos, ask, stated_by)?;
+            let exhausted = hits.len() < ask;
+            let usable: Vec<Hit> = hits
+                .into_iter()
+                .filter(|h| h.trace.vector.len() == q.len())
+                .filter_map(|h| {
+                    let trace = self.checked(h.trace)?;
+                    if trace.vector.len() != q.len() {
+                        return None;
+                    }
+                    let cos = dot(&trace.vector, q);
+                    (cos.is_finite() && cos >= min_cos).then(|| Hit { trace, cos: cos.min(1.0) })
+                })
+                .collect();
+            if usable.len() >= k || exhausted || ask >= reach {
+                break usable;
+            }
+            ask = ask.saturating_mul(2).min(reach);
+        };
+        let kth = (usable.len() >= k).then(|| usable[k.max(1) - 1].cos);
+        Ok((usable.into_iter().take(k).collect(), kth))
+    }
+
+    /// Applies one operation's writes as one atomic commit. Everything that removes a trace
+    /// goes through here, so a removed trace cannot keep a citation window open: a later
+    /// trace under the same id (a generator derived from text and time repeats ids) would
+    /// inherit its boost.
+    fn commit(&mut self, writes: &[Write<'_>]) -> Result<()> {
+        if writes.is_empty() {
+            return Ok(());
+        }
+        self.store.write(writes)?;
+        for w in writes {
+            if let Write::Remove(id) = w {
+                self.exposures.remove(*id);
+            }
+        }
+        Ok(())
     }
 
     /// The trace with `id`.
@@ -253,10 +364,10 @@ impl Engram {
         self.store.as_ref()
     }
 
-    /// Counts of all and labile traces.
+    /// Counts of all traces and of the labile ones the dream can take (indexed under the current model).
     pub fn stats(&self) -> Result<Stats> {
         let model_id = self.embedder.model_id();
-        Ok(Stats { records: self.store.count(View::All)?, labile: self.store.count(View::Labile { model_id })? })
+        Ok(Stats { records: self.store.count(View::All)?, labile: self.store.count(View::Labile { model_id, after: "" })? })
     }
 
     /// Erases everything.
@@ -264,7 +375,8 @@ impl Engram {
         self.store.clear()?;
         self.write_times.clear();
         self.exposures.clear();
-        self.failed.clear();
+        self.cursor.clear();
+        self.scrub.clear();
         Ok(())
     }
 
@@ -291,11 +403,26 @@ impl Engram {
         (v.len() == self.embedder.dimension() && n2.is_finite() && (n2 - 1.0).abs() <= 1e-3).then_some(n)
     }
 
-    /// Re-embeds up to `limit` traces not indexed under the current model, newest first
-    /// (an offline embedder leaves them for a later call). Returns how many were indexed.
+    /// Re-embeds up to `limit` traces not indexed under the current model, newest first,
+    /// and scrubs: one page of rows per call, resuming where the last call stopped and
+    /// wrapping around, is checked for a vector the engine cannot use (a wrong dimension,
+    /// a rescaled, zero or non-finite vector under the current model, which the store
+    /// still lists as indexed) and those are embedded again. An offline embedder leaves
+    /// them for a later call. Returns how many were indexed.
     pub fn reindex(&mut self, limit: usize) -> Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
         let model_id = self.embedder.model_id().to_owned();
-        let stale = self.find(View::Stale { model_id: &model_id }, limit)?;
+        let mut stale = self.find(View::Stale { model_id: &model_id }, limit)?;
+        let page = self.store.find(View::After(&self.scrub), REINDEX_BATCH.min(limit))?;
+        self.scrub = page.last().map_or_else(String::new, |t| t.id.clone());
+        for t in page {
+            let unsound = t.model_id == model_id && (t.vector.is_empty() || !self.sound(&t.vector));
+            if let Some(t) = self.checked(t).filter(|t| unsound && !stale.iter().any(|s| s.id == t.id)) {
+                stale.push(Trace { model_id: String::new(), vector: Vec::new(), ..t });
+            }
+        }
         let mut done = 0;
         for batch in stale.chunks(REINDEX_BATCH) {
             let texts: Vec<&str> = batch.iter().map(|t| t.text.as_str()).collect();
@@ -303,7 +430,7 @@ impl Engram {
             let Some(raw) = self.embedder.embed_documents(&texts).ok().filter(|v| v.len() == texts.len()) else { break };
             let vectors: Vec<(&Trace, Vec<f32>)> = batch.iter().zip(&raw).filter_map(|(t, v)| Some((t, self.vector(v)?))).collect();
             let writes: Vec<Write<'_>> = vectors.iter().map(|(t, v)| Write::Index { id: &t.id, model_id: &model_id, vector: v }).collect();
-            self.store.write(&writes)?;
+            self.commit(&writes)?;
             done += writes.len();
         }
         Ok(done)
@@ -325,16 +452,17 @@ impl Engram {
         // The first usable trace with this text (an unusable older one must not hide it).
         if let Some(t) = self.find(View::Text(&text), TEXT_PROBE)?.into_iter().next() {
             let w = self.retrieved(&t, now, 1.0);
-            self.store.write(&[w])?;
-            return Ok(Remembered::Reinforced(self.memory(&t.id)?.unwrap_or(t)));
+            self.commit(&[w])?;
+            // Built here, not read back: the write has landed, so no later failure may report an error.
+            return Ok(Remembered::Reinforced(Trace { last_recall: now as i64, stability: self.grown(&t, now, 1.0), ..t }));
         }
         let day_ago = now - 86_400.0;
-        // Writes stamped in the future (a virtual clock that ran ahead) do not count.
-        self.write_times.retain(|&t| t >= day_ago && t <= now);
+        // A clock stepped back leaves recent writes stamped slightly ahead: they still count.
+        // Writes further ahead than a day (a clock that ran far ahead) do not.
+        self.write_times.retain(|&t| t >= day_ago && t <= now + 86_400.0);
         if self.write_times.len() >= self.cfg.writes_per_day {
             return Ok(Remembered::RateLimited { text });
         }
-        self.write_times.push(now);
         let v = self.embedder.embed_documents(&[&text]).ok().and_then(|vs| vs.into_iter().next()).and_then(|v| self.vector(&v));
         let model_id = self.embedder.model_id().to_owned();
         let (nearest, cued) = match &v {
@@ -347,7 +475,7 @@ impl Engram {
         // A cue that could not be embedded, or an unindexed trace, might be what this
         // write reactivates: then it is not known to reactivate nothing, and it stays
         // labile until a dream can tell.
-        let consolidated = cued && nearest.is_none() && self.store.find(View::Stale { model_id: &model_id }, 1)?.is_empty();
+        let consolidated = cued && nearest.is_none() && self.find(View::Stale { model_id: &model_id }, 1)?.is_empty();
         let sal = if salience.is_nan() { 1.0 } else { salience.clamp(0.0, 10.0) };
         let trace = Trace {
             id: self.new_id((now * 1000.0) as i64, &text, &[])?,
@@ -364,8 +492,9 @@ impl Engram {
         let victims = self.victims(&trace, now)?;
         let mut writes = vec![Write::Insert(&trace)];
         writes.extend(victims.iter().map(|t| Write::Remove(&t.id)));
-        self.store.write(&writes)?;
-        Ok(Remembered::Inserted { cosine: nearest.map_or(0.0, |h| h.cos), evicted: victims.last().cloned(), trace })
+        self.commit(&writes)?;
+        self.write_times.push(now); // counted once the write has landed: a failed one costs no slot
+        Ok(Remembered::Inserted { cosine: nearest.map_or(0.0, |h| h.cos), evicted: victims.iter().find(|v| v.id == trace.id).or(victims.last()).cloned(), trace })
     }
 
     /// The traces to forget so that `new` fits, weakest first (lowest `log2 strength`)
@@ -377,24 +506,54 @@ impl Engram {
     /// still die. One short index read per band. Rows are ranked as [`Self::checked`]
     /// reads them; a row it cannot use counts against the capacity and dies first.
     fn victims(&self, new: &Trace, now: f64) -> Result<Vec<Trace>> {
-        let total = self.store.count(View::All)? + 1;
+        let total = self.store.count(View::All)?.saturating_add(1);
         let excess = total.saturating_sub(self.cfg.capacity);
         if excess == 0 {
             return Ok(Vec::new());
         }
         let cutoff = (now - self.cfg.grace_period) as i64;
-        let young = self.store.count(View::Young { created_after: cutoff })? + usize::from(new.created_at > cutoff);
+        let young = self.store.count(View::Young { created_after: cutoff })?.saturating_add(usize::from(new.created_at > cutoff));
         let rank = |t: &Trace| t.stability.log2() - (now - t.last_recall as f64).max(0.0) / t.stability;
-        let ranked = |t: Trace| match self.checked(t.clone(), now) {
+        let ranked = |t: Trace| match self.checked(t.clone()) {
             Some(c) => (rank(&c), c),
             None => (f64::NEG_INFINITY, t),
         };
+        // A band's index order (`last_recall`) is time-invariant, but the rank is not: within a
+        // band S differs by up to √2, so the head is only nearly the weakest. A band's
+        // window grows until no row beyond it can rank at or below the `excess`-th weakest
+        // found (rank grows with S and falls with elapsed time, and both are bounded by
+        // the band and the last row read) — or until those are all dead (strength ≤ 2⁻⁶⁴ s, so
+        // their order is immaterial) — or until BAND_CAP rows.
+        let cap = BAND_CAP.max(excess.saturating_add(BAND_DEPTH));
+        let read = |band: u8, created_by: i64, limit: usize| -> Result<Window> {
+            let raw = self.store.find(View::Band { band, created_by }, limit)?;
+            let last_dt = raw.last().map_or(0.0, |t| (now - t.last_recall as f64).max(0.0));
+            Ok(Window { more: raw.len() == limit, limit, last_dt, rows: raw.into_iter().map(ranked).collect() })
+        };
         let heads = |created_by: i64| -> Result<Vec<(f64, Trace)>> {
-            let mut pool = Vec::new();
-            for band in 0..=u8::MAX {
-                pool.extend(self.store.find(View::Band { band, created_by }, excess + BAND_DEPTH)?.into_iter().map(ranked));
+            let mut windows = (0..=u8::MAX).map(|b| read(b, created_by, excess.saturating_add(BAND_DEPTH))).collect::<Result<Vec<_>>>()?;
+            loop {
+                let mut ranks: Vec<f64> = windows.iter().flat_map(|w| w.rows.iter().map(|r| r.0)).collect();
+                if ranks.len() < excess {
+                    break;
+                }
+                let weakest = *ranks.select_nth_unstable_by(excess - 1, f64::total_cmp).1;
+                if weakest <= DEAD {
+                    break;
+                }
+                let mut grew = false;
+                for (b, w) in windows.iter_mut().enumerate() {
+                    let s_lo = (b as f64 / 2.0).exp2().min(self.cfg.max_stability) * (1.0 - 1e-9);
+                    if w.more && w.limit < cap && s_lo.log2() - w.last_dt / s_lo <= weakest {
+                        *w = read(b as u8, created_by, (w.limit * 4).min(cap))?;
+                        grew = true;
+                    }
+                }
+                if !grew {
+                    break;
+                }
             }
-            Ok(pool)
+            Ok(windows.into_iter().flat_map(|w| w.rows).collect())
         };
         let mut pool = if young <= self.cfg.capacity / 10 { heads(cutoff)? } else { Vec::new() };
         if pool.len() < excess {
@@ -414,7 +573,7 @@ impl Engram {
         self.exposures.clear(); // a recall always ends the previous citation window
         let recall = self.select(query, now)?;
         let writes: Vec<Write<'_>> = recall.recalled.iter().map(|c| self.retrieved(&c.trace, now, 0.5 * self.activation(c.cosine))).collect();
-        self.store.write(&writes)?;
+        self.commit(&writes)?;
         for c in &recall.recalled {
             self.exposures.insert(c.trace.id.clone(), Exposure { cosine: c.cosine, retrievability: c.retrievability });
         }
@@ -442,9 +601,13 @@ impl Engram {
             _ => None, // offline, or it contradicted itself: nothing to cue with
         };
         let Some(qs) = qs else { return Ok(Recall::default()) };
+        if qs.iter().any(|q| q.len() != qs[0].len()) {
+            return Ok(Recall::default()); // an embedder whose dimension moved mid-call: nothing to compare
+        }
+        let total = self.store.count(View::All)?;
         // score = a(cos)·(α + (1−α)·R) ≤ a(cos): below this cosine no trace reaches min_score.
         let min_cos = self.cfg.cosine_floor + self.cfg.min_score * (1.0 - self.cfg.cosine_floor);
-        let mut k = 4 * self.cfg.inject_n;
+        let mut k = self.cfg.inject_n.saturating_mul(4);
         let pool = loop {
             let mut seen: BTreeMap<String, Trace> = BTreeMap::new(); // id order = insertion order
             let mut unseen_cos = f64::NEG_INFINITY; // the most a trace not returned could have
@@ -467,10 +630,10 @@ impl Engram {
                 .collect();
             let top = scored.iter().map(|c| c.1).fold(0.0, f64::max);
             let floor = self.cfg.min_score.max(self.cfg.relative_score * top);
-            if unseen_cos == f64::NEG_INFINITY || self.activation(unseen_cos) < floor {
+            if unseen_cos == f64::NEG_INFINITY || self.activation(unseen_cos) < floor || k >= total {
                 break scored.into_iter().filter(|c| c.1 >= floor).collect::<Vec<_>>();
             }
-            k *= 4;
+            k = k.saturating_mul(4);
         };
         let mut out = Recall::default();
         let mut used = 0;
@@ -515,26 +678,34 @@ impl Engram {
     pub fn cite(&mut self, reply: &str) -> Result<Vec<String>> {
         let mut cited: Vec<(Trace, f64)> = Vec::new();
         for id in cited_ids(reply) {
-            let Some(c) = self.exposures.remove(id) else { continue };
+            let Some(&c) = self.exposures.get(id) else { continue };
             let Some(t) = self.memory(id)? else { continue };
+            if cited.iter().any(|(u, _)| u.id == t.id) {
+                continue; // a citation counts once
+            }
             let gain = self.cfg.spacing_gain;
             let partial = 1.0 + gain * 0.5 * self.activation(c.cosine) * (1.0 - c.retrievability);
             let full = 1.0 + gain * (1.0 - c.retrievability);
-            let s = self.clamp_stability(t.stability * full / partial);
+            let s = self.clamp_stability(t.stability * (full / partial));
             cited.push((t, s));
         }
         let writes: Vec<Write<'_>> =
             cited.iter().map(|(t, s)| Write::State { id: &t.id, last_recall: t.last_recall, stability: *s, consolidated: t.consolidated }).collect();
-        self.store.write(&writes)?;
+        self.commit(&writes)?;
+        // Spent only once the write has landed: after a store error the citation can be retried.
+        for (t, _) in &cited {
+            self.exposures.remove(&t.id);
+        }
         Ok(cited.into_iter().map(|(t, _)| t.id).collect())
     }
 
     /// Deletes the trace with `id` (never by meaning: that would take unrelated
     /// neighbours with it). Returns the deleted trace.
     pub fn forget(&mut self, id: &str) -> Result<Option<Trace>> {
-        let Some(t) = self.memory(id)? else { return Ok(None) };
-        self.store.write(&[Write::Remove(&t.id)])?;
-        Ok(Some(t))
+        // By id alone, so a row the engine cannot use (invalid id, empty text) can still be removed.
+        let Some(raw) = self.store.find(View::Id(id), 1)?.pop() else { return Ok(None) };
+        self.commit(&[Write::Remove(&raw.id)])?;
+        Ok(Some(self.checked(raw.clone()).unwrap_or(raw)))
     }
 
     // ------------------------------------------------- reactivation candidates
@@ -580,18 +751,43 @@ impl Engram {
 
     // ------------------------------------------------------ sleep phase (§5)
 
-    /// The labile traces a dream of `budget` takes: first in, first out, at most
-    /// 8·budget, except that seeds whose verdict failed go after the rest. FIFO needs no
-    /// ranking, and moving failures back keeps a seed the LLM cannot judge from starving
-    /// the queue.
+    /// The labile traces a dream of `budget` takes: at most 8·budget, first in first out
+    /// as a cycle — the ids after the cursor, then (wrapping) those up to it. Pages are
+    /// read until enough *usable* rows are found, so rows the engine can never use sit
+    /// in the queue without hiding the seeds behind them. FIFO needs no ranking, and the
+    /// cycle keeps a seed the LLM cannot judge from starving the queue.
     fn seeds(&self, budget: usize) -> Result<Vec<Trace>> {
         let model_id = self.embedder.model_id();
         let want = SEEDS_PER_BUDGET.saturating_mul(budget);
-        let (mut fresh, failed): (Vec<Trace>, Vec<Trace>) =
-            self.find(View::Labile { model_id }, want.saturating_add(self.failed.len()))?.into_iter().partition(|t| !self.failed.contains(&t.id));
-        fresh.extend(failed);
-        fresh.truncate(want);
-        Ok(fresh)
+        let mut out: Vec<Trace> = Vec::new();
+        for wrapped in [false, true] {
+            if wrapped && self.cursor.is_empty() {
+                break; // the first pass already started at the beginning
+            }
+            let mut after = if wrapped { String::new() } else { self.cursor.clone() };
+            'pages: while out.len() < want {
+                // Pages never shrink below SEED_PAGE: a queue of unusable rows is read in
+                // a few finds, not one per row.
+                let asked = (want - out.len()).max(SEED_PAGE);
+                let page = self.store.find(View::Labile { model_id, after: &after }, asked)?;
+                let (full, last) = (page.len() == asked, page.last().map(|t| t.id.clone()));
+                for t in page {
+                    if wrapped && t.id > self.cursor {
+                        break 'pages;
+                    }
+                    out.extend(self.checked(t));
+                    if out.len() >= want {
+                        break 'pages;
+                    }
+                }
+                match last {
+                    Some(l) if full && l > after => after = l,
+                    _ => break,
+                }
+            }
+        }
+        out.truncate(want);
+        Ok(out)
     }
 
     /// The clusters the next [`Engram::dream`] would hand to the LLM (seed first),
@@ -632,6 +828,7 @@ impl Engram {
             if left == 0 {
                 break;
             }
+            self.cursor.clone_from(&seed.id);
             let near = match self.memory(&seed.id).and_then(|s| Ok(match s.filter(|s| !s.consolidated) {
                 Some(s) => Some((self.candidates(q, &s)?, s)),
                 None => None,
@@ -647,21 +844,13 @@ impl Engram {
             if near.is_empty() {
                 if *cued {
                     settled.push(seed);
-                } else {
-                    self.defer(seed.id); // a fallback search proves nothing: labile, behind the rest
-                }
+                } // else a fallback search proves nothing: the seed stays labile, behind the rest
                 continue;
             }
             left -= 1;
-            let id = seed.id.clone();
             let cluster: Vec<Trace> = std::iter::once(seed).chain(near).collect();
             let report = self.adjudicate(adjudicator, cluster, now); // an error leaves the seed labile
             let stored = report.stored_error;
-            if report.report.action == DreamAction::Error {
-                self.defer(id);
-            } else {
-                self.failed.retain(|f| *f != id);
-            }
             reports.push(report.report);
             if stored {
                 return Ok(reports); // the store is failing: stop, keep what was applied
@@ -670,18 +859,10 @@ impl Engram {
         // A lost settle write only repeats a cheap check at the next dream: never an error.
         let writes: Vec<Write<'_>> =
             settled.iter().map(|t| Write::State { id: &t.id, last_recall: t.last_recall, stability: t.stability, consolidated: true }).collect();
-        if let Err(e) = self.store.write(&writes) {
+        if let Err(e) = self.commit(&writes) {
             reports.push(DreamReport { action: DreamAction::Error, before: Vec::new(), absorbed: Vec::new(), after: Vec::new(), error: Some(e.to_string()) });
         }
         Ok(reports)
-    }
-
-    /// Queues `id` after the other seeds (most recent deferral last, oldest forgotten first).
-    fn defer(&mut self, id: String) {
-        self.failed.retain(|f| *f != id);
-        self.failed.push(id);
-        let over = self.failed.len().saturating_sub(SEEDS_PER_BUDGET.saturating_mul(self.cfg.dream_budget.max(1)));
-        self.failed.drain(..over);
     }
 
     /// One trace as a dream request member.
@@ -701,7 +882,13 @@ impl Engram {
         DreamReport { action: DreamAction::Error, before, absorbed: Vec::new(), after: Vec::new(), error: Some(e.to_string()) }
     }
 
-    /// Reverses one dream verdict: a replace removes its gists and restores what it
+    /// Reverses a dream's verdicts, newest first: a later verdict may have absorbed an
+    /// earlier gist, so only the reverse order restores the traces exactly.
+    pub fn undo_all(&mut self, reports: &[DreamReport]) -> Result<()> {
+        reports.iter().rev().try_for_each(|r| self.undo(r))
+    }
+
+    /// Reverses one dream verdict (several, newest first: [`Engram::undo_all`]): a replace removes its gists and restores what it
     /// absorbed (as it was then; later strengthening of the gists is lost), a keep makes
     /// the seed labile again. Restored traces count against the capacity at the next write.
     pub fn undo(&mut self, report: &DreamReport) -> Result<()> {
@@ -709,11 +896,11 @@ impl Engram {
             DreamAction::Replace => {
                 let mut writes: Vec<Write<'_>> = report.after.iter().map(|g| Write::Remove(&g.id)).collect();
                 writes.extend(report.absorbed.iter().map(Write::Insert));
-                self.store.write(&writes)
+                self.commit(&writes)
             }
             DreamAction::Keep => match report.before.first() {
                 Some(seed) => match self.memory(&seed.id)? {
-                    Some(t) => self.store.write(&[Write::State { id: &t.id, last_recall: t.last_recall, stability: t.stability, consolidated: false }]),
+                    Some(t) => self.commit(&[Write::State { id: &t.id, last_recall: t.last_recall, stability: t.stability, consolidated: false }]),
                     None => Ok(()),
                 },
                 None => Ok(()),
@@ -735,11 +922,11 @@ impl Engram {
         };
         let written = if gists.is_empty() {
             let s = &cluster[0];
-            self.store.write(&[Write::State { id: &s.id, last_recall: s.last_recall, stability: s.stability, consolidated: true }])
+            self.commit(&[Write::State { id: &s.id, last_recall: s.last_recall, stability: s.stability, consolidated: true }])
         } else {
             let mut writes: Vec<Write<'_>> = absorbed.iter().map(|t| Write::Remove(&t.id)).collect();
             writes.extend(gists.iter().map(Write::Insert));
-            self.store.write(&writes)
+            self.commit(&writes)
         };
         let applied = match written {
             Err(e) => report(DreamAction::Error, Vec::new(), Vec::new(), Some(e.to_string())),
@@ -754,9 +941,10 @@ impl Engram {
     /// error, not a keep: silence never settles a seed.
     fn verdict(&mut self, d: DreamDecision, cluster: &[Trace], now: f64) -> Result<(Vec<Trace>, Vec<Trace>)> {
         let mut texts: Vec<String> = Vec::new();
+        let mut seen: HashSet<String> = HashSet::new();
         for t in &d.memories {
             let c = clean_text(t, self.cfg.text_max);
-            if !c.is_empty() && !texts.contains(&c) {
+            if !c.is_empty() && seen.insert(c.clone()) {
                 texts.push(c);
             }
         }
@@ -831,8 +1019,10 @@ fn cited_ids(text: &str) -> Vec<&str> {
     let mut rest = text;
     while let Some(start) = rest.find("《id:") {
         let after = &rest[start + "《id:".len()..];
-        match after.find('》') {
+        match after.find(['》', '《']) {
             Some(0) => rest = after,
+            // A new opener before any closer: the earlier one was stray.
+            Some(end) if after[end..].starts_with('《') => rest = &after[end..],
             Some(end) => {
                 out.push(&after[..end]);
                 rest = &after[end + '》'.len_utf8()..];
@@ -850,5 +1040,6 @@ mod tests {
     #[test]
     fn citations_are_parsed_in_order() {
         assert_eq!(cited_ids("a《id:X1》 b 《id:》《id:Y2》《id:Z"), ["X1", "Y2"]);
+        assert_eq!(cited_ids("《id:《id:X》"), ["X"]);
     }
 }

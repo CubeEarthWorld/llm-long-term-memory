@@ -15,7 +15,7 @@ name = "engram"
 [dependencies]
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 redb = { version = "2.6.4", optional = true }
-serde_json = { version = "1.0.151", features = ["preserve_order"] }
+serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
 ulid = "3.0.0"
 
 [workspace]

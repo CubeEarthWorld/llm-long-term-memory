@@ -244,7 +244,9 @@ fn rows_read_are_clamped() {
     };
     db.clone().write(&[Write::Insert(&future)]).unwrap(); // written behind the engine's back
     let read = mem(&s, &id).unwrap();
-    assert!(read.last_recall as f64 <= clock.get() && read.stability == s.config().max_stability);
+    // Stability is clamped on read; stored times are not rewritten (a future time means Δt = 0).
+    assert!(read.stability == s.config().max_stability && read.last_recall == future.last_recall);
+    assert_eq!(s.retrievability(&read, clock.get()), 1.0);
 }
 
 /// A store whose commit fails on demand.
@@ -536,7 +538,12 @@ fn a_non_finite_cosine_or_vector_is_never_a_match() {
     let (mut s, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(NanCos(Store::in_memory().unwrap())));
     insert(&mut s, "user lives in kyoto", 1.0, "");
     let (t, cosine, _) = inserted(s.remember("zebra stripes unrelated", 1.0, "user lives where").unwrap());
-    assert!(cosine == 0.0 && t.consolidated); // NaN reactivated nothing
+    // The engine recomputes the cosine from the row's vector: a store's NaN is not taken on trust,
+    // and the write is judged exactly as it would be by an honest store.
+    let (mut honest, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(Store::in_memory().unwrap()));
+    insert(&mut honest, "user lives in kyoto", 1.0, "");
+    let (h, hc, _) = inserted(honest.remember("zebra stripes unrelated", 1.0, "user lives where").unwrap());
+    assert!(cosine.is_finite() && cosine == hc && t.consolidated == h.consolidated);
     // A custom Storage may hand back a vector with a NaN in it: read as unindexed.
     let (mut s2, _) = build_with(cfg(), Box::new(FakeEmbedder::new()), Box::new(NanVectors(Store::in_memory().unwrap())));
     let id = insert(&mut s2, "kyoto temple", 1.0, "");

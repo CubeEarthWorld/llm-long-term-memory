@@ -11,12 +11,16 @@ use crate::{Result, Trace};
 pub enum View<'a> {
     /// Every trace, oldest id first.
     All,
+    /// Every trace with an id after the given one (`""`: from the start), oldest id
+    /// first: a cursor for sweeping the whole store a page at a time.
+    After(&'a str),
     /// The trace with this id.
     Id(&'a str),
     /// The traces with exactly this text, oldest id first (gists and undo can repeat a text).
     Text(&'a str),
-    /// Labile traces indexed under `model_id`, oldest id first: the dream's queue.
-    Labile { model_id: &'a str },
+    /// Labile traces indexed under `model_id` with an id after `after` (`""`: from the
+    /// start), oldest id first: the dream's queue, read a page at a time.
+    Labile { model_id: &'a str, after: &'a str },
     /// Traces not indexed under `model_id`, newest id first (within each other model):
     /// re-embedded newest first.
     Stale { model_id: &'a str },

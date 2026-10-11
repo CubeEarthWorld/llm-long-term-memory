@@ -19,6 +19,8 @@ use std::sync::{Arc, RwLock};
 
 /// Vectors per similarity list before it is split in two.
 pub const LIST_MAX: u64 = 512;
+/// A store file shorter than this (but not empty) is truncated, not a database.
+const MIN_FILE: u64 = 1024;
 /// Pages redb keeps in RAM (the OS page cache keeps the rest warm).
 const CACHE_BYTES: usize = 1 << 30;
 /// Vectors a similarity search reads, from the lists with the nearest centroids: a
@@ -47,6 +49,13 @@ const LISTS: TableDefinition<(&str, u32, &str), &[u8]> = TableDefinition::new("l
 const CENTROIDS: TableDefinition<(&str, u32), &[u8]> = TableDefinition::new("centroids");
 /// "count", "next:<model>".
 const META: TableDefinition<&str, u64> = TableDefinition::new("meta");
+
+/// A row as a write transaction finds it.
+enum Row {
+    Absent,
+    Damaged,
+    Found(Trace),
+}
 
 /// One list's centroid and size.
 #[derive(Clone, Debug)]
@@ -88,6 +97,22 @@ fn trace(id: &str, row: &[u8], vector: Vec<f32>) -> Option<Trace> {
         model_id: v[7].as_str()?.to_owned(),
         vector,
     })
+}
+
+/// What a row that cannot be decoded is read as: no text, so the engine cannot use it.
+fn unreadable(id: &str) -> Trace {
+    Trace {
+        id: id.to_owned(),
+        text: String::new(),
+        created_at: 0,
+        tz: String::new(),
+        last_recall: 0,
+        stability: 1.0,
+        consolidated: true,
+        cue: String::new(),
+        model_id: String::new(),
+        vector: Vec::new(),
+    }
 }
 
 fn list_entry(created_at: i64, v: &[f32]) -> Vec<u8> {
@@ -136,7 +161,12 @@ impl Store {
         if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
             std::fs::create_dir_all(dir)?;
         }
-        Self::init(Database::builder().set_cache_size(CACHE_BYTES).create(path)?)
+        // redb asserts (and for a tiny file never returns) on a truncated database file: check first.
+        if std::fs::metadata(path).is_ok_and(|m| m.len() > 0 && m.len() < MIN_FILE) {
+            return Err(format!("{}: too small to be a store file", path.display()).into());
+        }
+        let opened = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| Database::builder().set_cache_size(CACHE_BYTES).create(path)));
+        Self::init(opened.map_err(|_| format!("{}: damaged store file", path.display()))??)
     }
 
     /// A store that lives and dies with the process (tests, benchmarks, ephemeral agents).
@@ -176,7 +206,7 @@ impl Store {
         let mut lists = Vec::new();
         for item in table.range((model, 0u32)..=(model, u32::MAX))? {
             let (k, v) = item?;
-            lists.push(decode_list(k.value().1, v.value())?);
+            lists.extend(decode_list(k.value().1, v.value()).ok()); // a damaged centroid: the list is skipped until a write rebuilds it
         }
         let lists = Arc::new(lists);
         self.lists.write().unwrap_or_else(|e| e.into_inner()).insert(model.to_owned(), Arc::clone(&lists));
@@ -190,11 +220,14 @@ impl Store {
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
             let Some(row) = rows.get(id.as_str())? else { continue };
-            let Some(mut t) = trace(id, row.value(), Vec::new()) else { continue };
+            // A row that cannot be decoded is returned as an unusable one (empty text): the
+            // engine counts it, evicts it first and can forget it, like any row it cannot use.
+            let mut t = trace(id, row.value(), Vec::new()).unwrap_or_else(|| unreadable(id));
             if let Some(list) = listed.get(id.as_str())?
                 && let Some(entry) = lists.get((t.model_id.as_str(), list.value(), id.as_str()))?
             {
-                t.vector = floats(split_entry(entry.value()).ok_or("damaged list entry")?.1);
+                // A damaged entry leaves the row without a vector (unindexed): not an error for every read.
+                t.vector = split_entry(entry.value()).map_or_else(Vec::new, |(_, f)| floats(f));
             }
             out.push(t);
         }
@@ -208,6 +241,14 @@ impl Store {
             View::All => {
                 for item in rx.open_table(ROWS)?.iter()? {
                     if !f(item?.0.value()) {
+                        break;
+                    }
+                }
+            }
+            View::After(after) => {
+                for item in rx.open_table(ROWS)?.range(after..)? {
+                    let id = item?.0;
+                    if id.value() != after && !f(id.value()) {
                         break;
                     }
                 }
@@ -226,11 +267,14 @@ impl Store {
                     }
                 }
             }
-            View::Labile { model_id } => {
-                for item in rx.open_table(LABILE)?.range((model_id, "")..)? {
+            View::Labile { model_id, after } => {
+                for item in rx.open_table(LABILE)?.range((model_id, after)..)? {
                     let key = item?.0;
                     let (m, id) = key.value();
-                    if m != model_id || !f(id) {
+                    if m != model_id {
+                        break;
+                    }
+                    if id != after && !f(id) {
                         break;
                     }
                 }
@@ -255,6 +299,7 @@ impl Store {
                     }
                 }
             }
+            View::Young { created_after } if created_after == i64::MAX => {} // nothing is later
             View::Young { created_after } => {
                 for item in rx.open_table(CREATED)?.range((created_after.saturating_add(1), "")..)? {
                     if !f(item?.0.value().1) {
@@ -283,10 +328,51 @@ struct Tx<'t> {
 }
 
 impl Tx<'_> {
-    /// The row of `id`, without its vector (no write needs it).
-    fn get(&self, id: &str) -> Result<Option<Trace>> {
-        let Some(row) = self.rows.get(id)? else { return Ok(None) };
-        Ok(Some(trace(id, row.value(), Vec::new()).ok_or("unreadable row")?))
+    /// The row of `id`, without its vector (no write needs it): present, absent, or
+    /// damaged — the same three states every read path sees (an unreadable row is
+    /// skipped by `find`), so a damaged row can be removed or overwritten like any other.
+    fn get(&self, id: &str) -> Result<Row> {
+        Ok(match self.rows.get(id)? {
+            None => Row::Absent,
+            Some(row) => trace(id, row.value(), Vec::new()).map_or(Row::Damaged, Row::Found),
+        })
+    }
+
+    /// Removes a row that cannot be decoded, with every index entry it has. Its keys are
+    /// unknown, so the indexes are searched by id: a full pass, taken only to heal damage.
+    fn purge(&mut self, id: &str) -> Result<()> {
+        fn keys<K: redb::Key + 'static, V: redb::Value + 'static>(
+            t: &redb::Table<'_, K, V>,
+            pick: impl Fn(K::SelfType<'_>) -> Option<String>,
+        ) -> Result<Vec<String>> {
+            let mut out = Vec::new();
+            for item in t.iter()? {
+                out.extend(pick(item?.0.value()));
+            }
+            Ok(out)
+        }
+        self.rows.remove(id)?;
+        for model in keys(&self.model, |(m, i)| (i == id).then(|| m.to_owned()))? {
+            self.unlist(id, &model)?;
+            self.model.remove((model.as_str(), id))?;
+        }
+        for model in keys(&self.labile, |(m, i)| (i == id).then(|| m.to_owned()))? {
+            self.labile.remove((model.as_str(), id))?;
+        }
+        for text in keys(&self.text, |(t, i)| (i == id).then(|| t.to_owned()))? {
+            self.text.remove((text.as_str(), id))?;
+        }
+        let created: Vec<i64> = keys(&self.created, |(c, i)| (i == id).then(|| c.to_string()))?.iter().filter_map(|c| c.parse().ok()).collect();
+        for c in created {
+            self.created.remove((c, id))?;
+        }
+        let bands: Vec<(u8, i64)> =
+            keys(&self.band, |(b, l, i)| (i == id).then(|| format!("{b} {l}")))?.iter().filter_map(|k| k.split_once(' ').and_then(|(b, l)| Some((b.parse().ok()?, l.parse().ok()?)))).collect();
+        for (b, l) in bands {
+            self.band.remove((b, l, id))?;
+        }
+        self.listed.remove(id)?;
+        Ok(())
     }
 
     fn bump(&mut self, key: &str, delta: i64) -> Result<u64> {
@@ -299,13 +385,47 @@ impl Tx<'_> {
     fn lists_of(&mut self, model: &str) -> Result<&mut Vec<List>> {
         if !self.touched.contains_key(model) {
             let mut lists = Vec::new();
+            let mut damaged = Vec::new();
             for item in self.centroids.range((model, 0u32)..=(model, u32::MAX))? {
                 let (k, v) = item?;
-                lists.push(decode_list(k.value().1, v.value())?);
+                match decode_list(k.value().1, v.value()) {
+                    Ok(l) => lists.push(l),
+                    Err(_) => damaged.push(k.value().1),
+                }
+            }
+            for id in damaged {
+                lists.push(self.rebuild_list(model, id)?); // the members are all still there
             }
             self.touched.insert(model.to_owned(), lists);
         }
         Ok(self.touched.get_mut(model).expect("just inserted"))
+    }
+
+    /// A list's size and centroid recomputed from its members (a damaged centroid entry).
+    fn rebuild_list(&mut self, model: &str, id: u32) -> Result<List> {
+        let (mut size, mut sum): (u64, Vec<f64>) = (0, Vec::new());
+        for item in self.lists.range((model, id, "")..)? {
+            let (k, v) = item?;
+            let (m, l, _) = k.value();
+            if m != model || l != id {
+                break;
+            }
+            let Some((_, raw)) = split_entry(v.value()) else { continue };
+            let vector = floats(raw);
+            if sum.is_empty() {
+                sum = vec![0.0; vector.len()];
+            }
+            if vector.len() == sum.len() {
+                size += 1;
+                for (a, x) in sum.iter_mut().zip(&vector) {
+                    *a += f64::from(*x);
+                }
+            }
+        }
+        let centroid = normalized(&sum.iter().map(|&x| x as f32).collect::<Vec<_>>());
+        let l = List { id, size, centroid };
+        self.save_list(model, &l)?;
+        Ok(l)
     }
 
     fn save_list(&mut self, model: &str, l: &List) -> Result<()> {
@@ -339,7 +459,7 @@ impl Tx<'_> {
             }
         };
         let lists = self.lists_of(model)?;
-        lists[at].size += 1;
+        lists[at].size = lists[at].size.saturating_add(1);
         let l = lists[at].clone();
         self.lists.insert((model, l.id, t.id.as_str()), list_entry(t.created_at, &t.vector).as_slice())?;
         self.listed.insert(t.id.as_str(), l.id)?;
@@ -381,6 +501,9 @@ impl Tx<'_> {
             members.push((id.to_owned(), created_at as i64, floats(vector)));
         }
         let Some(first) = members.first().map(|m| m.2.clone()) else { return Ok(()) };
+        if members.iter().any(|m| m.2.len() != first.len()) {
+            return Err("damaged list entry".into()); // a list holds one dimension: never a panic in dot()
+        }
         let far = members.iter().min_by(|a, b| dot(&a.2, &first).total_cmp(&dot(&b.2, &first))).expect("members").2.clone();
         let mut c = [first, far];
         let mut side = vec![false; members.len()];
@@ -410,7 +533,7 @@ impl Tx<'_> {
         }
         let lists = self.lists_of(model)?;
         let i = lists.iter().position(|l| l.id == list).expect("listed");
-        lists[i].size -= moved;
+        lists[i].size = lists[i].size.saturating_sub(moved);
         lists[i].centroid = c[0].clone();
         let (old, fresh) = (lists[i].clone(), List { id: new, size: moved, centroid: c[1].clone() });
         lists.push(fresh.clone());
@@ -470,8 +593,9 @@ impl Tx<'_> {
         match *w {
             Write::Insert(t) => {
                 match self.get(&t.id)? {
-                    Some(old) => self.unlink(&old)?,
-                    None => {
+                    Row::Found(old) => self.unlink(&old)?,
+                    Row::Damaged => self.purge(&t.id)?,
+                    Row::Absent => {
                         self.bump("count", 1)?;
                     }
                 }
@@ -479,12 +603,12 @@ impl Tx<'_> {
             }
             // Strengthening rewrites the row and two small indexes, never the vector.
             Write::State { id, last_recall, stability, consolidated } => {
-                let Some(old) = self.get(id)? else { return Ok(()) };
+                let Row::Found(old) = self.get(id)? else { return Ok(()) };
                 self.drop_state(&old)?;
                 self.put_state(&Trace { last_recall, stability, consolidated, ..old })
             }
             Write::Index { id, model_id, vector } => {
-                let Some(old) = self.get(id)? else { return Ok(()) };
+                let Row::Found(old) = self.get(id)? else { return Ok(()) };
                 self.drop_state(&old)?;
                 self.unindex(&old)?;
                 let t = Trace { model_id: model_id.to_owned(), vector: vector.to_vec(), ..old };
@@ -492,10 +616,12 @@ impl Tx<'_> {
                 self.index(&t)
             }
             Write::Remove(id) => {
-                if let Some(old) = self.get(id)? {
-                    self.unlink(&old)?;
-                    self.bump("count", -1)?;
+                match self.get(id)? {
+                    Row::Found(old) => self.unlink(&old)?,
+                    Row::Damaged => self.purge(id)?,
+                    Row::Absent => return Ok(()),
                 }
+                self.bump("count", -1)?;
                 Ok(())
             }
         }
@@ -544,7 +670,7 @@ impl Storage for Store {
             if read >= PROBE_VECTORS {
                 break;
             }
-            read += l.size;
+            read = read.saturating_add(l.size);
             for item in table.range((model_id, l.id, "")..)? {
                 let (key, v) = item?;
                 let (m, list, id) = key.value();
@@ -568,7 +694,7 @@ impl Storage for Store {
         best.sort_unstable_by(order);
         // Rows are read k at a time: an unreadable one is skipped and the next best takes
         // its place (matched by id, so no cosine shifts onto another trace).
-        let mut out = Vec::with_capacity(k);
+        let mut out = Vec::with_capacity(k.min(best.len()));
         for chunk in best.chunks(k.max(1)) {
             if out.len() >= k {
                 break;

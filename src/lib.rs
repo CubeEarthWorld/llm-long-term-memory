@@ -28,6 +28,7 @@ mod config;
 mod dream;
 mod embed;
 mod engine;
+mod guard;
 mod id;
 mod json;
 mod storage;
