@@ -152,7 +152,7 @@ fn l2_2_excess_victims_are_the_weakest_and_distinct() {
 
 /// L2-3: the band head is not always the weakest of its band. Inside one half-octave band
 /// the order by last_recall differs from the order by log2 S - dt/S once dt/S is large
-/// (a year idle), so a weaker trace behind more than excess+BAND_DEPTH heads is missed.
+/// (a year idle), so a weaker trace behind the first window must still be found (the window grows).
 #[test]
 fn l2_3_band_head_is_not_the_global_minimum() {
     let shared = SharedStore::default();
@@ -222,7 +222,7 @@ fn l2_5_serde_json_f64_round_trip_is_exact() {
 }
 
 /// L2-3 / SPEC §2: an unusable row must die first, even when it sits behind more than
-/// excess+BAND_DEPTH usable rows of its own band.
+/// the first window of usable rows of its own band.
 #[test]
 fn l2_3_unusable_row_dies_first() {
     let shared = SharedStore::default();

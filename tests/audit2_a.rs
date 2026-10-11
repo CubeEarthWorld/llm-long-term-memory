@@ -265,7 +265,7 @@ fn cursor_cycle_matches_the_model() {
                 next += 1;
             }
             1 if live.len() > 3 => {
-                let k = if rng.next() % 2 == 0 { live.iter().position(|x| *x == cursor).unwrap_or(0) } else { (rng.next() as usize) % live.len() };
+                let k = if rng.next().is_multiple_of(2) { live.iter().position(|x| *x == cursor).unwrap_or(0) } else { (rng.next() as usize) % live.len() };
                 let id = live.remove(k);
                 m.forget(&id).unwrap();
             }

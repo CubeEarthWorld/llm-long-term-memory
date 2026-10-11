@@ -348,7 +348,7 @@ fn scenario(cfg: Config, seed: u64) -> Result<(), String> {
     let words = ["alpha", "beta", "gamma", "delta", "kyoto", "osaka", "tokyo", "cat", "dog", "tea"];
     for step in 0..30 {
         let text = format!("{} {} {} {}", r.pick(&words), r.pick(&words), r.pick(&words), step % 4);
-        let cue = if r.next() % 2 == 0 { String::new() } else { format!("{} {}", r.pick(&words), r.pick(&words)) };
+        let cue = if r.next().is_multiple_of(2) { String::new() } else { format!("{} {}", r.pick(&words), r.pick(&words)) };
         let sal = r.pick(&[0.0, 1.0, 10.0, f64::NAN, -3.0, 1e9]);
         m.remember(&text, sal, &cue).map_err(|e| format!("remember: {e}"))?;
         let stats = m.stats().map_err(|e| e.to_string())?;
@@ -377,7 +377,7 @@ fn scenario(cfg: Config, seed: u64) -> Result<(), String> {
                     _ => m.dream(&mut |_: &DreamRequest| -> engram::Result<DreamDecision> { Err("down".into()) }, None),
                 }
                 .map_err(|e| format!("dream: {e}"))?;
-                if r.next() % 3 == 0 {
+                if r.next().is_multiple_of(3) {
                     m.undo_all(&reports).map_err(|e| format!("undo: {e}"))?;
                 }
             }

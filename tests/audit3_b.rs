@@ -69,8 +69,8 @@ fn band_reads_for_one_eviction(rows: usize, capacity: usize, idle: f64) -> Vec<u
     let (mut m, _clock) = build_with(engram::Config { capacity, ..cfg() }, Box::new(FakeEmbedder::new()), Box::new(store));
     log.lock().unwrap().clear();
     m.remember("brand new fact", 1.0, "").unwrap();
-    let reads = log.lock().unwrap().iter().filter(|(b, _)| *b == 20).map(|(_, n)| *n).collect();
-    reads
+    
+    log.lock().unwrap().iter().filter(|(b, _)| *b == 20).map(|(_, n)| *n).collect()
 }
 
 /// SPEC §3: "1 帯の窓は 128 件（excess + 8 がそれより大きければそれ）が上限（窓は 4 倍ずつ広げて
@@ -121,7 +121,7 @@ fn readme_quickstart_compiles_and_runs() {
         let mut memory = Engram::open(Box::new(Store::open(path.as_ref())?), Box::new(my_embedder), Config::default(), "Asia/Tokyo")?;
         memory.remember("The user moved to Osaka in April 2026.", 1.0, "Where does the user live?")?;
         let pack = memory.recall("where do I live now?")?.pack_text; // inject into your prompt
-        memory.cite(&llm_reply)?; // strengthen what was used
+        memory.cite(llm_reply)?; // strengthen what was used
         memory.dream(&mut |req: &DreamRequest| {
             // any LLM in JSON mode
             DreamDecision::parse(&my_llm(engram::DREAM_SYSTEM_PROMPT, &req.prompt())).ok_or("unparsable".into())

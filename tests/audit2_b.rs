@@ -747,10 +747,7 @@ fn count_and_find_agree_when_a_row_is_damaged() {
     let st = Store::open(&path).unwrap();
     for v in [View::All, View::Id("r2"), View::Labile { model_id: "m", after: "" }, View::Stale { model_id: "x" }, View::Text("t-r2")] {
         let c = st.count(v).unwrap();
-        match st.find(v, usize::MAX) {
-            Ok(rows) => assert_eq!(rows.len(), c, "count({v:?}) = {c} but find returned {} rows without an error", rows.len()),
-            Err(_) => {}
-        }
+        if let Ok(rows) = st.find(v, usize::MAX) { assert_eq!(rows.len(), c, "count({v:?}) = {c} but find returned {} rows without an error", rows.len()) }
     }
 }
 

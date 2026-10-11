@@ -263,7 +263,7 @@ fn l1_4_huge_smax_collapses_bands_and_evicts_the_wrong_trace() {
 /// Within a band the claim "oldest last_recall = weakest" is false: ratio < sqrt2 but the
 /// decay terms differ. S_B=70000 (recalled 3 half-lives ago), S_A=91000 (older: 3.1 B-half-lives,
 /// but only 2.38 own half-lives): rank_A > rank_B, so B is weaker, yet A is the band head.
-/// Nine such A's push B out of the `excess + BAND_DEPTH` window.
+/// Nine such A's push B out of the first window, which then grows until B is found.
 #[test]
 fn l1_4_oldest_in_band_is_not_always_weakest() {
     let n = START + 4e5;

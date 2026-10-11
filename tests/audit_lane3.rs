@@ -1,6 +1,6 @@
 //! Audit lane 3 — the dream (SPEC §5, §7). Public API only.
-//! Tests named `bug_*` are expected to FAIL while the defect exists; the rest pin the
-//! invariants that hold (see audit/lane3.md).
+//! Each test reproduces a defect found in the audit (now fixed) or pins an invariant that
+//! holds; see audit/lane3.md.
 
 mod support;
 
@@ -29,12 +29,10 @@ fn raw_row(id: &str, text: &str, consolidated: bool) -> Trace {
 
 // ------------------------------------------------------------------ L3-1
 
-/// BUG (L3-1): `seeds()` asks the store for `8·budget + |failed|` labile rows and only
-/// then drops the unusable ones (`checked`). Labile rows the engine can never use (empty
-/// text, written by an older version or by hand) sit at the head of the FIFO forever and
-/// eat the whole window: the dream never reaches a usable seed.
+/// L3-1: labile rows the engine can never use (empty text, written by an older version or
+/// by hand) sit at the head of the queue; the dream pages past them to the usable seeds.
 #[test]
-fn bug_unusable_labile_rows_starve_the_queue() {
+fn unusable_labile_rows_do_not_starve_the_queue() {
     let db = SharedStore::default();
     let (mut s, _) = build_with(config_budget(1), Box::new(FakeEmbedder::new()), Box::new(db.clone()));
     let mut raw = db.clone();
@@ -47,13 +45,10 @@ fn bug_unusable_labile_rows_starve_the_queue() {
     assert!(reports.iter().any(|r| r.action == DreamAction::Replace), "usable seed starved by unusable labile rows: {reports:?}");
 }
 
-/// BUG (L3-1): every examined seed that cannot be settled goes to `failed` (capacity
-/// `8·cfg.dream_budget`), but the window read from the store is only `want + |failed|`,
-/// so seeds are always inside the first `want + cap` labile rows. With 16 undecidable
-/// seeds ahead (cap 8, want 8) the rotation cycles among them and a decidable seed behind
-/// them is never reached (the fallback-vector path: query embedder offline).
+/// L3-1: with 16 undecidable seeds ahead (fallback-vector path: query embedder offline) the
+/// cyclic cursor still reaches a decidable seed behind them.
 #[test]
-fn bug_fallback_deferred_seeds_starve_later_seeds() {
+fn undecidable_fallback_seeds_do_not_starve_later_seeds() {
     let (e, _) = CountingEmbedder::new(true, None);
     let (mut s, _) = build_with(config_budget(1), Box::new(e), Box::new(Store::in_memory().unwrap()));
     for i in 0..16 {
@@ -65,12 +60,12 @@ fn bug_fallback_deferred_seeds_starve_later_seeds() {
     for _ in 0..20 {
         replaced |= s.dream(&mut merge_to_gist, Some(1)).unwrap().iter().any(|r| r.action == DreamAction::Replace);
     }
-    assert!(replaced, "the decidable pair behind 16 deferred seeds was never examined in 20 dreams");
+    assert!(replaced, "the decidable pair behind 16 undecidable seeds was never examined in 20 dreams");
 }
 
-/// BUG (L3-1): same starvation through the LLM-failure path.
+/// L3-1: the same through the LLM-failure path.
 #[test]
-fn bug_failing_verdicts_starve_later_seeds() {
+fn failing_verdicts_do_not_starve_later_seeds() {
     let (mut s, _) = build(config_budget(1));
     for i in 0..16 {
         insert(&mut s, &format!("poison{i} xa{i} xb{i} xc{i}"), 1.0, "");
@@ -161,7 +156,7 @@ fn seeds_settled_without_candidates_cost_nothing() {
 }
 
 #[test]
-fn fallback_deferral_costs_no_budget() {
+fn fallback_seed_costs_no_budget() {
     let (e, _) = CountingEmbedder::new(true, None);
     let (mut s, _) = build_with(cfg(), Box::new(e), Box::new(Store::in_memory().unwrap()));
     let mut cued = Vec::new();

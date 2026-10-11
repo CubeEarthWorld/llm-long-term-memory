@@ -86,28 +86,6 @@ fn rescaled_row_does_not_outrank_a_nearer_unit_row() {
     assert!((cosine - 0.8).abs() < 1e-3, "nearest cosine {cosine}: the unit row at 0.8 was hidden behind a rescaled row at 0.6");
 }
 
-/// An under-scaled vector (norm 0.5, true cosine 0.99) falls below the store's own `min_cos`
-/// (0.495 < 0.55) and is never returned, although `checked` would have repaired it.
-#[test]
-#[ignore = "superseded: an unsound vector is embedded again by the scrub in reindex(), not rescaled (SPEC §2)"]
-fn underscaled_row_is_found_after_repair() {
-    let mut m = scripted(&[row(&rid(1), "alpha", "script", dir(0.99, 0.5), true)]);
-    // An unsound vector is not searched with; the scrub in reindex() embeds the row again.
-    assert!(m.reindex(10).unwrap() > 0);
-    let (cosine, consolidated) = probe_remember(&mut m);
-    assert!((cosine - 0.99).abs() < 1e-3 && !consolidated, "cosine {cosine}, consolidated {consolidated}: the repaired row is invisible to the store's threshold");
-}
-
-/// Same through recall: min_cos (0.1) is applied to the unscaled vector.
-#[test]
-#[ignore = "superseded: an unsound vector is embedded again by the scrub in reindex(), not rescaled (SPEC §2)"]
-fn underscaled_row_is_recalled() {
-    let mut m = scripted(&[row(&rid(1), "alpha", "script", dir(0.99, 0.05), true)]);
-    assert!(m.reindex(10).unwrap() > 0); // the scrub repairs what the engine cannot search with
-    let r = m.peek("probe").unwrap();
-    assert!(!r.recalled.is_empty(), "a row with norm 0.05 (repairable) is invisible to recall");
-}
-
 // ------------------------------------------------ (2) what `checked` cannot repair
 
 /// A unit vector of another dimension under the current model id is neither stale (the stored model

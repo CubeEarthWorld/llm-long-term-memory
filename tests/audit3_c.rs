@@ -474,7 +474,7 @@ fn g_s8_s9_oversized_unsorted_and_nonfinite_hits_do_not_panic() {
             k.near_everything_reversed = true;
             k.cos_override = cos;
         });
-        let _ = no_panic("recall", || {
+        no_panic("recall", || {
             let r = m.recall("shared words").unwrap();
             assert!(r.recalled.len() <= 2, "{} traces injected with inject_n = 2", r.recalled.len());
             for c in &r.recalled {

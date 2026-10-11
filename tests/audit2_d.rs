@@ -1109,7 +1109,7 @@ impl Run {
         }
         let mut sorted: Vec<f64> = scores.iter().map(|s| s.1).collect();
         sorted.sort_by(|a, b| b.total_cmp(a));
-        if top >= self.cfg.min_score + 1e-5 && sorted.get(1).map_or(true, |s2| top - s2 > 1e-5) {
+        if top >= self.cfg.min_score + 1e-5 && sorted.get(1).is_none_or(|s2| top - s2 > 1e-5) {
             let best = scores.iter().find(|s| s.1 == top).unwrap().0.clone();
             ck!(self, r.recalled.first().map(|c| c.trace.id.clone()) == Some(best.clone()), "I-recall-oracle-top", "best row {best} (score {top}) not first in {:?}", r.recalled.iter().map(|c| &c.trace.id).collect::<Vec<_>>());
         }
@@ -1207,7 +1207,7 @@ impl Run {
         let mut reply = String::from("sure. ");
         for _ in 0..1 + r.below(4) {
             let id = match r.below(6) {
-                0 | 1 | 2 if !exp_ids.is_empty() => r.pick(&exp_ids),
+                0..=2 if !exp_ids.is_empty() => r.pick(&exp_ids),
                 3 if !all_ids.is_empty() => r.pick(&all_ids),
                 4 => "nope".to_string(),
                 _ => String::new(),
@@ -1534,11 +1534,10 @@ impl Run {
                     }
                     for g in &rep.after {
                         ck!(self, text_ok(&g.text, self.cfg.text_max) && g.consolidated && id_ok(&g.id), "I7-gist-valid", "gist {:?}", g.text);
-                        if let Some(raw) = prev.get(seed_id) {
-                            if g.created_at != raw.created_at {
+                        if let Some(raw) = prev.get(seed_id)
+                            && g.created_at != raw.created_at {
                                 self.flag("I7-gist-created-at-clamped", format!("gist {} stated at {} but its seed {} was stated at {} (now {})", g.id, g.created_at, raw.id, raw.created_at, now as i64))?;
                             }
-                        }
                         ck!(self, g.vector.len() == dim && g.model_id == cur, "I7-gist-index", "gist unindexed");
                         if let Some(s) = seed {
                             ck!(self, g.created_at == s.created_at && g.tz == s.tz && g.cue == s.cue, "I7-gist-inherit", "gist did not inherit the seed's time/tz/cue");

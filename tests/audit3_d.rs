@@ -212,17 +212,15 @@ impl Storage for Spy {
     }
     fn write(&mut self, writes: &[Write<'_>]) -> Result<()> {
         self.c.write_calls.fetch_add(1, SeqCst);
-        if let Some(p) = &self.probe {
-            if p.expect_evict.load(SeqCst) {
+        if let Some(p) = &self.probe
+            && p.expect_evict.load(SeqCst) {
                 p.check(writes);
             }
-        }
         self.inner.write(writes)?;
-        if let Some(p) = &self.probe {
-            if p.track {
+        if let Some(p) = &self.probe
+            && p.track {
                 p.apply(writes);
             }
-        }
         Ok(())
     }
     fn clear(&mut self) -> Result<()> {
@@ -418,7 +416,7 @@ fn run(sc: &Scenario) -> Outcome {
         // periodically whatever it is: each must come back, and none may be forgotten.
         for (ki, k) in keys.iter().enumerate() {
             let stored = m.store().find(View::Text(k), 1).unwrap().pop();
-            let due = stored.as_ref().is_none_or(|t| m.retrievability(t, now_of(&clock)) < 0.7) || (step + ki as u64) % 11 == 0;
+            let due = stored.as_ref().is_none_or(|t| m.retrievability(t, now_of(&clock)) < 0.7) || (step + ki as u64).is_multiple_of(11);
             if !due {
                 continue;
             }
@@ -679,8 +677,8 @@ fn clock_extremes_never_panic_and_keep_the_invariants() {
         ("neg inf", f64::NEG_INFINITY),
         ("f64::MAX", f64::MAX),
         ("f64::MIN", f64::MIN),
-        ("2^63", 9.223_372_036_854_775_8e18),
-        ("-2^63", -9.223_372_036_854_775_8e18),
+        ("2^63", 9.223_372_036_854_776e18),
+        ("-2^63", -9.223_372_036_854_776e18),
         ("2^53", 9.007_199_254_740_992e15),
         ("year 10000", 253_402_300_800.0),
         ("jiff max", 253_402_207_200.0),
