@@ -129,6 +129,9 @@ struct Window {
     last_dt: f64,
 }
 
+/// A trace with its recall score, best cue cosine and retrievability.
+type Scored = (Trace, f64, f64, f64);
+
 /// What one recall cue left behind for [`Engram::cite`].
 #[derive(Clone, Copy, Debug)]
 struct Exposure {
@@ -332,21 +335,32 @@ impl Engram {
         Ok((usable.into_iter().take(k).collect(), kth))
     }
 
-    /// Applies one operation's writes as one atomic commit. Everything that removes a trace
-    /// goes through here, so a removed trace cannot keep a citation window open: a later
-    /// trace under the same id (a generator derived from text and time repeats ids) would
-    /// inherit its boost.
+    /// Applies one operation's writes as one atomic commit. Everything that removes or
+    /// rewrites a trace goes through here, so a removed trace cannot keep a citation
+    /// window open: a later trace under the same id (a generator derived from text and
+    /// time repeats ids), or a row rewritten behind the engine's back, would inherit its boost.
     fn commit(&mut self, writes: &[Write<'_>]) -> Result<()> {
         if writes.is_empty() {
             return Ok(());
         }
         self.store.write(writes)?;
         for w in writes {
-            if let Write::Remove(id) = w {
-                self.exposures.remove(*id);
-            }
+            match w {
+                Write::Remove(id) => self.exposures.remove(*id),
+                Write::Insert(t) => self.exposures.remove(&t.id),
+                _ => None,
+            };
         }
         Ok(())
+    }
+
+    /// Applies changes that originate outside the engine (another device's synced rows)
+    /// as one atomic commit; nothing is rebuilt. State-only changes are [`Write::State`];
+    /// new or changed text is [`Write::Insert`] (with `model_id` `""` and no vector when
+    /// the host has none: call [`Engram::reindex`] afterwards to embed it); deletions are
+    /// [`Write::Remove`]. A row an insert or removal touches loses its citation window.
+    pub fn apply(&mut self, writes: &[Write<'_>]) -> Result<()> {
+        self.commit(writes)
     }
 
     /// The trace with `id`.
@@ -512,7 +526,8 @@ impl Engram {
             return Ok(Vec::new());
         }
         let cutoff = (now - self.cfg.grace_period) as i64;
-        let young = self.store.count(View::Young { created_after: cutoff })?.saturating_add(usize::from(new.created_at > cutoff));
+        // Only compared with capacity / 10 below: counting stops one past it.
+        let young = self.store.count_up_to(View::Young { created_after: cutoff }, self.cfg.capacity / 10 + 1)?.saturating_add(usize::from(new.created_at > cutoff));
         let rank = |t: &Trace| t.stability.log2() - (now - t.last_recall as f64).max(0.0) / t.stability;
         let ranked = |t: Trace| match self.checked(t.clone()) {
             Some(c) => (rank(&c), c),
@@ -587,9 +602,7 @@ impl Engram {
         self.select(query, now)
     }
 
-    /// The recall pool, exactly: each cue asks the store for its nearest traces above
-    /// the cosine no qualifying trace can be below, and the search widens until no trace
-    /// it has not returned could still clear the score floor.
+    /// What recall injects: the pool ([`Self::pool`]), diversified and packed.
     fn select(&mut self, query: &str, now: f64) -> Result<Recall> {
         let parts = cues(query, self.cfg.max_cues);
         if parts.is_empty() || self.store.count(View::All)? == 0 {
@@ -604,37 +617,7 @@ impl Engram {
         if qs.iter().any(|q| q.len() != qs[0].len()) {
             return Ok(Recall::default()); // an embedder whose dimension moved mid-call: nothing to compare
         }
-        let total = self.store.count(View::All)?;
-        // score = a(cos)·(α + (1−α)·R) ≤ a(cos): below this cosine no trace reaches min_score.
-        let min_cos = self.cfg.cosine_floor + self.cfg.min_score * (1.0 - self.cfg.cosine_floor);
-        let mut k = self.cfg.inject_n.saturating_mul(4);
-        let pool = loop {
-            let mut seen: BTreeMap<String, Trace> = BTreeMap::new(); // id order = insertion order
-            let mut unseen_cos = f64::NEG_INFINITY; // the most a trace not returned could have
-            for q in &qs {
-                let (hits, kth) = self.near(q, min_cos, k, None)?;
-                if let Some(c) = kth {
-                    unseen_cos = unseen_cos.max(c);
-                }
-                seen.extend(hits.into_iter().map(|h| (h.trace.id.clone(), h.trace)));
-            }
-            let scored: Vec<(Trace, f64, f64, f64)> = seen
-                .into_values()
-                .filter(|t| t.vector.len() == qs[0].len())
-                .map(|t| {
-                    let cos = qs.iter().map(|q| dot(&t.vector, q).min(1.0)).fold(f64::NEG_INFINITY, f64::max); // vectors are finite (checked)
-                    let rv = self.retrievability(&t, now);
-                    let score = self.activation(cos) * (self.cfg.alpha + (1.0 - self.cfg.alpha) * rv);
-                    (t, score, cos, rv)
-                })
-                .collect();
-            let top = scored.iter().map(|c| c.1).fold(0.0, f64::max);
-            let floor = self.cfg.min_score.max(self.cfg.relative_score * top);
-            if unseen_cos == f64::NEG_INFINITY || self.activation(unseen_cos) < floor || k >= total {
-                break scored.into_iter().filter(|c| c.1 >= floor).collect::<Vec<_>>();
-            }
-            k = k.saturating_mul(4);
-        };
+        let pool = self.pool(&qs, now)?;
         let mut out = Recall::default();
         let mut used = 0;
         for j in self.mmr(&pool) {
@@ -651,9 +634,62 @@ impl Engram {
         Ok(out)
     }
 
+    /// The recall pool: every trace whose score clears the floor. A first pass asks each
+    /// cue for its `4 × inject_n` nearest; that usually proves no other trace could clear
+    /// the floor. Otherwise the floor it set is a lower bound of the final one (the top
+    /// score only grows with the candidates), so one more pass per cue, over every trace
+    /// at or above the cosine that floor needs, holds all the traces the final floor keeps.
+    fn pool(&self, qs: &[Vec<f32>], now: f64) -> Result<Vec<Scored>> {
+        let total = self.store.count(View::All)?;
+        // score = a(cos)·(α + (1−α)·R) ≤ a(cos): below this cosine no trace reaches min_score.
+        let min_cos = self.cfg.cosine_floor + self.cfg.min_score * (1.0 - self.cfg.cosine_floor);
+        let k = self.cfg.inject_n.saturating_mul(4);
+        let (scored, unseen_cos) = self.scored(qs, now, min_cos, k)?;
+        let floor = self.floor(&scored);
+        if unseen_cos == f64::NEG_INFINITY || self.activation(unseen_cos) < floor || k >= total {
+            return Ok(scored.into_iter().filter(|c| c.1 >= floor).collect());
+        }
+        let bound = self.cfg.cosine_floor + floor * (1.0 - self.cfg.cosine_floor) - 1e-9; // activation(bound) ≤ floor, rounding included
+        let (scored, _) = self.scored(qs, now, bound, total.max(k))?;
+        let floor = self.floor(&scored);
+        Ok(scored.into_iter().filter(|c| c.1 >= floor).collect())
+    }
+
+    /// The traces within the `k` nearest of some cue (cosine ≥ `min_cos`), scored by their
+    /// best cue, in id order — and the most a trace not returned could have: the cosine of
+    /// the k-th hit of a cue that returned `k` (`-∞` when none did).
+    fn scored(&self, qs: &[Vec<f32>], now: f64, min_cos: f64, k: usize) -> Result<(Vec<Scored>, f64)> {
+        let mut seen: BTreeMap<String, Trace> = BTreeMap::new(); // id order = insertion order
+        let mut unseen_cos = f64::NEG_INFINITY;
+        for q in qs {
+            let (hits, kth) = self.near(q, min_cos, k, None)?;
+            if let Some(c) = kth {
+                unseen_cos = unseen_cos.max(c);
+            }
+            seen.extend(hits.into_iter().map(|h| (h.trace.id.clone(), h.trace)));
+        }
+        let scored = seen
+            .into_values()
+            .filter(|t| t.vector.len() == qs[0].len())
+            .map(|t| {
+                let cos = qs.iter().map(|q| dot(&t.vector, q).min(1.0)).fold(f64::NEG_INFINITY, f64::max); // vectors are finite (checked)
+                let rv = self.retrievability(&t, now);
+                let score = self.activation(cos) * (self.cfg.alpha + (1.0 - self.cfg.alpha) * rv);
+                (t, score, cos, rv)
+            })
+            .collect();
+        Ok((scored, unseen_cos))
+    }
+
+    /// The score a candidate must reach: absolute, and relative to the best.
+    fn floor(&self, scored: &[Scored]) -> f64 {
+        let top = scored.iter().map(|c| c.1).fold(0.0, f64::max);
+        self.cfg.min_score.max(self.cfg.relative_score * top)
+    }
+
     /// MMR over `pool` (trace, score, ..): `next = argmax[score − λ·max cos(m, selected)]`,
     /// ties in pool order.
-    fn mmr(&self, pool: &[(Trace, f64, f64, f64)]) -> Vec<usize> {
+    fn mmr(&self, pool: &[Scored]) -> Vec<usize> {
         let mut max_sim = vec![0.0f64; pool.len()];
         let mut alive = vec![true; pool.len()];
         let mut selected = Vec::new();
@@ -1035,11 +1071,107 @@ fn cited_ids(text: &str) -> Vec<&str> {
 
 #[cfg(test)]
 mod tests {
-    use super::cited_ids;
+    use super::*;
+    use crate::Store;
 
     #[test]
     fn citations_are_parsed_in_order() {
         assert_eq!(cited_ids("a《id:X1》 b 《id:》《id:Y2》《id:Z"), ["X1", "Y2"]);
         assert_eq!(cited_ids("《id:《id:X》"), ["X"]);
+    }
+
+    /// An embedder that only names its space: the pool test builds its vectors itself.
+    struct Space(usize);
+
+    impl Embedder for Space {
+        fn model_id(&self) -> &str {
+            "m"
+        }
+        fn dimension(&self) -> usize {
+            self.0
+        }
+        fn embed_documents(&mut self, _: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Err("unused".into())
+        }
+        fn embed_queries(&mut self, _: &[&str]) -> Result<Vec<Vec<f32>>> {
+            Err("unused".into())
+        }
+    }
+
+    fn random_unit(x: &mut u64, dim: usize) -> Vec<f32> {
+        let v: Vec<f32> = (0..dim)
+            .map(|_| {
+                *x ^= *x << 13;
+                *x ^= *x >> 7;
+                *x ^= *x << 17;
+                (*x >> 11) as f32 / (1u64 << 53) as f32 - 0.5
+            })
+            .collect();
+        normalized(&v)
+    }
+
+    /// The pool as the search used to find it: every cue's `k` nearest, `k` growing ×4
+    /// from `4 × inject_n` until the widening cannot change the pool.
+    fn grown_pool(e: &Engram, qs: &[Vec<f32>], now: f64) -> Vec<Scored> {
+        let total = e.store.count(View::All).unwrap();
+        let min_cos = e.cfg.cosine_floor + e.cfg.min_score * (1.0 - e.cfg.cosine_floor);
+        let mut k = e.cfg.inject_n.saturating_mul(4);
+        loop {
+            let (scored, unseen_cos) = e.scored(qs, now, min_cos, k).unwrap();
+            let top = scored.iter().map(|c| c.1).fold(0.0, f64::max);
+            let floor = e.cfg.min_score.max(e.cfg.relative_score * top);
+            if unseen_cos == f64::NEG_INFINITY || e.activation(unseen_cos) < floor || k >= total {
+                return scored.into_iter().filter(|c| c.1 >= floor).collect();
+            }
+            k = k.saturating_mul(4);
+        }
+    }
+
+    #[test]
+    fn the_two_pass_pool_is_the_grown_pool() {
+        let mut x = 0x2545_F491_4F6C_DD1Du64;
+        let (mut widened, mut settled) = (0, 0);
+        for round in 0..60 {
+            let dim = 3 + round % 5;
+            let cfg = Config {
+                cosine_floor: [0.0, 0.2, 0.4][round % 3],
+                inject_n: 1 + round % 4,
+                relative_score: [0.0, 0.6, 0.9, 1.0][round % 4],
+                alpha: [0.0, 0.35, 1.0][round % 3],
+                ..Config::default()
+            };
+            let now = 1_700_000_000.0;
+            let mut e = Engram::open(Box::new(Store::in_memory().unwrap()), Box::new(Space(dim)), cfg, "UTC").unwrap();
+            let rows: Vec<Trace> = (0..40 + round * 3)
+                .map(|i| Trace {
+                    id: format!("{i:05}"),
+                    text: format!("t{i}"),
+                    created_at: 1,
+                    tz: "UTC;+00:00".into(),
+                    last_recall: now as i64 - (random_unit(&mut x, 1)[0].abs() * 3.0e6) as i64,
+                    stability: 86_400.0 * (1.0 + 30.0 * f64::from(random_unit(&mut x, 1)[0].abs())),
+                    consolidated: true,
+                    cue: String::new(),
+                    model_id: "m".into(),
+                    vector: random_unit(&mut x, dim),
+                })
+                .collect();
+            e.apply(&rows.iter().map(Write::Insert).collect::<Vec<_>>()).unwrap();
+            for cues in 1..=3 {
+                let qs: Vec<Vec<f32>> = (0..cues).map(|_| random_unit(&mut x, dim)).collect();
+                let key = |p: Vec<Scored>| p.into_iter().map(|c| (c.0.id, c.1.to_bits(), c.2.to_bits())).collect::<Vec<_>>();
+                let (want, got) = (key(grown_pool(&e, &qs, now)), key(e.pool(&qs, now).unwrap()));
+                assert_eq!(got, want, "round {round}, {cues} cues");
+                let (k, min_cos) = (e.cfg.inject_n * 4, e.cfg.cosine_floor + e.cfg.min_score * (1.0 - e.cfg.cosine_floor));
+                let (first, unseen_cos) = e.scored(&qs, now, min_cos, k).unwrap();
+                let floor = e.floor(&first);
+                if unseen_cos == f64::NEG_INFINITY || e.activation(unseen_cos) < floor || k >= e.store.count(View::All).unwrap() {
+                    settled += 1;
+                } else {
+                    widened += 1;
+                }
+            }
+        }
+        assert!(widened > 10 && settled > 10, "both paths must be exercised: {widened} widened, {settled} settled");
     }
 }

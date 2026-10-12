@@ -33,6 +33,10 @@ impl Storage for Guarded {
         self.0.count(view)
     }
 
+    fn count_up_to(&self, view: View<'_>, limit: usize) -> Result<usize> {
+        Ok(self.0.count_up_to(view, limit)?.min(limit))
+    }
+
     fn near(&self, q: &[f32], model_id: &str, min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
         let hits = self.0.near(q, model_id, min_cos, k, stated_by)?;
         let hits = hits.into_iter().filter(|h| stated_by.is_none_or(|s| h.trace.created_at <= s)).collect();

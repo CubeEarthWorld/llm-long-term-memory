@@ -60,6 +60,11 @@ pub trait Storage: Send {
     fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>>;
     /// How many traces `view` holds.
     fn count(&self, view: View<'_>) -> Result<usize>;
+    /// `min(count(view), limit)`: for a caller that only compares the count with `limit`,
+    /// so a storage may stop counting there.
+    fn count_up_to(&self, view: View<'_>, limit: usize) -> Result<usize> {
+        Ok(self.count(view)?.min(limit))
+    }
     /// Up to `k` traces indexed under `model_id` with `cos(vector, q) ≥ min_cos` (and
     /// `created_at ≤ stated_by` when given — applied inside the search, not after it),
     /// highest cosine first, ties oldest id first. `q` is unit length. An approximate

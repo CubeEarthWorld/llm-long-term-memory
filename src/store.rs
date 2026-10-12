@@ -203,13 +203,19 @@ impl Store {
         }
         let rx = self.db.begin_read()?;
         let table = rx.open_table(CENTROIDS)?;
-        let mut lists = Vec::new();
+        let (mut lists, mut damaged) = (Vec::new(), false);
         for item in table.range((model, 0u32)..=(model, u32::MAX))? {
             let (k, v) = item?;
-            lists.extend(decode_list(k.value().1, v.value()).ok()); // a damaged centroid: the list is skipped until a write rebuilds it
+            match decode_list(k.value().1, v.value()) {
+                Ok(l) => lists.push(l),
+                Err(_) => damaged = true, // the list is skipped until a write rebuilds it
+            }
         }
         let lists = Arc::new(lists);
-        self.lists.write().unwrap_or_else(|e| e.into_inner()).insert(model.to_owned(), Arc::clone(&lists));
+        if !damaged {
+            // The cache a write transaction starts from: it must not hide a list the write would rebuild.
+            self.lists.write().unwrap_or_else(|e| e.into_inner()).insert(model.to_owned(), Arc::clone(&lists));
+        }
         Ok(lists)
     }
 
@@ -314,6 +320,7 @@ impl Store {
 
 /// One write transaction's tables, and the lists it changed.
 struct Tx<'t> {
+    cache: &'t RwLock<HashMap<String, Arc<Vec<List>>>>,
     rows: redb::Table<'t, &'static str, &'static [u8]>,
     text: redb::Table<'t, (&'static str, &'static str), ()>,
     labile: redb::Table<'t, (&'static str, &'static str), ()>,
@@ -381,9 +388,14 @@ impl Tx<'_> {
         Ok(n)
     }
 
-    /// The lists of `model` as this transaction sees them.
+    /// The lists of `model` as this transaction sees them: the shared cache (what the last
+    /// commit left, none damaged) or, for a model it has not read yet, the centroid table.
     fn lists_of(&mut self, model: &str) -> Result<&mut Vec<List>> {
         if !self.touched.contains_key(model) {
+            let cached = self.cache.read().unwrap_or_else(|e| e.into_inner()).get(model).map(|l| l.as_ref().clone());
+            if let Some(lists) = cached {
+                return Ok(self.touched.entry(model.to_owned()).or_insert(lists));
+            }
             let mut lists = Vec::new();
             let mut damaged = Vec::new();
             for item in self.centroids.range((model, 0u32)..=(model, u32::MAX))? {
@@ -589,10 +601,22 @@ impl Tx<'_> {
         self.unindex(t)
     }
 
+    /// Whether the vector filed under `t.id` is byte for byte the one `t` carries (none, for none).
+    fn same_vector(&self, t: &Trace) -> Result<bool> {
+        let Some(list) = self.listed.get(t.id.as_str())?.map(|g| g.value()) else { return Ok(t.vector.is_empty()) };
+        let filed = self.lists.get((t.model_id.as_str(), list, t.id.as_str()))?;
+        Ok(filed.is_some_and(|e| e.value() == list_entry(t.created_at, &t.vector).as_slice()))
+    }
+
     fn apply(&mut self, w: &Write<'_>) -> Result<()> {
         match *w {
             Write::Insert(t) => {
                 match self.get(&t.id)? {
+                    // Same text, time and vector: only the state indexes can have changed.
+                    Row::Found(old) if old.text == t.text && old.created_at == t.created_at && old.model_id == t.model_id && self.same_vector(t)? => {
+                        self.drop_state(&old)?;
+                        return self.put_state(t);
+                    }
                     Row::Found(old) => self.unlink(&old)?,
                     Row::Damaged => self.purge(&t.id)?,
                     Row::Absent => {
@@ -655,6 +679,20 @@ impl Storage for Store {
         Ok(n)
     }
 
+    fn count_up_to(&self, view: View<'_>, limit: usize) -> Result<usize> {
+        if view == View::All {
+            return Ok(self.count(view)?.min(limit));
+        }
+        let mut n = 0;
+        if limit > 0 {
+            self.scan(view, |_| {
+                n += 1;
+                n < limit
+            })?;
+        }
+        Ok(n)
+    }
+
     /// Reads the lists with the nearest centroids until [`PROBE_VECTORS`] vectors have been
     /// read, so the cost is bounded (plus one dot product per centroid), not the store size.
     fn near(&self, q: &[f32], model_id: &str, min_cos: f64, k: usize, stated_by: Option<i64>) -> Result<Vec<Hit>> {
@@ -663,48 +701,71 @@ impl Storage for Store {
         lists.sort_by(|a, b| b.0.total_cmp(&a.0));
         let rx = self.db.begin_read()?;
         let table = rx.open_table(LISTS)?;
-        let mut best: Vec<(f64, String)> = Vec::new();
-        let mut buf = vec![0.0f32; q.len()]; // one buffer: no allocation per vector read
-        let mut read = 0;
-        for (_, l) in &lists {
-            if read >= PROBE_VECTORS {
-                break;
-            }
-            read = read.saturating_add(l.size);
-            for item in table.range((model_id, l.id, "")..)? {
-                let (key, v) = item?;
-                let (m, list, id) = key.value();
-                if m != model_id || list != l.id {
+        let order = |a: &(f64, String), b: &(f64, String)| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1));
+        // The `keep` best hits, sorted, and whether others were dropped. Only a hit that can
+        // still enter the best `keep` is copied; the buffer is cut back to them whenever it
+        // doubles, so the cost is a pass and a partial selection, not a sort of every hit.
+        let scan = |keep: usize| -> Result<(Vec<(f64, String)>, bool)> {
+            let mut best: Vec<(f64, String)> = Vec::new();
+            let mut bar: Option<(f64, String)> = None; // the `keep`-th best so far
+            let mut buf = vec![0.0f32; q.len()]; // one buffer: no allocation per vector read
+            let mut read = 0;
+            for (_, l) in &lists {
+                if read >= PROBE_VECTORS {
                     break;
                 }
-                let Some((created_at, raw)) = split_entry(v.value()).filter(|(_, r)| r.len() == 4 * q.len()) else { continue };
-                if stated_by.is_some_and(|s| created_at as i64 > s) {
-                    continue;
-                }
-                for (x, c) in buf.iter_mut().zip(raw.as_chunks::<4>().0) {
-                    *x = f32::from_le_bytes(*c);
-                }
-                let cos = dot(&buf, q);
-                if cos >= min_cos {
+                read = read.saturating_add(l.size);
+                for item in table.range((model_id, l.id, "")..)? {
+                    let (key, v) = item?;
+                    let (m, list, id) = key.value();
+                    if m != model_id || list != l.id {
+                        break;
+                    }
+                    let Some((created_at, raw)) = split_entry(v.value()).filter(|(_, r)| r.len() == 4 * q.len()) else { continue };
+                    if stated_by.is_some_and(|s| created_at as i64 > s) {
+                        continue;
+                    }
+                    for (x, c) in buf.iter_mut().zip(raw.as_chunks::<4>().0) {
+                        *x = f32::from_le_bytes(*c);
+                    }
+                    let cos = dot(&buf, q);
+                    if cos < min_cos || bar.as_ref().is_some_and(|(c, i)| c.total_cmp(&cos).then_with(|| id.cmp(i.as_str())).is_ge()) {
+                        continue;
+                    }
                     best.push((cos, id.to_owned()));
+                    if best.len() >= keep.saturating_mul(2) {
+                        best.select_nth_unstable_by(keep - 1, order);
+                        best.truncate(keep);
+                        bar = Some(best[keep - 1].clone());
+                    }
                 }
             }
-        }
-        let order = |a: &(f64, String), b: &(f64, String)| b.0.total_cmp(&a.0).then_with(|| a.1.cmp(&b.1));
-        best.sort_unstable_by(order);
+            best.sort_unstable_by(order);
+            let dropped = best.len() > keep;
+            best.truncate(keep);
+            Ok((best, dropped || bar.is_some()))
+        };
         // Rows are read k at a time: an unreadable one is skipped and the next best takes
-        // its place (matched by id, so no cosine shifts onto another trace).
-        let mut out = Vec::with_capacity(k.min(best.len()));
-        for chunk in best.chunks(k.max(1)) {
-            if out.len() >= k {
-                break;
+        // its place (matched by id, so no cosine shifts onto another trace). The first scan
+        // keeps k hits; only when unreadable rows leave fewer than k, and hits were dropped, all are kept.
+        let mut keep = k.max(1);
+        loop {
+            let (best, dropped) = scan(keep)?;
+            let mut out = Vec::with_capacity(k.min(best.len()));
+            for chunk in best.chunks(k.max(1)) {
+                if out.len() >= k {
+                    break;
+                }
+                let ids: Vec<String> = chunk.iter().map(|b| b.1.clone()).collect();
+                let mut traces: HashMap<String, Trace> = self.rows(&ids)?.into_iter().map(|t| (t.id.clone(), t)).collect();
+                out.extend(chunk.iter().filter_map(|(cos, id)| traces.remove(id).map(|trace| Hit { cos: *cos, trace })));
             }
-            let ids: Vec<String> = chunk.iter().map(|b| b.1.clone()).collect();
-            let mut traces: HashMap<String, Trace> = self.rows(&ids)?.into_iter().map(|t| (t.id.clone(), t)).collect();
-            out.extend(chunk.iter().filter_map(|(cos, id)| traces.remove(id).map(|trace| Hit { cos: *cos, trace })));
+            if out.len() >= k || !dropped {
+                out.truncate(k);
+                return Ok(out);
+            }
+            keep = usize::MAX;
         }
-        out.truncate(k);
-        Ok(out)
     }
 
     /// One atomic commit. Durability is "eventual" (like SQLite's WAL with
@@ -714,6 +775,7 @@ impl Storage for Store {
         wx.set_durability(redb::Durability::Eventual);
         let touched = {
             let mut tx = Tx {
+                cache: &self.lists,
                 rows: wx.open_table(ROWS)?,
                 text: wx.open_table(TEXT)?,
                 labile: wx.open_table(LABILE)?,
