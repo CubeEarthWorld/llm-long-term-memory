@@ -1,7 +1,6 @@
 # Round 2, lane D: whole-system, model-based, stateful testing
 
-Files: `tests/audit2_d.rs` (harness, 17 tests), `audit/lean/R2D.lean` (Lean 4.34.1 core, compiles, no `sorry`;
-axioms: propext/Classical.choice/Quot.sound only). `src/` untouched.
+Files: `tests/audit2_d.rs` (harness, 17 tests). `src/` untouched.
 
 Run: `CARGO_TARGET_DIR=C:/t/r2d cargo test --test audit2_d -j 3`
 Result (debug profile, ~2 min): **9 pass, 7 fail, 1 ignored**. The 7 failures are 4 confirmed defects (4 hand-minimal
@@ -66,26 +65,12 @@ D2 medium (silent skip of an update's adjudication after an NTP step; the seed i
 ## Notes (pass; they document behaviour)
 
 * `note_stale_undo_resurrects_forgotten_trace`: `undo` is unversioned; undoing the same reports twice after the host forgot a restored
-  trace brings it back. The host owns report lifetimes (SPEC 5). Not provable no-resurrection when undo is in the system (Lean gap G5).
+  trace brings it back. The host owns report lifetimes (SPEC 5). Not provable no-resurrection when undo is in the system.
 * `note_idgen_may_reuse_a_removed_id`: the engine refuses an id only while it is live (`new_id` checks `find(Id)`), so an `IdGen` that
-  repeats ids gets removed ids back; "no resurrection" in Lean assumes the IdGen contract (fresh ids).
+  repeats ids gets removed ids back; "no resurrection" assumes the IdGen contract (fresh ids).
 * `dream_cursor_cycles_through_undecidable_seeds` passes (and fails under the cursor mutation).
 * After the budget is spent the dream stops at the next seed, so seeds with no candidates behind the last judged seed are settled one dream
   later (not a violation; the harness oracles only demand settling while budget is left).
 * Batch-failure behaviour of the embedder inside `reindex` is "stop at the first bad batch": rows behind a bad vector stay stale until a
   later call (`I-reindex-order` is therefore only enforced with a faultless embedder).
 
-## Lean: `audit/lean/R2D.lean`
-
-One transition system: state = rows + cursor + the engine's bounded memory (`expo`, `wt`) + ghosts (`next`, `gone`); steps = remember
-(victims leave, exactly `min (n+1) cap` rows remain), recall, cite, forget, dream (big-step relation over the seed queue with keep / settle /
-replace / error), stutter. Invariant `Inv` (capacity, stability range, id uniqueness, id freshness, gone-ids fresh, **no resurrection**,
-exposures live and <= inject_n, rate window <= writes_per_day) is proved inductive for every step: `step_inv`, `reach_inv`,
-`capacity_always`, `stability_always`, `no_resurrection`. Also proved: `dream_calls_le_budget`, `dream_seed_once` / `dream_seed_nodup`
-(<= 1 verdict per seed), `dream_len_le` (a dream never adds rows), `dream_removals_reported`, `recall_ids`, `recall_frames` (only named rows
-are rewritten), `recall_monotone`, `cite_monotone`, `recall_keeps_labile`, `remember_keeps_labile`, `undo_keep_rows`, `undo_replace_rows`
-(per verdict), `pack_within_budget`.
-
-Documented gaps (header table of the file): R in [0,1], unit vectors, text rules (floats / strings, fuzz checks), weakest-first eviction
-(float ranking, brute-force oracle `I4-eviction-not-weakest`), determinism, atomicity on `Err` (D1/D3 are exactly its violations), late or
-repeated undo (G5, witness above), IdGen uniqueness (G6, witness above), and undo chains across settles (fuzz `I7-undo-not-exact`).

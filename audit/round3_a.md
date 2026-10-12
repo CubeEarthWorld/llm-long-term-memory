@@ -2,14 +2,14 @@
 
 Scope: `Engram::near` widening, `checked` repair, the `unreadable` placeholder, `purge`, `commit` gate,
 `remember` bookkeeping, clock, future times, prompt/JSON.
-Artifacts: `audit/lean/R3A.lean` (Lean 4.34.1 core, compiles, no `sorry`), `tests/audit3_a.rs`
+Artifacts: `tests/audit3_a.rs`
 (`CARGO_TARGET_DIR=C:/t/r3a cargo test --test audit3_a -j 3`: 9 failing = confirmed, 6 passing guards, 1 `#[ignore]` accepted).
 
 ## Confirmed defects (failing tests)
 
 | # | tests | root cause | origin |
 |---|-------|-----------|--------|
-| R1 | `overscaled_row_below_theta_is_not_reported_as_related`, `rescaled_row_does_not_outrank_a_nearer_unit_row`, `underscaled_row_is_found_after_repair`, `underscaled_row_is_recalled` | `near()` repairs a vector (`renormalized`) and recomputes its cosine **after** the store has ranked, thresholded (`min_cos`) and truncated by the unscaled dot. The engine never re-applies `min_cos`, never re-sorts, and the kth bound uses the recomputed value. Norm 2 / true cos 0.3 is returned as "related" (born labile); norm 2 / true 0.6 outranks a unit row at 0.8; norm 0.5 / true 0.99 (key 0.495 < 0.55) and norm 0.05 under recall's min_cos 0.1 are never returned at all. | **round-2 regression** (the repair was added in round 2; its soundness argument assumes key = cosine, Lean `rescaled_outranks`, `underscaled_hidden`) |
+| R1 | `overscaled_row_below_theta_is_not_reported_as_related`, `rescaled_row_does_not_outrank_a_nearer_unit_row`, `underscaled_row_is_found_after_repair`, `underscaled_row_is_recalled` | `near()` repairs a vector (`renormalized`) and recomputes its cosine **after** the store has ranked, thresholded (`min_cos`) and truncated by the unscaled dot. The engine never re-applies `min_cos`, never re-sorts, and the kth bound uses the recomputed value. Norm 2 / true cos 0.3 is returned as "related" (born labile); norm 2 / true 0.6 outranks a unit row at 0.8; norm 0.5 / true 0.99 (key 0.495 < 0.55) and norm 0.05 under recall's min_cos 0.1 are never returned at all. | **round-2 regression** |
 | R2 | `damaged_vector_is_healed_by_a_fresh_engines_reindex` | The damaged-vector queue is in-memory and filled only when a row is *read* by `find`/`near`. A zero vector (current model id) is not in `View::Stale`, never matches `near`, and a consolidated row is never a dream seed: a fresh engine's `reindex` never finds it. | **round-2 fix incomplete** (A3's heal path works only inside one process after an incidental read) |
 | R3 | `wrong_dimension_vector_is_reindexed` | A unit vector of another dimension under the *current* model id passes `checked` (`unit`), is dropped by `near`/`select` length filters and by the store's `raw.len()` filter, is not stale and not queued as damaged: lost to search forever. | pre-existing gap, sibling of round-2 A3 (not covered by it) |
 | R4 | `unusable_stale_rows_do_not_starve_reindex` | `reindex(limit)` takes `limit` ids of `View::Stale` and only then `checked` drops unusable ones; `limit` unusable rows newer than a usable stale row starve it permanently (dream passes 64 x budget). Same shape as A1/A2, not fixed for reindex. | pre-existing |
@@ -27,9 +27,8 @@ unit-norm rule left open. R4, R5, R6 are pre-existing (R6 verified present in th
 
 ## Examined and found sound (passing guards or analysis)
 
-* Widening loop: terminates (ask doubles, `saturating_mul`, stop at `usize::MAX`; Lean `terminates`, fuel |rows|+1), cost is
-  bounded by `PROBE_VECTORS` per iteration x log2 iterations; for exact (unit) rows the kth bound is sound (Lean `unseen_le_kth`,
-  `exhausted_nothing_unseen`). Only repaired rows break it (R1). `recall_widens_past_unusable_rows` (200 junk rows) passes.
+* Widening loop: terminates, cost is
+  bounded by `PROBE_VECTORS` per iteration x log2 iterations; for exact (unit) rows the kth bound is sound. Only repaired rows break it (R1). `recall_widens_past_unusable_rows` (200 junk rows) passes.
 * `Store::rows` placeholder: `new_id` still refuses a damaged row's id (`a_damaged_rows_id_is_not_reused`), eviction ranks it
   `-inf` and removes it, `forget` removes it, the dream skips it and pages past 70 of them
   (`dream_reaches_a_seed_behind_many_unusable_rows`). Its `created_at = 0`, `last_recall = 0`, `consolidated = true` are never read
@@ -59,10 +58,3 @@ unit-norm rule left open. R4, R5, R6 are pre-existing (R6 verified present in th
 * `TEXT_PROBE = 8`: eight unusable rows sharing a text (invalid ids) in front of a usable one make `remember` insert a duplicate.
 * `Remembered::Inserted.evicted` can be the empty placeholder when an unreadable row was the victim.
 
-## Lean: `audit/lean/R3A.lean`
-
-Models `near` as `loop fuel rows k ask` over a store sorted by key `s` with rows carrying a true cosine `t` and a usable flag.
-Proved: `loop_stops`/`terminates` (stop test holds for fuel >= |rows|+1, result = usable part of the store's top `ask'`),
-`ask_grows`, `unseen_le_seen`, `unseen_le_kth` / `sound_when_exact` (kth bound sound when `t = s`),
-`exhausted_nothing_unseen`; and the regression as theorems about concrete rows: `rescaled_outranks` (kth = 6 while an unseen
-row has t = 8) and `underscaled_hidden` (key 5.0 < 5.5 <= true 9.9).

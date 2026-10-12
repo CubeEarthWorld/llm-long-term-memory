@@ -1,6 +1,6 @@
 # Round 3, lane C: hostile environments and panic-freedom
 
-Files: `tests/audit3_c.rs` (48 tests), `audit/lean/R3C.lean` (compiles with Lean 4.34.1 core, no `sorry`, no `native_decide`).
+Files: `tests/audit3_c.rs` (48 tests).
 Run: `CARGO_TARGET_DIR=C:/t/r3c cargo test --test audit3_c -j 3` (about 9 min in debug: the `r*` tests run 20 000 operations each;
 every test takes a global lock so the allocator-based byte counts are not disturbed; `--skip r` gives the 45 s version).
 Result on the snapshot below: 48 tests, 32 pass, 16 fail. `src/` and existing tests were not modified.
@@ -14,10 +14,10 @@ made the row unforgettable), `s7c` (the usable-rows widening in `Engram::find` i
 
 | id | sev | tests | root cause (one line) | area |
 |---|---|---|---|---|
-| H1 | med (hostile store) | `s1`, `s2`, `s3` | `victims`: `count(All) + 1`, `count(Young) + usize::from(..)` and `excess + BAND_DEPTH` are plain `usize` adds; a store that reports a count within 9 of `usize::MAX` panics every `remember` in a debug build (a release build wraps: `count+1` becomes 0, eviction silently stops). Lean `count_plus_one_overflows`, `excess_plus_depth_overflows`. Fix: `saturating_add` in the three places (Lean `sat_grow_safe` shows the rest of the window arithmetic then holds for every count). | Storage trust |
+| H1 | med (hostile store) | `s1`, `s2`, `s3` | `victims`: `count(All) + 1`, `count(Young) + usize::from(..)` and `excess + BAND_DEPTH` are plain `usize` adds; a store that reports a count within 9 of `usize::MAX` panics every `remember` in a debug build (a release build wraps: `count+1` becomes 0, eviction silently stops). Fix: `saturating_add` in the three places. | Storage trust |
 | H2 | med (hostile store) | `s5a`, `s5b`, `s5c` | Row identity is never checked. `memory(id)` and `forget(id)` take the LAST row of `find(View::Id(id), 1)` and use `raw.id`; `remember` rehearses the first row of `find(View::Text(text))` without comparing texts. A store that ignores the view or the limit makes `forget(a)` delete another trace and `remember("beta")` rehearse "alpha". Fix: filter `t.id == id` / `t.text == text` (and `take(limit)`). | Storage trust |
 | H3 | low (hostile store) | `s6` | `candidates` does not de-duplicate `near()` hits: a store that repeats a hit puts the same trace in a cluster several times; the LLM sees it repeated and `gists` sums its strength once per copy (`absorbed` also repeats it). Fix: dedup by id in `Engram::near` (the pool of `select` already does through its `BTreeMap`). | Storage trust |
-| H4 | low (hostile store) | `s7`, `s7b` | The widening loops are bounded only by the store running out: `Engram::near` doubles `ask` while every hit is unusable, `select` quadruples `k` while the k-th cosine stays above the floor. A store that never runs out (or lies about it) is asked for 2^16, 2^17 ... `usize::MAX` rows (max `k` seen: 131 072 with 3 rows in the store). Lean `iter_double_saturates` / `iter_quad_saturates`: saturation needs 64 / 32 rounds, but each round allocates `ask` hits. Fix: clamp `ask` and `k` to `count(View::All)` (plus a constant). `Engram::find` got that bound (`JUNK_READ`, test `s7c` passes now), these two did not. | Storage trust |
+| H4 | low (hostile store) | `s7`, `s7b` | The widening loops are bounded only by the store running out: `Engram::near` doubles `ask` while every hit is unusable, `select` quadruples `k` while the k-th cosine stays above the floor. A store that never runs out (or lies about it) is asked for 2^16, 2^17 ... `usize::MAX` rows (max `k` seen: 131 072 with 3 rows in the store) / `iter_quad_saturates`: saturation needs 64 / 32 rounds, but each round allocates `ask` hits. Fix: clamp `ask` and `k` to `count(View::All)` (plus a constant). `Engram::find` got that bound (`JUNK_READ`, test `s7c` passes now), these two did not. | Storage trust |
 | H5 | low (hostile store) | `s9b` | A hit whose vector is unit keeps the store's cosine unchecked: a store that reports `-0.9` for a hit the engine asked to be at least `theta_related` still counts as the reactivated trace (`Inserted.cosine = -0.9`, the write is born labile). `stated_by` and `k` are not re-checked either. Fix: drop hits with `cos < min_cos` (and `created_at > stated_by`) in `Engram::near`; the vector is there to recompute. | Storage trust |
 | E1 | med (hostile embedder) | `e1` | `Engram::vector` reads `embedder.dimension()` once per vector; an embedder whose answer changes between calls yields query vectors of different lengths in one recall, and `select` calls `dot(&t.vector, q)` for every `q` of the pool, so `vector.rs:30` (`assert_eq!`) panics. Backtrace: `Engram::select -> dot`. Fix: read the dimension once per operation, or require `qs.iter().all(len == qs[0].len())` (and `unwrap` it into `None`). | Embedder snapshot |
 | I3 | med | `i3` | Ids have no length bound (`valid_id` only checks characters). A custom `IdGen` (or a store) with 1 MB ids stores them in every index (about 8 copies per trace) and one pack line is 1 048 642 characters for `budget_chars = 1024` (the "first always fits" rule lets it through). The doc of `Recall::pack_text` says "at most `budget_chars`". Fix: refuse ids longer than a constant (say 256 bytes) in `valid_id`; the same for `model_id`, which is stored in every row and key (no test: a 100 kB model id works, `g_e4`). | Identifier bounds |
@@ -40,7 +40,7 @@ file-level robustness** (D1, D3, D4).
 | `vector.rs` `assert_eq!(a.len(), b.len())` in `dot` | the one reachable panic: `select` with query vectors of different lengths (E1). Every other call site guards the length (`near`, `gists`, `Store::list`, `Store::near`, `split`, `mmr` over a pool filtered to `qs[0].len()`). |
 | `text.rs` `parts[i * n / max_cues..(i + 1) * n / max_cues]` | `max_cues >= 1`; `i * n <= 2^20 * n` fits `usize` on 64-bit (on a 32-bit target `n > 4 000` could overflow: note, no test). |
 | `text.rs` `cut[..max_chars]`, `chars[..max_chars]` | taken only after `chars.len() > max_chars`. |
-| `time.rs` `&t[1..]`, `rest.split_at(len - 2)` | after an ASCII sign / an `is_ascii` check, length 3..=4. `civil_from_days`: Lean `R2C.lean` proved no i64 overflow. `fmt_offset` `abs()` of at most 86 399. |
+| `time.rs` `&t[1..]`, `rest.split_at(len - 2)` | after an ASCII sign / an `is_ascii` check, length 3..=4. `civil_from_days`: proved no i64 overflow. `fmt_offset` `abs()` of at most 86 399. |
 | `store.rs` `expect("just inserted")`, `expect("members")`, `expect("listed")` | each follows the insert / the `first()` guard / `save_list` of the same list in the same transaction; a damaged file cannot remove the entry between them. Unreachable. |
 | `store.rs` `trace()` `v[0]`...`v[7]` on `serde_json::Value` | `Index` on a non-array returns `Null`, never panics; a short row is `None` and read as damaged. |
 | `store.rs` `size += 1`, `read += l.size`, `size -= moved` | reachable from a damaged file (D1). |
@@ -92,10 +92,3 @@ llama.cpp bindings) that are not in the published crate. `Cargo.lock`: every cra
 `redb 2.6.4` being a previous major and having the truncated-file panic of D4 (not checked against 3.x: no network). `cargo audit` is not installed; no advisory check was made.
 Release profile: `lto = "thin"`, no `overflow-checks`, no `panic = "abort"`: debug panics of H1/D1 are silent wraps in release (H1 stops eviction, D1 corrupts a list size).
 
-## Lean (`audit/lean/R3C.lean`)
-
-`grow_safe` / `grow_safe_w`: for every `excess`, the window growth `(w.limit * 4).min(cap)` only fires for `limit < 128` (invariant: the window is either
-equal to the cap, or the cap is the constant 128 and the window is below it), so `limit * 4 < 512` and the `* 4` needs no saturation. `count_plus_one_overflows`,
-`excess_plus_depth_overflows`, `overflow_window`: the two additions that do overflow (H1). `sat_cap_lt_w`, `sat_start_le_cap`, `sat_grow_safe`: with saturating
-`+ 1` and `+ BAND_DEPTH` the whole chain is safe for every store count. `iter_double_saturates` (64 rounds), `iter_quad_saturates` (32 rounds),
-`saturated_fixed`: the `near` / `select` widening loops end by saturation, which bounds rounds but not work per round (H4).

@@ -1,6 +1,6 @@
 # Round 2, lane B: Storage contract and the bundled Store
 
-Files: `tests/audit2_b.rs` (conformance suite + reproductions), `audit/lean/R2B.lean` (compiles on Lean 4.34.1, core only, no sorry).
+Files: `tests/audit2_b.rs` (conformance suite + reproductions).
 Run: `CARGO_TARGET_DIR=C:/t/r2b cargo test --test audit2_b -j 3` (about 30 s; `AUDIT2B_SEEDS=80` widens the random search, 80 extra seeds passed).
 `src/` was not modified.
 
@@ -19,9 +19,9 @@ removals and replacements, and exactly 8192 vectors): `near` is exact in all of 
 
 ## No defect found (checked)
 * Band scan break condition: late rows (created_at > created_by) in the middle of a band are skipped, never terminate the scan,
-  and the scan ends only at the next band. Lean `scan_eq_spec` proves it equals the spec; `scanBad` (break on first late row) is the
+  and the scan ends only at the next band; breaking on the first late row would be the
   tempting wrong version. Test `band_scan_skips_late_rows_in_the_middle`.
-* Labile paging has no duplicates and no gaps (Lean `labile_pages`); Stale: per-model newest-first, no row lost (model order is
+* Labile paging has no duplicates and no gaps; Stale: per-model newest-first, no row lost (model order is
   unspecified by SPEC; the Store walks models above then below the current one, each descending).
 * Atomicity: a rejected Insert replacing an existing id, State, or Index leaves rows, indexes, lists and count untouched (redb rollback;
   the `lists` cache is only updated after commit).
@@ -34,7 +34,7 @@ removals and replacements, and exactly 8192 vectors): `near` is exact in all of 
 
 ## Confirmed failing tests (defects)
 1. `young_after_i64_max_is_empty` -- `View::Young{created_after: i64::MAX}` returns rows with created_at == i64::MAX.
-   Cause: `created_after.saturating_add(1)` saturates to the bound itself, turning "> MAX" into ">= MAX" (Lean `young_boundary_defect`).
+   Cause: `created_after.saturating_add(1)` saturates to the bound itself, turning "> MAX" into ">= MAX".
    Low severity (engine passes now - grace).
 2. `near_accepts_k_of_usize_max` -- `near(k = usize::MAX)` panics "capacity overflow". Cause: `Vec::with_capacity(k)` in `Store::near`
    (`find` accepts usize::MAX for "all"; the same type in `near` should too). Fix: cap the capacity at `best.len()`.

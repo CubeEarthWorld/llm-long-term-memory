@@ -1,6 +1,6 @@
 # Lane 1 audit: forgetting curve and clamping
 
-Files: `audit/lean/Lane1.lean` (compiles with Lean 4.34.1 core, zero `sorry`), `tests/audit_lane1.rs`
+Files: `tests/audit_lane1.rs`
 (copy in `audit/tests/`). Run: `CARGO_TARGET_DIR=C:/t/l1 cargo test --test audit_lane1 -j 3`
 (7 pass, 4 fail = 4 confirmed defects below).
 
@@ -29,8 +29,7 @@ Repro: `m.retrievability(&Trace{stability: f64::NAN, ..t}, now)`. Severity: low 
 (oldest last_recall) window of `excess+8 = 9` rows never reaches the weak one. Fix: validate `max_stability <= 2^127`
 (band <= 253), or widen the band key. Severity: low (absurd config), but it is a validated config.
 
-**D3. The sqrt2 / "oldest last_recall in a band is the weakest" claim is false** (`l1_4_oldest_in_band_is_not_always_weakest`;
-Lean `older_but_stronger`). Same band only gives S_hi/S_lo < sqrt2 (`same_band_ratio`); the weakness is
+**D3. The sqrt2 / "oldest last_recall in a band is the weakest" claim is false**. Same band only gives S_hi/S_lo < sqrt2 (`same_band_ratio`); the weakness is
 `log2 S - dt/S`, and the dt/S terms differ. Minimal counter: S_B=4 (dt 12), S_A=5 (dt 15): same band, A is older,
 strength A = 5/8 > B = 4/8. So the head is not the weakest. The engine masks this by reading `excess + BAND_DEPTH(8)`
 rows per band, but SPEC section 3 states the result equals a full comparison ("全件比較と同じ結果"). With 9 older,
@@ -53,15 +52,10 @@ Needs S_max near f64::MAX, so low severity, but trivial to fix.
   (`gist_shift_bounded_by_dt`). The test `l1_5_gist_last_recall_subtraction_cannot_overflow` passed. Cheap hardening:
   `now_i.saturating_sub(shift)`.
 * **G2 (benign).** f64 `log2` rounds `2^k - 1ulp` up to `k`, so such an S lands one band high (test tolerates +1). Order is
-  still monotone (`l1_4_band_is_monotone_and_u8_for_default_smax`), and the Lean model uses exact integer log.
+  still monotone (`l1_4_band_is_monotone_and_u8_for_default_smax`).
 * **G3 (out of lane, noticed).** `checked` validates finiteness of vector components but not unit norm. A hand-written row with a
   large non-unit vector gives a cosine far above 1; `select` clamps `dot().min(1.0)` so it scores as a perfect match
   (and `NaN.min(1.0) == 1.0`). Worth a look in the vector lane.
-* Float model assumptions (Lean): floor(2 log2 S) = `Nat.log2 (S*S)` for integer S; R in [0,1] is reduced to "exponent >= 0";
-  f64 overflow in D4 is modelled as an explicit cap M. The Lean file does not model rounding.
+* Float model assumptions: floor(2 log2 S) = integer log2 of S*S for integer S; R in [0,1] is reduced to "exponent >= 0";
+  f64 overflow in D4 is modelled as an explicit cap M.
 
-## Proved in Lean (`audit/lean/Lane1.lean`)
-`band_mono`, `band_lt_256_of_lt`, `band_2_128`, `band_default_smax` (=56), `same_band_ratio`, `older_but_stronger`,
-`retrieval_monotone`, `retrieval_fixed_when_x_zero`, `cite_part_ge_one`, `cite_part_le_full`, `cite_product_first_overflow`,
-`gist_no_overflow_nonneg`, `gist_overflow_negative_now`, `gist_shift_bounded_by_dt`, `gist_last_recall_le_now`,
-`clamp_in_range`, `clamp_fails_if_smax_lt_one`, `exponent_nonneg`, `neg_stability_exponent_positive`.

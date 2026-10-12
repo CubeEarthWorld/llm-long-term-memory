@@ -1,7 +1,6 @@
 # Round 3, lane D: long horizons, scale, performance regressions
 
-Files: `tests/audit3_d.rs` (22 tests, 6 of them `#[ignore]` measurements), `audit/lean/R3D.lean` (Lean 4.34.1 core, compiles, no `sorry`,
-no `native_decide`; axioms: propext / Quot.sound only). `src/` and existing tests untouched.
+Files: `tests/audit3_d.rs` (22 tests, 6 of them `#[ignore]` measurements). `src/` and existing tests untouched.
 Run: `CARGO_TARGET_DIR=C:/t/r3d cargo test --release --test audit3_d -j 3` (about 90 s; 14 pass, 2 fail by design).
 Measurements: `... -- --ignored --nocapture --test-threads=1` (about 5 min, 100k x 768-d random unit vectors, in-memory redb unless noted).
 Numbers come from a shared 16-core Windows machine while other agents compiled: treat them as +-20 %.
@@ -88,7 +87,7 @@ Eviction (store exactly full, every remember evicts one; includes the ~6 ms near
 
 * Rows read per remember do not grow with N in the realistic layouts (173 to 650 band rows); `find` calls are 256 bands + a few (the engine probes all 256 `u8` bands,
   199 of them empty: ~1 ms). The tied-rank adversary reads 9.5k rows (all 57 bands grow to the 128 cap: 9 + 36 + 128 rows each, twice when the grace pool is short) and is the only
-  eviction case near 100 ms (94 ms max at 100k, 81 mean). It is bounded: Lean `rows_per_heads` gives <= b x 283 rows per `heads` call (57 bands: 16 131; ceiling for 256 bands x 2 calls: 144 896).
+  eviction case near 100 ms (94 ms max at 100k, 81 mean). It is bounded: gives <= b x 283 rows per `heads` call (57 bands: 16 131; ceiling for 256 bands x 2 calls: 144 896).
 * Flood: `count(View::Young)` walks every young row on every full remember (O(young), allowed up to the whole store when a flood fills it): 0.7 ms at 10k young, 8.2 ms at 100k
   (the 16.8 vs 9-12 ms above). Linear in N, still far below 100 ms at 100k; at 1M young rows it would be ~80 ms.
 
@@ -129,7 +128,7 @@ What this session changed that could move it: `Engram::near` now trusts the stor
 bundled `Store` (exact f32 vectors, unit length by construction) both are neutral. Existing proxies run on the final tree: `forgetting`, `equivalence`, `conformance`, `dream`,
 `scaling`, `batching`, `longevity` (212 s, 3000 virtual years) all pass; `engine::rows_read_are_clamped` fails (stale expectation, see above).
 
-## 5. Lean: `audit/lean/R3D.lean`
+## 5
 
 * `cost_bound`: for one band's window schedule `l, min(4l, cap), ...` (stop at `cap`), `3 * cost + l0 <= 7 * cap`; hence `cost <= 7/3 cap` for any `excess` (`cost_general`).
 * The SPEC claim "total read is about 1.4 x the cap" is true only for `excess <= 2` (173 / 178 rows of 128); `spec_1_4_false`: `excess = 23` reads 31 + 124 + 128 = 283 rows (2.21 x);

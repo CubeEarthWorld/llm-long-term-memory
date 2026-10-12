@@ -2,7 +2,7 @@
 
 Scope: SPEC.md §2-§8 against `src/`, rustdoc / README examples, the `ltm-bench` workspace member, `tests/support` and the
 existing tests, clippy, dead code. No `src/`, existing test or doc was modified. New files: `tests/audit3_b.rs`,
-`audit/lean/R3B.lean` (compiles, no `sorry`), this report.
+this report.
 
 Note: `src/engine.rs`, `src/store.rs` and `src/storage.rs` changed under me during the audit (another lane): `View::After`, `Engram::scrub`,
 `Engram::sound()` + `VECTOR_DRIFT = 0.05` replaced the 1e-3 renormalise-and-`damaged`-list repair. Line numbers below are from the snapshot read
@@ -15,7 +15,7 @@ Failing tests (`CARGO_TARGET_DIR=C:/t/r3b cargo test --test audit3_b -j 3`: 5 pa
 
 | test | cause |
 |---|---|
-| `band_window_total_reads_match_spec_section_3` | SPEC §3 says one band's reads total "about 1.4x the 128 cap". Window growth is 31 -> 124 -> 128: **283 rows = 2.21x** (excess = 23). The final regrow step adds 4 rows but re-reads 128. Worst case over all excess is exactly 283 (`R3B.lean`: `worst_case`, `never_above_283`). **SPEC is wrong** (the code is fine and bounded; optionally clamp growth so the last step is skipped when `4*limit` is within a few rows of the cap). |
+| `band_window_total_reads_match_spec_section_3` | SPEC §3 says one band's reads total "about 1.4x the 128 cap". Window growth is 31 -> 124 -> 128: **283 rows = 2.21x** (excess = 23). The final regrow step adds 4 rows but re-reads 128. Worst case over all excess is exactly 283. **SPEC is wrong** (the code is fine and bounded; optionally clamp growth so the last step is skipped when `4*limit` is within a few rows of the cap). |
 | `readmes_name_only_methods_that_exist` | README.md and README.ja.md say Config has "JSON round trip with `to_json` / `merge_json`"; no such method exists anywhere (`grep -rn to_json src bench tests`: none). README.zh.md is clean. **Doc wrong.** |
 
 Passing probes that document behaviour (so the matrix claims below are machine-backed): `dead_band_is_not_widened_and_first_window_is_excess_plus_8`
@@ -35,7 +35,7 @@ No code defect (engine behaviour contradicting SPEC) was found in this lane beyo
 6. **§4 recall step 3, and README x3.** Pack line is `[unix tz] text　《id:…》` (U+3000 before the opener, `id:` prefix; `select()` format string), not "`[unix tz] text 《id》`". Edit SPEC §4 and the READMEs (`README.md` lines 24-25 table rows, `README.ja.md`, `README.zh.md`): write `《id:…》`.
 7. **§5 first line.** "未索引の痕跡を新しい順に 64 × budget 件まで再埋め込み" is 64 x max(1, budget) in code (`dream`: `REINDEX_BATCH * left.max(1)`), so budget 0 still re-embeds 64. Edit: "64 × max(1, budget)".
 8. **§6 last paragraph.** "テストのトークン重なり埋め込みは thetaRelated = 0.75 を使う": only `tests/longevity.rs` does; every other test uses the default 0.55 with `cosine_floor = 0`. Edit: "長期シミュレーション（`tests/longevity.rs`）は ... 0.75".
-9. **§6 has no ranges.** `Config::validate` enforces (all reals finite): max_stability >= 1; spacing_gain, grace_period, mmr_lambda >= 0; min_score in [0,1]; gist_min_cosine in [-1,1]; max_cues >= 1; capacity >= 1; 0 < initial_stability <= max_stability; cosine_floor in [0,1); alpha, relative_score in [0,1]; theta_related in (0,1); dream_max_members >= 2; inject_n, budget_chars, text_max >= 1; inject_n, max_cues, dream_max_members, dream_budget <= 2^20 (`COUNT_MAX`, `config.rs`). Add a "範囲" column or sentence (the 2^20 bound is verified true in code and Lean R2C part D, but not stated in SPEC).
+9. **§6 has no ranges.** `Config::validate` enforces (all reals finite): max_stability >= 1; spacing_gain, grace_period, mmr_lambda >= 0; min_score in [0,1]; gist_min_cosine in [-1,1]; max_cues >= 1; capacity >= 1; 0 < initial_stability <= max_stability; cosine_floor in [0,1); alpha, relative_score in [0,1]; theta_related in (0,1); dream_max_members >= 2; inject_n, budget_chars, text_max >= 1; inject_n, max_cues, dream_max_members, dream_budget <= 2^20 (`COUNT_MAX`, `config.rs`). Add a "範囲" column or sentence.
 10. **§8 "全件の走査をする操作はない（唯一の例外は ... 移行）".** Second exception: `Tx::purge` (`store.rs`) scans every index to remove an undecodable row ("taken only to heal damage"). Also `count(view)` for any view but `All` is O(matches) in `Store` (`count()` scans): `victims` calls `count(View::Young)` on every at-capacity insert (O(#traces younger than the grace period), up to ~capacity right after a bulk import) and `stats().labile` is O(#labile). "各操作は O(log N)" holds only for `count(All)`. Either add the caveat or make `victims` ask `find(Young, capacity/10 + 1)` (reads rows, so a `Storage::count_up_to` would be the right seam).
 11. **§8 query table, `remember` row** is incomplete: it also does `find(Text)` (rehearsal probe, up to 8 rows), `find(Stale, 1)` (whenever it would be born consolidated), `find(Id)` per candidate id (`new_id`). `recall` also does `count(All)`. Minor.
 12. **§8 "id は 48bit ... それ以後は id が巻き戻る".** In one process ids never roll back: the timestamp is clamped to 2^48-1 (`id.rs` `ULID_MAX_MILLIS`) and `ulid::Generator` increments the previous ULID whenever the time is not greater (test `ids_do_not_roll_back_...`). Rollback only exists across a restart (fresh generator, random bits). Edit: "それ以後は時刻部が頭打ちになり、id は乱数部の増分で整列を保つ（再起動をまたぐと保証されない）".
@@ -99,11 +99,11 @@ Status: **OK** implemented as written; **DIFF** implemented differently (verdict
 | S3.14 | store needs only a `(band, last_recall)` index | OK | BAND table | |
 | S3.15 | band head is only approximately weakest (S differs by sqrt 2) | OK | | |
 | S3.16 | read each band from its head `excess + 8` rows, widen x4 until a lower bound proves no unread row ranks lower | OK | `victims` 496-526 | test `dead_band_..._excess_plus_8` |
-| S3.17 | unread rows have S >= band floor and dt <= last row's, so rank >= log2 S_lo - dt/S_lo | OK | 515-516 (`(1-1e-9)` fudge, `min(S_max)`) | proved in `R2A.lean` part 2 |
+| S3.17 | unread rows have S >= band floor and dt <= last row's, so rank >= log2 S_lo - dt/S_lo | OK | 515-516 (`(1-1e-9)` fudge, `min(S_max)`) | |
 | S3.18 | stop when the excess-th rank <= -64 | OK | `DEAD`, 510 | |
 | S3.19 | order among dead traces is immaterial | OK | | |
 | S3.20 | one band window <= 128 rows (or `excess + 8` if larger) | OK | `BAND_CAP`, `cap` 496 | test `window_larger_than_128_is_read_once`; `reads.iter().all(<=128)` |
-| S3.21 | total reads of a band "about 1.4x the cap" | **DIFF (S)** | 502-525 | **283 = 2.21x worst**; failing test + `R3B.lean` (item 1) |
+| S3.21 | total reads of a band "about 1.4x the cap" | **DIFF (S)** | 502-525 | **283 = 2.21x worst**; failing test (item 1) |
 | S3.22 | a band that hits the cap is approximate | OK | | |
 | S3.23 | within usable range result equals full comparison | OK (conditional on S3.22) | | |
 | S3.24 | unusable rows hidden outside the window die when they appear; capacity protected by `count(All)` | OK | `ranked`, `total` 479 | |
@@ -195,7 +195,7 @@ Status: **OK** implemented as written; **DIFF** implemented differently (verdict
 | S8.5 | embedding calls batched for recall, clusters, dream cues | OK | | |
 | S8.6 | cosine = f32 multiply-add over 16 lanes summed in f64 | OK | `vector.rs` | |
 | S8.7 | ids 48-bit ms (year 10,889), roll back afterwards | DIFF (S) | `id.rs` | item 12; clamp itself is right |
-| S8.8 | local time formatting is pure arithmetic beyond year 9999 | OK | `time.rs`, `R2C.lean` part A | |
+| S8.8 | local time formatting is pure arithmetic beyond year 9999 | OK | `time.rs` | |
 | S8.9 | old-model rows healed newest first when the model is available | OK | `reindex` | |
 | S8.10 | no LLM -> consolidation stops, writes/recall/reinforce/forget continue | OK | | |
 | S8.11 | saturated store: new memory survives the grace period, then the longest-unrecalled yields | OK | `victims` | |
@@ -247,4 +247,4 @@ None flagged by rustc or clippy. By inspection:
 
 ## 8. What to run
 
-`CARGO_TARGET_DIR=C:/t/r3b cargo test --test audit3_b -j 3` -> 5 passed, 2 failed (expected, see section 1). Lean: `~/.elan/bin/lean.exe audit/lean/R3B.lean` (OK).
+`CARGO_TARGET_DIR=C:/t/r3b cargo test --test audit3_b -j 3` -> 5 passed, 2 failed (expected, see section 1).

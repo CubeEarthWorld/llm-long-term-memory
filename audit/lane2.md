@@ -1,7 +1,6 @@
 # Lane 2 audit: capacity and eviction
 
-Files: `audit/lean/Lane2.lean` (compiles, no `sorry`; one `True` placeholder marked GAP),
-`tests/audit_lane2.rs` (copy in `audit/tests/`). Run: `CARGO_TARGET_DIR=C:/t/l2 cargo test --test audit_lane2 -j 3`.
+Files: `tests/audit_lane2.rs` (copy in `audit/tests/`). Run: `CARGO_TARGET_DIR=C:/t/l2 cargo test --test audit_lane2 -j 3`.
 Result: 9 pass, 7 fail (16 tests) (each failure is a defect or spec weakness below).
 
 ## L2-1 count <= capacity after remember
@@ -17,7 +16,7 @@ Insert(new)+Remove(new) nets to "not stored" and the Store count (+1/-1) stays r
 **BUG (low, API): `evicted` mis-reports when excess > 1.** `evicted = victims.last()` and victims are sorted weakest first,
 so when the newcomer is the weakest of several victims (reachable after `undo()` or a lowered capacity) `evicted` names the
 strongest victim, not the newcomer, although the newcomer was never stored. Contradicts the doc of `Remembered::Inserted`.
-Lean: `l2_2_evicted_misreports`. Test: `l2_2_evicted_reports_unstored_newcomer_with_excess` (FAILS).
+. Test: `l2_2_evicted_reports_unstored_newcomer_with_excess` (FAILS).
 Fix: report the newcomer when it is among victims (or return all victims).
 
 ## L2-3 band head == global minimum of log2 strength
@@ -32,7 +31,7 @@ Impact is bounded (all candidates have strength about 2^-300, i.e. effectively d
 (SPEC §3, §8) is false, and the window size is the only thing that decides.
 **BUG (medium, spec §2/§4.5 "unusable rows die first"):** the same window hides an unusable row (ranked -inf) that sits
 behind >= excess+8 usable rows of its band (`l2_3_unusable_row_dies_first`, FAILS: a usable row is evicted, the broken one stays).
-Lean: `l2_3_depth_window_misses_min`, `l2_3_unusable_hidden`, `l2_3_window_covers_when_small` (the window is exact when band size <= excess+8).
+ (the window is exact when band size <= excess+8).
 Fix options: store an `unusable`/-inf flag as a separate band (e.g. band 256), or read bands until the head rank bound
 `log2 S_min - dt/S_min` proves nothing later can be lower.
 Other sub-conditions checked and fine: ties (id order both sides), `created_by` filter (Band skips young rows without
@@ -52,7 +51,7 @@ Insert/replace/State/Index/Remove, NaN-poisoned batches, 3 models; checks band c
 IVF lists/orphans) PASSES: no orphan or missing index entry from the ops themselves. undo() restores rows and the next write
 re-fits capacity (`l2_5_undo_then_remember_restores_capacity`).
 **DEFECT (medium, design): a future `last_recall` makes a trace immortal until the wall clock reaches it.** `checked` clamps
-`last_recall` to `now` on every read, so dt stays 0 for any stored last_recall > now (Lean `l2_5_future_lr_frozen`).
+`last_recall` to `now` on every read, so dt stays 0 for any stored last_recall > now.
 A single forward clock glitch followed by a recall stamps `last_recall = now_glitch`; after the clock is repaired the trace
 never decays for as long as the glitch was ahead (test: +100 years glitch, 20 years of churn at capacity 5: a never-recalled
 trace survives; `l2_5_future_last_recall_does_not_make_a_trace_immortal` FAILS). Conflicts with the 3000-year/clock-fault claim
@@ -64,10 +63,10 @@ is computed from the in-memory value on Insert/State (`put_state`) and from the 
 an ULP below a half-octave edge leaves an orphan `(band,last_recall,id)` entry after any State/Remove (stale entry inflates
 band scans and can duplicate the row in two bands, so `victims` may return the same trace twice, shorting the eviction when excess >= 2).
 Test: `l2_5_band_key_survives_json_round_trip` lists the 7 offending stabilities (FAILS); mechanism `l2_5_serde_json_f64_round_trip_is_exact` (FAILS).
-Lean: `l2_5_orphan_when_band_differs`, `l2_5_sync_when_exact`. Fix: enable serde_json `float_roundtrip`, or compute the band from the
+. Fix: enable serde_json `float_roundtrip`, or compute the band from the
 same parsed value everywhere (parse after serialising in `put_state`), or store stability as bits (u64).
 Probability for organically computed stabilities is about 1e-13 per write: latent.
 
 ## GAPs
 `l2_5_ops_preserve_sync` is a placeholder (redb tables not modelled); covered empirically by the random test.
-Distinctness of the pool (bands disjoint) is argued, not proved in Lean.
+Distinctness of the pool (bands disjoint) is argued, not proved.

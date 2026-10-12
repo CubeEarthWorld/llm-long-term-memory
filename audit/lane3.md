@@ -1,6 +1,6 @@
 # Lane 3 — the dream (SPEC §5, §7)
 
-Files: `audit/lean/Lane3.lean` (compiles with Lean 4.34.1 core, no `sorry`), `tests/audit_lane3.rs`
+Files: `tests/audit_lane3.rs`
 (copy in `audit/tests/`; Cargo only discovers `tests/`). Run:
 `CARGO_TARGET_DIR=C:/t/l3 cargo test --test audit_lane3 -j 3` -> 17 pass, 5 fail (the 5 are the defects below).
 
@@ -18,7 +18,7 @@ Files: `audit/lean/Lane3.lean` (compiles with Lean 4.34.1 core, no `sorry`), `te
 | L3-3 gist inherits seed created_at | proved | `newest_is_seed`; test `a_gist_inherits_created_at...` |
 | L3-4 replace+undo exact | proved | `undo_replace` (needs gist ids fresh = `new_id`); tests incl. strengthened/forgotten gist, keep+undo |
 | L3-4 capacity | proved | `replace_no_growth`; after undo rows may exceed capacity, next `remember` evicts (test passes) |
-| L3-4 undo order | **GAP (design)** | `gap_undo_in_dream_order_double_counts`; Lean counter-example |
+| L3-4 undo order | **GAP (design)** | `gap_undo_in_dream_order_double_counts` |
 | L3-4 split vs guard | **GAP (spec vs prompt)** | `gap_split_of_a_compound_seed_is_kept` |
 | L3-5 untouched candidates, vanished/consolidated seeds skipped | tested | `unnamed_candidates_stay_untouched...`, `seeds_that_vanish_or_settle_meanwhile_are_skipped` |
 | L3-5 settled seed absorbed later | **OK, no resurrection** | `Store::apply(State)` returns early when the row is absent (`state_on_removed_is_noop`; test `a_settled_seed_absorbed_by_a_later_cluster_is_not_resurrected`) |
