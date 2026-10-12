@@ -1,7 +1,7 @@
 //! Round 3, lane B: SPEC-vs-code conformance of the numbers SPEC states, and the documents
 //! around the engine (README examples, README API names). Each test names the sentence it checks.
-//! See audit/round3_b.md for the full conformance matrix and audit/lean/R3B.lean for the
-//! arithmetic behind `band_window_total_reads_match_spec_section_3`.
+//! See audit/round3_b.md for the full conformance matrix and the arithmetic behind
+//! `band_window_total_reads_match_spec_section_3` (283 rows is the worst case).
 
 mod support;
 
@@ -76,7 +76,7 @@ fn band_reads_for_one_eviction(rows: usize, capacity: usize, idle: f64) -> Vec<u
 /// SPEC §3: "1 帯の窓は 128 件（excess + 8 がそれより大きければそれ）が上限（窓は 4 倍ずつ広げて
 /// 読み直すので、読み出しの総量は上限の約 1.4 倍まで）".
 /// The 128 cap on one read is true. The 1.4x total is not: at excess = 23 the window is read as
-/// 31, 124, 128 rows = 283 = 2.2 x the cap (audit/lean/R3B.lean proves 283 is the worst case).
+/// 31, 124, 128 rows = 283 = 2.2 x the cap.
 #[test]
 fn band_window_total_reads_match_spec_section_3() {
     let reads = band_reads_for_one_eviction(300, 278, 0.0); // excess = 301 - 278 = 23
