@@ -139,6 +139,16 @@ struct Exposure {
     retrievability: f64,
 }
 
+/// Bounded session state, independent of stored traces. An asynchronous storage host
+/// can checkpoint before an operation and publish its new state only after commit.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct EngineState {
+    pub write_times: Vec<f64>,
+    pub exposures: Vec<(String, f64, f64)>,
+    pub dream_cursor: String,
+    pub scrub_cursor: String,
+}
+
 /// A long-term memory (ENGRAM v2.2) over a [`Storage`]. Its own state is bounded: the
 /// parameters, the last day's write times and the last recall's exposures.
 pub struct Engram {
@@ -169,6 +179,42 @@ impl Engram {
     pub fn with_clock(store: Box<dyn Storage>, embedder: Box<dyn Embedder>, cfg: Config, timezone: &str, clock: Clock) -> Result<Self> {
         cfg.validate()?;
         Ok(Self { cfg, store: Box::new(Guarded(store)), embedder, clock, ids: ulid_ids(), timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new(), cursor: String::new(), scrub: String::new() })
+    }
+
+    /// Captures the rate limiter, recall exposures and scan cursors, never traces.
+    pub fn checkpoint(&self) -> EngineState {
+        let mut exposures: Vec<_> = self
+            .exposures
+            .iter()
+            .map(|(id, e)| (id.clone(), e.cosine, e.retrievability))
+            .collect();
+        exposures.sort_by(|a, b| a.0.cmp(&b.0));
+        EngineState {
+            write_times: self.write_times.clone(),
+            exposures,
+            dream_cursor: self.cursor.clone(),
+            scrub_cursor: self.scrub.clone(),
+        }
+    }
+
+    /// Restores a checkpoint of this configuration, embedding model and account.
+    pub fn restore(&mut self, state: EngineState) {
+        self.write_times = state.write_times;
+        self.exposures = state
+            .exposures
+            .into_iter()
+            .map(|(id, cosine, retrievability)| {
+                (
+                    id,
+                    Exposure {
+                        cosine,
+                        retrievability,
+                    },
+                )
+            })
+            .collect();
+        self.cursor = state.dream_cursor;
+        self.scrub = state.scrub_cursor;
     }
 
     // ------------------------------------------------------------------ clock
@@ -1082,6 +1128,27 @@ mod tests {
 
     /// An embedder that only names its space: the pool test builds its vectors itself.
     struct Space(usize);
+
+    #[test]
+    fn checkpoints_contain_session_state_only_and_restore_exactly() {
+        let mut e = Engram::open(
+            Box::new(Store::in_memory().unwrap()),
+            Box::new(Space(2)),
+            Config::default(),
+            "UTC",
+        )
+        .unwrap();
+        let snapshot = EngineState {
+            write_times: vec![1.0, 2.0],
+            exposures: vec![("a".into(), 0.8, 0.5)],
+            dream_cursor: "seed".into(),
+            scrub_cursor: "scrub".into(),
+        };
+        e.restore(snapshot.clone());
+        assert_eq!(e.checkpoint(), snapshot);
+        assert_eq!(e.stats().unwrap().records, 0);
+        assert_eq!(crate::time::tz_field("Fixed;+09:30", 0.0), "Fixed;+09:30");
+    }
 
     impl Embedder for Space {
         fn model_id(&self) -> &str {

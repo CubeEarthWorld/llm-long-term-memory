@@ -42,7 +42,7 @@ mod vector;
 pub use config::Config;
 pub use dream::{Adjudicator, DreamDecision, DreamMember, DreamRequest, DREAM_SYSTEM_PROMPT};
 pub use embed::Embedder;
-pub use engine::{DreamAction, DreamReport, Engram, Recall, Recalled, Remembered, Stats};
+pub use engine::{DreamAction, DreamReport, EngineState, Engram, Recall, Recalled, Remembered, Stats};
 pub use id::{ulid_ids, IdGen};
 pub use json::relaxed_json;
 pub use storage::{Hit, Storage, View, Write};
@@ -51,6 +51,7 @@ pub use store::Store;
 pub use text::cues;
 pub use time::{fmt_local, system_clock, Clock, ManualClock};
 pub use trace::Trace;
+pub use vector::dot as vector_dot;
 
 /// Errors from a store, an embedder or an adjudicator: any error type, boxed.
 pub type Error = Box<dyn std::error::Error + Send + Sync>;

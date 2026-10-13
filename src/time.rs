@@ -46,6 +46,11 @@ impl ManualClock {
 /// `'IANA;+HH:MM'` for timezone `name` at `now` (the offset in force then, DST
 /// included). An unknown zone falls back to `+00:00`.
 pub fn tz_field(name: &str, now: f64) -> String {
+    // Importing a trace may supply its historical offset explicitly, including
+    // a fixed-offset zone unknown to the local timezone database.
+    if let Some((zone, offset)) = name.rsplit_once(';') {
+        return format!("{zone};{}", fmt_offset(parse_offset(offset)));
+    }
     let offset = jiff::tz::TimeZone::get(name).ok().and_then(|tz| {
         let (lo, hi) = (jiff::Timestamp::MIN.as_second(), jiff::Timestamp::MAX.as_second());
         let ts = jiff::Timestamp::from_second((now as i64).clamp(lo, hi)).ok()?;
