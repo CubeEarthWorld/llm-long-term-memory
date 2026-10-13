@@ -7,10 +7,14 @@
 
 use crate::dream::{Adjudicator, DreamDecision, DreamMember, DreamRequest};
 use crate::guard::Guarded;
-use crate::id::{ulid_ids, IdGen};
+use crate::id::IdGen;
+#[cfg(feature = "random-ids")]
+use crate::id::ulid_ids;
 use crate::storage::{Hit, Storage, View, Write};
 use crate::text::{clean_text, cues, valid_id};
-use crate::time::{clean_tz, fmt_local, system_clock, tz_field, Clock};
+use crate::time::{clean_tz, fmt_local, tz_field, Clock};
+#[cfg(feature = "random-ids")]
+use crate::time::system_clock;
 use crate::vector::{dot, normalized};
 use crate::{Config, Embedder, Result, Trace};
 use std::collections::{BTreeMap, HashMap, HashSet};
@@ -171,14 +175,21 @@ pub struct Engram {
 
 impl Engram {
     /// An engine over `store` (any [`Storage`]; [`crate::Store`] is bundled) on the wall clock. Nothing is loaded.
+    #[cfg(feature = "random-ids")]
     pub fn open(store: Box<dyn Storage>, embedder: Box<dyn Embedder>, cfg: Config, timezone: &str) -> Result<Self> {
         Self::with_clock(store, embedder, cfg, timezone, system_clock())
     }
 
     /// [`Engram::open`] with an injected clock.
+    #[cfg(feature = "random-ids")]
     pub fn with_clock(store: Box<dyn Storage>, embedder: Box<dyn Embedder>, cfg: Config, timezone: &str, clock: Clock) -> Result<Self> {
+        Self::with_clock_and_ids(store, embedder, cfg, timezone, clock, ulid_ids())
+    }
+
+    /// Uses the host's clock and ID generator without a platform RNG dependency.
+    pub fn with_clock_and_ids(store: Box<dyn Storage>, embedder: Box<dyn Embedder>, cfg: Config, timezone: &str, clock: Clock, ids: IdGen) -> Result<Self> {
         cfg.validate()?;
-        Ok(Self { cfg, store: Box::new(Guarded(store)), embedder, clock, ids: ulid_ids(), timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new(), cursor: String::new(), scrub: String::new() })
+        Ok(Self { cfg, store: Box::new(Guarded(store)), embedder, clock, ids, timezone: timezone.to_owned(), write_times: Vec::new(), exposures: HashMap::new(), cursor: String::new(), scrub: String::new() })
     }
 
     /// Captures the rate limiter, recall exposures and scan cursors, never traces.

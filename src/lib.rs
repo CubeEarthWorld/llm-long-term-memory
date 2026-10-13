@@ -43,7 +43,9 @@ pub use config::Config;
 pub use dream::{Adjudicator, DreamDecision, DreamMember, DreamRequest, DREAM_SYSTEM_PROMPT};
 pub use embed::Embedder;
 pub use engine::{DreamAction, DreamReport, EngineState, Engram, Recall, Recalled, Remembered, Stats};
-pub use id::{ulid_ids, IdGen};
+pub use id::IdGen;
+#[cfg(feature = "random-ids")]
+pub use id::ulid_ids;
 pub use json::relaxed_json;
 pub use storage::{Hit, Storage, View, Write};
 #[cfg(feature = "store")]

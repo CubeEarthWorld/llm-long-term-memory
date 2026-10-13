@@ -16,7 +16,7 @@ name = "engram"
 jiff = { version = "0.2.38", default-features = false, features = ["std", "tz-system", "tzdb-bundle-platform", "tzdb-zoneinfo"] }
 redb = { version = "2.6.4", optional = true }
 serde_json = { version = "1.0.151", features = ["preserve_order", "float_roundtrip"] }
-ulid = "3.0.0"
+ulid = { version = "3.0.0", optional = true }
 
 [workspace]
 members = ["bench"]
@@ -29,5 +29,6 @@ strip = "symbols"
 [features]
 # The bundled Store (redb + an IVF index, pure Rust). Without it the crate is the
 # algorithm alone and you implement `Storage` over your own database.
-default = ["store"]
+default = ["store", "random-ids"]
 store = ["dep:redb"]
+random-ids = ["dep:ulid"]

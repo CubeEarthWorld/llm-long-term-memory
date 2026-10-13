@@ -1,5 +1,6 @@
 //! Trace ids: monotonic ULIDs (the `ulid` crate) by default, or any [`IdGen`].
 
+#[cfg(feature = "random-ids")]
 use std::time::{Duration, UNIX_EPOCH};
 
 /// Makes the id of a new trace from its Unix time in milliseconds and its text. Ids must
@@ -8,10 +9,12 @@ use std::time::{Duration, UNIX_EPOCH};
 pub type IdGen = Box<dyn FnMut(i64, &str) -> String + Send>;
 
 /// The most a ULID's 48-bit timestamp holds (year 10,889).
+#[cfg(feature = "random-ids")]
 const ULID_MAX_MILLIS: i64 = (1 << 48) - 1;
 
 /// The default [`IdGen`]: ULIDs from one monotonic generator, so ids made in the same
 /// millisecond still sort in creation order.
+#[cfg(feature = "random-ids")]
 pub fn ulid_ids() -> IdGen {
     let mut generator = ulid::Generator::new();
     Box::new(move |millis, _| {
@@ -20,7 +23,7 @@ pub fn ulid_ids() -> IdGen {
     })
 }
 
-#[cfg(test)]
+#[cfg(all(test, feature = "random-ids"))]
 mod tests {
     #[test]
     fn ulids_sort_in_creation_order_within_a_millisecond() {
