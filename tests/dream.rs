@@ -37,6 +37,27 @@ fn keep_marks_consolidated_without_touching_strength() {
 }
 
 #[test]
+fn selected_seed_leaves_other_seeds_and_fifo_cursor_unchanged() {
+    let (mut s, _) = seeded();
+    let clusters = s.clusters(None).unwrap();
+    let target = clusters.last().unwrap()[0].id.clone();
+    let cursor = s.checkpoint().dream_cursor;
+    let mut calls = 0;
+    let mut judge = |r: &DreamRequest| -> Result<DreamDecision> {
+        calls += 1;
+        assert_eq!(r.members[0].id, target);
+        Ok(DreamDecision::keep())
+    };
+    assert_eq!(s.dream_seed(&target, &mut judge).unwrap()[0].action, DreamAction::Keep);
+    assert_eq!(calls, 1);
+    assert_eq!(s.checkpoint().dream_cursor, cursor);
+    assert!(mem(&s, &target).unwrap().consolidated);
+    assert!(!mem(&s, &clusters[0][0].id).unwrap().consolidated);
+    assert!(s.dream_seed("missing", &mut always_keep).unwrap().is_empty());
+    assert!(s.dream_seed(&target, &mut always_keep).unwrap().is_empty());
+}
+
+#[test]
 fn error_leaves_seed_labile() {
     let (mut s, _) = seeded();
     let reports = s.dream(&mut always_fail, None).unwrap();

@@ -958,6 +958,26 @@ impl Engram {
         Ok(reports)
     }
 
+    /// Consolidate a selected seed without walking the FIFO queue or re-indexing
+    /// unrelated traces. The normal dream cursor remains unchanged.
+    pub fn dream_seed(&mut self, seed_id: &str, adjudicator: &mut dyn Adjudicator) -> Result<Vec<DreamReport>> {
+        let seed = match self.memory(seed_id)?.filter(|s| !s.consolidated && s.model_id == self.embedder.model_id()) {
+            Some(s) if !s.vector.is_empty() => s,
+            _ => return Ok(Vec::new()),
+        };
+        let now = self.now();
+        let (q, cued) = self.cue_vectors(&[(&seed.cue, &seed.vector)]).remove(0);
+        let near = self.candidates(&q, &seed)?;
+        if near.is_empty() {
+            if cued {
+                self.commit(&[Write::State { id: &seed.id, last_recall: seed.last_recall, stability: seed.stability, consolidated: true }])?;
+            }
+            return Ok(Vec::new());
+        }
+        let cluster = std::iter::once(seed).chain(near).collect();
+        Ok(vec![self.adjudicate(adjudicator, cluster, now).report])
+    }
+
     /// One trace as a dream request member.
     fn member(&self, t: &Trace, now: f64) -> DreamMember {
         DreamMember {
