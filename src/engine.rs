@@ -978,6 +978,23 @@ impl Engram {
         Ok(vec![self.adjudicate(adjudicator, cluster, now).report])
     }
 
+    /// Bounded FIFO seeds and batched cue queries, for incremental async previews.
+    pub fn cluster_queries(&mut self, budget: Option<usize>) -> Result<Vec<(String, Vec<f32>)>> {
+        let seeds = self.seeds(budget.unwrap_or(self.cfg.dream_budget))?;
+        let qs = self.cue_vectors(&seeds.iter().map(|s| (s.cue.as_str(), s.vector.as_slice())).collect::<Vec<_>>());
+        Ok(seeds.into_iter().zip(qs).map(|(s, (q, _))| (s.id, q)).collect())
+    }
+
+    /// Preview one seed with a query from `cluster_queries`, preserving the FIFO cursor.
+    pub fn cluster_seed(&self, seed_id: &str, query: &[f32]) -> Result<Vec<Trace>> {
+        let seed = match self.memory(seed_id)?.filter(|s| !s.consolidated && s.model_id == self.embedder.model_id()) {
+            Some(s) if !s.vector.is_empty() => s,
+            _ => return Ok(Vec::new()),
+        };
+        let near = self.candidates(query, &seed)?;
+        Ok(if near.is_empty() { Vec::new() } else { std::iter::once(seed).chain(near).collect() })
+    }
+
     /// One trace as a dream request member.
     fn member(&self, t: &Trace, now: f64) -> DreamMember {
         DreamMember {

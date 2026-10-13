@@ -58,6 +58,16 @@ fn selected_seed_leaves_other_seeds_and_fifo_cursor_unchanged() {
 }
 
 #[test]
+fn bounded_preview_matches_existing_cluster_rules() {
+    let (mut s, _) = seeded();
+    let expected: Vec<Vec<String>> = s.clusters(Some(1)).unwrap().into_iter().map(|g|g.into_iter().map(|t|t.id).collect()).collect();
+    let seeds = s.cluster_queries(Some(1)).unwrap();
+    let actual: Vec<Vec<String>> = seeds.iter().map(|(id,q)|s.cluster_seed(id,q).unwrap().into_iter().map(|t|t.id).collect::<Vec<_>>()).filter(|g|!g.is_empty()).collect();
+    assert_eq!(actual, expected);
+    assert!(s.checkpoint().dream_cursor.is_empty());
+}
+
+#[test]
 fn error_leaves_seed_labile() {
     let (mut s, _) = seeded();
     let reports = s.dream(&mut always_fail, None).unwrap();
