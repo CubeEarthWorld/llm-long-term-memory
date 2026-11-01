@@ -6,6 +6,8 @@ use llama_cpp_2::llama_backend::LlamaBackend;
 use llama_cpp_2::llama_batch::LlamaBatch;
 use llama_cpp_2::model::LlamaModel;
 use llama_cpp_2::model::params::LlamaModelParams;
+use std::hash::{DefaultHasher, Hash, Hasher};
+use std::io::Read;
 use std::num::NonZeroU32;
 use std::path::Path;
 use std::sync::OnceLock;
@@ -17,6 +19,23 @@ const N_BATCH: u32 = 512;
 const N_SEQ: u32 = 8;
 
 type Job = (Vec<String>, Sender<std::result::Result<Vec<Vec<f32>>, String>>);
+
+/// The file's contents and both retrieval prompts define the embedding space.
+fn model_id(path: &Path, query_prefix: &str, document_prefix: &str) -> Result<String> {
+    let mut file = std::fs::File::open(path).map_err(|e| format!("embedding model {}: {e}", path.display()))?;
+    let mut hash = DefaultHasher::new();
+    (query_prefix, document_prefix).hash(&mut hash);
+    let mut buf = [0; 64 * 1024];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        hash.write(&buf[..n]);
+    }
+    let name = path.file_name().unwrap_or_default().to_string_lossy();
+    Ok(format!("{name}:{:016x}", hash.finish()))
+}
 
 fn backend() -> std::result::Result<&'static LlamaBackend, String> {
     static BACKEND: OnceLock<std::result::Result<LlamaBackend, String>> = OnceLock::new();
@@ -44,24 +63,17 @@ pub struct LlamaEmbedder {
 impl LlamaEmbedder {
     /// Loads `path` (the model's own training context; CPU threads = cores).
     pub fn load(path: &Path, query_prefix: &str, document_prefix: &str) -> Result<Self> {
+        let model_id = model_id(path, query_prefix, document_prefix)?;
         let backend = backend()?;
         let (jobs, inbox) = channel::<Job>();
         let (ready_tx, ready) = channel::<std::result::Result<usize, String>>();
-        let model_id = path.file_name().map_or_else(String::new, |n| n.to_string_lossy().into_owned());
         let path = path.to_path_buf();
         std::thread::Builder::new().name("llama-embed".into()).spawn(move || {
-            let setup = || -> std::result::Result<_, String> {
-                if !path.exists() {
-                    return Err(format!("embedding model not found: {}", path.display()));
-                }
-                // With CUDA every layer goes to the GPU; the CPU build keeps them on the CPU.
-                let params = LlamaModelParams::default().with_n_gpu_layers(if cfg!(feature = "cuda") { u32::MAX } else { 0 });
-                let model = LlamaModel::load_from_file(backend, &path, &params).map_err(|e| e.to_string())?;
-                Ok(model)
-            };
-            let model = match setup() {
+            // With CUDA every layer goes to the GPU; the CPU build keeps them on the CPU.
+            let params = LlamaModelParams::default().with_n_gpu_layers(if cfg!(feature = "cuda") { u32::MAX } else { 0 });
+            let model = match LlamaModel::load_from_file(backend, &path, &params) {
                 Ok(m) => m,
-                Err(e) => return drop(ready_tx.send(Err(e))),
+                Err(e) => return drop(ready_tx.send(Err(e.to_string()))),
             };
             let threads = crate::cpu_budget() as i32;
             let params = LlamaContextParams::default()
@@ -145,4 +157,27 @@ impl Embedder for LlamaEmbedder {
 /// Prepends a retrieval prompt to every text.
 fn prefixed(prefix: &str, texts: &[&str]) -> Vec<String> {
     texts.iter().map(|t| format!("{prefix}{t}")).collect()
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn model_identity_tracks_file_contents_and_both_prompts() {
+        let dir = std::env::temp_dir().join(format!("ltm-model-id-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("other")).unwrap();
+        let path = dir.join("model.gguf");
+        let mut bytes = vec![0; 70_000];
+        std::fs::write(&path, &bytes).unwrap();
+        let id = super::model_id(&path, "query: ", "document: ").unwrap();
+        assert_eq!(id, super::model_id(&path, "query: ", "document: ").unwrap());
+        assert_ne!(id, super::model_id(&path, "changed query: ", "document: ").unwrap());
+        assert_ne!(id, super::model_id(&path, "query: ", "changed document: ").unwrap());
+        bytes[69_999] = 1;
+        std::fs::write(&path, &bytes).unwrap();
+        let changed = super::model_id(&path, "query: ", "document: ").unwrap();
+        assert_ne!(id, changed);
+        let other = dir.join("other/model.gguf");
+        std::fs::write(&other, &bytes).unwrap();
+        assert_eq!(changed, super::model_id(&other, "query: ", "document: ").unwrap());
+    }
 }

@@ -11,6 +11,11 @@ REM The CUDA build loads cudart / cublas at run time.
 if defined CUDA_PATH set "PATH=%PATH%;%CUDA_PATH%\bin"
 echo [run] running the seed experiment ...
 target\release\ltm.exe run
+if errorlevel 1 (
+  echo [error] experiment failed. See the messages above.
+  pause
+  exit /b 1
+)
 echo.
 echo [done] results saved to data\results.json
 pause

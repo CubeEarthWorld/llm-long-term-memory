@@ -115,7 +115,7 @@ pub fn main(args: &[String]) -> i32 {
     let mut s = match Session::open(cfg, a.reset) {
         Ok(s) => s,
         Err(e) => {
-            println!("\n[FATAL] embedding model load failed: {e}");
+            println!("\n[FATAL] session initialization failed: {e}");
             return 2;
         }
     };
@@ -126,9 +126,8 @@ pub fn main(args: &[String]) -> i32 {
     println!("[init] embedding: {}", s.embedding_status);
     println!("[init] llm: {}", s.llm.status());
     let run = (|| -> engram::Result<()> {
-        if a.seed {
-            s.replay(&seed::load(&seed_csv_path()), a.epoch, |s, t, item| print_turn(s, t, &item.text))?;
-        }
+        let items = if a.seed { seed::load(&seed_csv_path()) } else { Vec::new() };
+        s.replay(&items, a.epoch, |s, t, item| print_turn(s, t, &item.text))?;
         for text in &a.say {
             let t = s.run_turn(text, "")?;
             print_turn(&s, t, text);

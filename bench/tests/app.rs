@@ -68,6 +68,54 @@ fn session(dir: &std::path::Path, cfg: AppConfig, llm: Scripted, wipe: bool) -> 
 }
 
 #[test]
+fn cli_epoch_applies_without_seed_turns() {
+    let dir = temp_dir("cli-epoch");
+    let output = std::process::Command::new(env!("CARGO_BIN_EXE_ltm"))
+        .args(["run", "--no-seed", "--epoch", "1700000000", "--say", "hello"])
+        .current_dir(&dir)
+        .env("LTM_ROOT", &dir)
+        .env("MEMORY_DATA_DIR", dir.join("data"))
+        .env("MEMORY_TZ", "UTC")
+        .env("EMBEDDING_MODEL", dir.join("missing.gguf"))
+        .env("CLAUDE_CLI", dir.join("missing-claude"))
+        .env("LLM_CACHE", dir.join("cache.json"))
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "{}", String::from_utf8_lossy(&output.stderr));
+    let pending: serde_json::Value = serde_json::from_slice(&std::fs::read(dir.join("cache.pending.json")).unwrap()).unwrap();
+    let prompts = pending.as_object().unwrap();
+    assert_eq!(prompts.len(), 1);
+    assert!(prompts.values().next().unwrap()["prompt"].as_str().unwrap().contains(&engram::fmt_local(1_700_000_000, "UTC;+00:00")));
+}
+
+#[cfg(windows)]
+#[test]
+fn experiment_script_stops_when_the_runner_fails() {
+    let dir = temp_dir("experiment-failure");
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap();
+    std::fs::copy(root.join("run_experiment.bat"), dir.join("run_experiment.bat")).unwrap();
+    std::fs::write(dir.join("build.bat"), "@exit /b 0\r\n").unwrap();
+    std::fs::create_dir_all(dir.join("target/release")).unwrap();
+    std::fs::copy(env!("CARGO_BIN_EXE_ltm"), dir.join("target/release/ltm.exe")).unwrap();
+    std::fs::write(dir.join("not-a-directory"), "blocks opening the store").unwrap();
+    let output = std::process::Command::new("cmd.exe")
+        .args(["/D", "/C", "run_experiment.bat"])
+        .current_dir(&dir)
+        .stdin(std::process::Stdio::null())
+        .env("LTM_ROOT", &dir)
+        .env("MEMORY_DATA_DIR", dir.join("not-a-directory"))
+        .env("EMBEDDING_MODEL", dir.join("missing.gguf"))
+        .env("CLAUDE_CLI", dir.join("missing-claude"))
+        .env("LLM_CACHE", dir.join("cache.json"))
+        .output()
+        .unwrap();
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("[FATAL]"), "{stdout}");
+    assert!(!output.status.success(), "{stdout}");
+    assert!(!stdout.contains("[done]"), "{stdout}");
+}
+
+#[test]
 fn turn_saves_recalls_and_cites() {
     let dir = temp_dir("turn");
     let mut s = session(&dir, config(), Scripted::new(1, &[]).0, true);

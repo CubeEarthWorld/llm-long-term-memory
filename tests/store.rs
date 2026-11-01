@@ -190,6 +190,17 @@ fn identical_vectors_beyond_a_list_stay_searchable() {
 }
 
 #[test]
+fn search_stops_inside_an_indivisible_list_at_the_probe_budget() {
+    let mut st = Store::in_memory().unwrap();
+    let rows: Vec<Trace> = (0..8_193).map(|i| Trace { model_id: "m".into(), vector: vec![1.0, 0.0], ..trace(i, 2) }).collect();
+    st.write(&rows.iter().map(Write::Insert).collect::<Vec<_>>()).unwrap();
+    let hits = st.near(&[1.0, 0.0], "m", 0.99, rows.len(), None).unwrap();
+    assert_eq!(hits.len(), 8_192);
+    assert_eq!(hits.first().unwrap().trace.id, "000000");
+    assert_eq!(hits.last().unwrap().trace.id, "008191");
+}
+
+#[test]
 fn a_file_with_the_old_text_table_is_migrated() {
     let path = temp_dir("old-text").join("m.redb");
     let t = trace(1, 8);

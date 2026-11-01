@@ -710,17 +710,17 @@ impl Storage for Store {
             let mut bar: Option<(f64, String)> = None; // the `keep`-th best so far
             let mut buf = vec![0.0f32; q.len()]; // one buffer: no allocation per vector read
             let mut read = 0;
-            for (_, l) in &lists {
-                if read >= PROBE_VECTORS {
-                    break;
-                }
-                read = read.saturating_add(l.size);
+            'lists: for (_, l) in &lists {
                 for item in table.range((model_id, l.id, "")..)? {
                     let (key, v) = item?;
                     let (m, list, id) = key.value();
                     if m != model_id || list != l.id {
                         break;
                     }
+                    if read >= PROBE_VECTORS {
+                        break 'lists;
+                    }
+                    read += 1;
                     let Some((created_at, raw)) = split_entry(v.value()).filter(|(_, r)| r.len() == 4 * q.len()) else { continue };
                     if stated_by.is_some_and(|s| created_at as i64 > s) {
                         continue;
