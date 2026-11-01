@@ -387,7 +387,7 @@ dependencies = [
 
 [[package]]
 name = "llm-long-term-memory"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "jiff",
  "redb",
@@ -403,7 +403,7 @@ checksum = "f9f8bd3e56ce4dfc153cf470fffbfa98c7620958b312ca5c3a4b8d5181fd13c6"
 
 [[package]]
 name = "ltm-bench"
-version = "1.0.0"
+version = "1.0.1"
 dependencies = [
  "llama-cpp-2",
  "llm-long-term-memory",
