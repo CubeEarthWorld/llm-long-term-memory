@@ -93,10 +93,10 @@ fn spawn(cli: &str, args: &[&str], system: Option<&str>) -> std::io::Result<(Chi
     }
 }
 
-fn drain(mut r: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
+fn drain(r: impl Read + Send + 'static) -> JoinHandle<Vec<u8>> {
     std::thread::spawn(move || {
         let mut b = Vec::new();
-        let _ = r.read_to_end(&mut b);
+        let _ = r.take(64 * 1024 * 1024).read_to_end(&mut b);
         b
     })
 }

@@ -210,10 +210,11 @@ impl Engram {
 
     /// Restores a checkpoint of this configuration, embedding model and account.
     pub fn restore(&mut self, state: EngineState) {
-        self.write_times = state.write_times;
+        self.write_times = state.write_times.into_iter().filter(|t| t.is_finite()).collect();
         self.exposures = state
             .exposures
             .into_iter()
+            .filter(|(_, cosine, retrievability)| cosine.is_finite() && retrievability.is_finite())
             .map(|(id, cosine, retrievability)| {
                 (
                     id,
@@ -940,7 +941,7 @@ impl Engram {
     /// ends the dream. Only a failure before any verdict (re-indexing) is an `Err`.
     pub fn dream(&mut self, adjudicator: &mut dyn Adjudicator, budget: Option<usize>) -> Result<Vec<DreamReport>> {
         let now = self.now();
-        let mut left = budget.unwrap_or(self.cfg.dream_budget);
+        let mut left = budget.unwrap_or(self.cfg.dream_budget).min(1 << 20);
         self.reindex(REINDEX_BATCH.saturating_mul(left.max(1)))?;
         let seeds = self.seeds(left)?;
         // A seed's cue and vector never change during a dream, so every cue is embedded

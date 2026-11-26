@@ -90,7 +90,7 @@ impl TurnMetrics {
 
 /// The per-turn invariants over metrics rows, keyed by their display label.
 pub fn invariants(rows: &[Value], budget_chars: usize, capacity: usize) -> Value {
-    let all = |key: &str, max: usize| rows.iter().all(|r| r[key].as_u64().unwrap_or(0) <= max as u64);
+    let all = |key: &str, max: usize| rows.iter().all(|r| r[key].as_u64().is_some_and(|n| n <= max as u64));
     json!({
         format!("全 pack <= {budget_chars}字 (注入予算)"): all("pack_chars", budget_chars),
         format!("全 records <= {capacity}件 (capacity)"): all("records", capacity),
@@ -198,7 +198,11 @@ pub fn run_turn(m: &mut Engram, llm: &mut dyn Llm, timer: &EmbedTimer, glob: &Se
                         return json!({"ok": false, "action": "rate_limited"});
                     }
                     // The model may send junk here.
-                    let salience = args["salience"].as_f64().or_else(|| args["salience"].as_str().and_then(|s| s.trim().parse().ok())).unwrap_or(1.0);
+                    let salience = args["salience"]
+                        .as_f64()
+                        .or_else(|| args["salience"].as_str().and_then(|s| s.trim().parse::<f64>().ok()))
+                        .filter(|x| x.is_finite())
+                        .unwrap_or(1.0);
                     let cue = args["cue"].as_str().unwrap_or("").trim().to_owned();
                     if cue.is_empty() {
                         // Without its question the save could never find the version it updates.

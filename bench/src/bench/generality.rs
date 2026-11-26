@@ -16,7 +16,14 @@ use serde_json::{json, Value};
 
 /// Unrelated-pair cosines (the `cosine_floor` calibration point) and matching-pair cosines.
 fn distribution(e: &mut dyn Embedder, corpus: &Corpus) -> Result<Value> {
-    let pool: Vec<(&str, String)> = corpus.gold.iter().filter_map(|g| cues(&g.probes[0], 8).into_iter().next().map(|c| (g.fact.as_str(), c))).collect();
+    let pool: Vec<(&str, String)> = corpus
+        .gold
+        .iter()
+        .filter_map(|g| g.probes.first().and_then(|p| cues(p, 8).into_iter().next()).map(|c| (g.fact.as_str(), c)))
+        .collect();
+    if pool.len() < 2 {
+        return Err("generality distribution requires at least 2 gold facts with probes".into());
+    }
     let facts: Vec<&str> = pool.iter().map(|p| p.0).collect();
     let probes: Vec<&str> = pool.iter().map(|p| p.1.as_str()).collect();
     let norm = |vs: Vec<Vec<f32>>| vs.into_iter().map(|v| crate::normalized(&v)).collect::<Vec<_>>();

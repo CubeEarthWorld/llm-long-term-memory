@@ -34,7 +34,9 @@ impl ManualClock {
     }
     /// Moves the reading forward by `seconds`.
     pub fn advance(&self, seconds: f64) {
-        self.set(self.get() + seconds);
+        if seconds.is_finite() {
+            self.set(self.get() + seconds);
+        }
     }
     /// A [`Clock`] reading this handle.
     pub fn clock(&self) -> Clock {

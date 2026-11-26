@@ -47,6 +47,7 @@ pub fn default_seed() -> Vec<SeedItem> {
 /// `'5y' '8d' '12h' '30m'` → seconds; a bare number means days; `'0'`, `''`, junk → 0.
 pub fn parse_duration(spec: &str) -> f64 {
     let s = spec.trim().to_lowercase();
+    let finite = |x: f64| if x.is_finite() { x } else { 0.0 };
     let unit = match s.chars().last() {
         Some('s') => 1.0,
         Some('m') => 60.0,
@@ -54,9 +55,9 @@ pub fn parse_duration(spec: &str) -> f64 {
         Some('d') => 86_400.0,
         Some('w') => 604_800.0,
         Some('y') => 31_536_000.0,
-        _ => return s.parse::<f64>().map_or(0.0, |v| v * 86_400.0),
+        _ => return s.parse::<f64>().map_or(0.0, |v| finite(v * 86_400.0)),
     };
-    s[..s.len() - 1].trim().parse::<f64>().map_or(0.0, |v| v * unit)
+    s[..s.len() - 1].trim().parse::<f64>().map_or(0.0, |v| finite(v * unit))
 }
 
 /// Normalises (text, note, advance) triples into seed items; empty texts are dropped.

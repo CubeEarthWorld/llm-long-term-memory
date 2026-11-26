@@ -130,7 +130,11 @@ fn split_entry(raw: &[u8]) -> Option<(u64, &[u8])> {
 
 fn decode_list(list: u32, raw: &[u8]) -> Result<List> {
     let (size, c) = split_entry(raw).ok_or("damaged centroid entry")?;
-    Ok(List { id: list, size, centroid: floats(c) })
+    let centroid = floats(c);
+    if !centroid.iter().all(|x| x.is_finite()) {
+        return Err("damaged centroid entry".into());
+    }
+    Ok(List { id: list, size, centroid })
 }
 
 /// The least string sorting after `s` (`s` + U+0000): a range from it skips exactly `s`.

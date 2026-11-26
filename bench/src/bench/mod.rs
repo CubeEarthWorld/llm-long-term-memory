@@ -327,6 +327,9 @@ pub fn build_cache(corpus: &Corpus, cfg: &AppConfig, path: &Path) -> Result<()> 
         for chunk in texts.chunks(64) {
             let refs: Vec<&str> = chunk.iter().map(String::as_str).collect();
             let vs = if query { e.embed_queries(&refs)? } else { e.embed_documents(&refs)? };
+            if vs.len() != chunk.len() {
+                return Err(format!("embedder returned {} vectors for {} texts", vs.len(), chunk.len()).into());
+            }
             out.extend(chunk.iter().cloned().zip(vs.iter().map(|v| crate::normalized(v))));
         }
         Ok(out)
