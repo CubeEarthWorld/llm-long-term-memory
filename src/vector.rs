@@ -19,9 +19,20 @@ pub fn normalized(v: &[f32]) -> Vec<f32> {
     if peak == 0.0 || !peak.is_finite() {
         return v.to_vec();
     }
-    let scaled: Vec<f32> = v.iter().map(|&x| (f64::from(x) / f64::from(peak)) as f32).collect();
-    let norm = dot(&scaled, &scaled).sqrt();
-    scaled.iter().map(|&x| (f64::from(x) / norm) as f32).collect()
+    let sum: f64 = v
+        .iter()
+        .map(|&x| {
+            let s = (f64::from(x) / f64::from(peak)) as f32;
+            f64::from(s) * f64::from(s)
+        })
+        .sum();
+    let norm = sum.sqrt();
+    v.iter()
+        .map(|&x| {
+            let s = (f64::from(x) / f64::from(peak)) as f32;
+            (f64::from(s) / norm) as f32
+        })
+        .collect()
 }
 
 /// Dot product (= cosine for unit vectors). Panics on a length mismatch: one model id

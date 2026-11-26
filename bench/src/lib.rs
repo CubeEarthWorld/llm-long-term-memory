@@ -57,7 +57,7 @@ pub fn normalized(v: &[f32]) -> Vec<f32> {
 
 /// Dot product, summed in f64.
 pub fn dot(a: &[f32], b: &[f32]) -> f64 {
-    a.iter().zip(b).map(|(&x, &y)| f64::from(x) * f64::from(y)).sum()
+    engram::vector_dot(a, b)
 }
 
 /// `x` rounded to `digits` decimals (display only). The binary value is rounded

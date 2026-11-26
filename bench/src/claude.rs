@@ -153,10 +153,14 @@ impl ClaudeCode {
 
     /// Writes `map` atomically: a crash never leaves half a cache.
     fn save(&self, path: &Path, map: &Map<String, Value>) {
+        let Ok(json) = serde_json::to_string_pretty(map) else {
+            eprintln!("could not serialize {}", path.display());
+            return;
+        };
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
         }
-        if let Err(e) = crate::write_atomic(path, serde_json::to_string_pretty(map).unwrap_or_default()) {
+        if let Err(e) = crate::write_atomic(path, json) {
             eprintln!("could not write {}: {e}", path.display());
         }
     }

@@ -315,10 +315,10 @@ impl Engram {
     /// older version or a hand edit may have written it), so every row read is held to
     /// the write-time rules: id valid, text, cue and timezone cleaned, stability
     /// clamped, a vector with a non-finite component unindexed. `None`: unusable.
-    fn checked(&self, t: Trace) -> Option<Trace> {
+    fn checked_or_invalid(&self, t: Trace) -> (bool, Trace) {
         let text = clean_text(&t.text, self.cfg.text_max);
         if !valid_id(&t.id) || text.is_empty() {
-            return None;
+            return (false, t);
         }
         // A vector the engine did not write (finite, unit length) cannot be trusted as an index.
         let (model_id, vector) = if t.vector.is_empty() || self.sound(&t.vector) {
@@ -326,15 +326,23 @@ impl Engram {
         } else {
             (String::new(), Vec::new()) // unindexed: the scrub in reindex() embeds it again
         };
-        Some(Trace {
-            text,
-            cue: clean_text(&t.cue, self.cfg.text_max),
-            tz: clean_tz(&t.tz, TZ_MAX),
-            stability: self.clamp_stability(t.stability),
-            model_id,
-            vector,
-            ..t
-        })
+        (
+            true,
+            Trace {
+                text,
+                cue: clean_text(&t.cue, self.cfg.text_max),
+                tz: clean_tz(&t.tz, TZ_MAX),
+                stability: self.clamp_stability(t.stability),
+                model_id,
+                vector,
+                ..t
+            },
+        )
+    }
+
+    fn checked(&self, t: Trace) -> Option<Trace> {
+        let (ok, t) = self.checked_or_invalid(t);
+        ok.then_some(t)
     }
 
     /// Up to `limit` usable rows of `view`. The store lists rows the engine cannot use
@@ -586,9 +594,9 @@ impl Engram {
         // Only compared with capacity / 10 below: counting stops one past it.
         let young = self.store.count_up_to(View::Young { created_after: cutoff }, self.cfg.capacity / 10 + 1)?.saturating_add(usize::from(new.created_at > cutoff));
         let rank = |t: &Trace| t.stability.log2() - (now - t.last_recall as f64).max(0.0) / t.stability;
-        let ranked = |t: Trace| match self.checked(t.clone()) {
-            Some(c) => (rank(&c), c),
-            None => (f64::NEG_INFINITY, t),
+        let ranked = |t: Trace| match self.checked_or_invalid(t) {
+            (true, c) => (rank(&c), c),
+            (false, raw) => (f64::NEG_INFINITY, raw),
         };
         // A band's index order (`last_recall`) is time-invariant, but the rank is not: within a
         // band S differs by up to √2, so the head is only nearly the weakest. A band's
@@ -605,11 +613,25 @@ impl Engram {
         let heads = |created_by: i64| -> Result<Vec<(f64, Trace)>> {
             let mut windows = (0..=u8::MAX).map(|b| read(b, created_by, excess.saturating_add(BAND_DEPTH))).collect::<Result<Vec<_>>>()?;
             loop {
-                let mut ranks: Vec<f64> = windows.iter().flat_map(|w| w.rows.iter().map(|r| r.0)).collect();
-                if ranks.len() < excess {
-                    break;
-                }
-                let weakest = *ranks.select_nth_unstable_by(excess - 1, f64::total_cmp).1;
+                let weakest = if excess == 1 {
+                    let (mut count, mut min_r) = (0usize, f64::INFINITY);
+                    for r in windows.iter().flat_map(|w| w.rows.iter().map(|r| r.0)) {
+                        count += 1;
+                        if r.total_cmp(&min_r).is_lt() {
+                            min_r = r;
+                        }
+                    }
+                    if count == 0 {
+                        break;
+                    }
+                    min_r
+                } else {
+                    let mut ranks: Vec<f64> = windows.iter().flat_map(|w| w.rows.iter().map(|r| r.0)).collect();
+                    if ranks.len() < excess {
+                        break;
+                    }
+                    *ranks.select_nth_unstable_by(excess - 1, f64::total_cmp).1
+                };
                 if weakest <= DEAD {
                     break;
                 }
@@ -716,6 +738,18 @@ impl Engram {
     /// best cue, in id order — and the most a trace not returned could have: the cosine of
     /// the k-th hit of a cue that returned `k` (`-∞` when none did).
     fn scored(&self, qs: &[Vec<f32>], now: f64, min_cos: f64, k: usize) -> Result<(Vec<Scored>, f64)> {
+        if qs.len() == 1 {
+            let (hits, kth) = self.near(&qs[0], min_cos, k, None)?;
+            let scored = hits
+                .into_iter()
+                .map(|h| {
+                    let rv = self.retrievability(&h.trace, now);
+                    let score = self.activation(h.cos) * (self.cfg.alpha + (1.0 - self.cfg.alpha) * rv);
+                    (h.trace, score, h.cos, rv)
+                })
+                .collect();
+            return Ok((scored, kth.unwrap_or(f64::NEG_INFINITY)));
+        }
         let mut seen: BTreeMap<String, Trace> = BTreeMap::new(); // id order = insertion order
         let mut unseen_cos = f64::NEG_INFINITY;
         for q in qs {

@@ -12,7 +12,7 @@ use crate::storage::{Hit, Storage, View, Write};
 use crate::vector::{dot, normalized};
 use crate::{Result, Trace};
 use redb::{Database, ReadableTable, TableDefinition, TableHandle, WriteTransaction};
-use serde_json::{json, Value};
+use serde_json::Value;
 use std::collections::HashMap;
 use std::path::Path;
 use std::sync::{Arc, RwLock};
@@ -75,12 +75,18 @@ fn floats(b: &[u8]) -> Vec<f32> {
     b.as_chunks::<4>().0.iter().map(|c| f32::from_le_bytes(*c)).collect()
 }
 
-fn bytes(v: &[f32]) -> Vec<u8> {
-    v.iter().flat_map(|x| x.to_le_bytes()).collect()
+fn entry_bytes(head: u64, v: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(8 + v.len() * 4);
+    out.extend_from_slice(&head.to_le_bytes());
+    for &x in v {
+        out.extend_from_slice(&x.to_le_bytes());
+    }
+    out
 }
 
 fn meta(t: &Trace) -> Vec<u8> {
-    json!([t.text, t.created_at, t.tz, t.last_recall, t.stability, t.consolidated, t.cue, t.model_id]).to_string().into_bytes()
+    serde_json::to_vec(&(&t.text, t.created_at, &t.tz, t.last_recall, t.stability, t.consolidated, &t.cue, &t.model_id))
+        .expect("trace meta serialises")
 }
 
 fn trace(id: &str, row: &[u8], vector: Vec<f32>) -> Option<Trace> {
@@ -113,14 +119,6 @@ fn unreadable(id: &str) -> Trace {
         model_id: String::new(),
         vector: Vec::new(),
     }
-}
-
-fn list_entry(created_at: i64, v: &[f32]) -> Vec<u8> {
-    created_at.to_le_bytes().into_iter().chain(bytes(v)).collect()
-}
-
-fn centroid_entry(size: u64, c: &[f32]) -> Vec<u8> {
-    size.to_le_bytes().into_iter().chain(bytes(c)).collect()
 }
 
 /// The leading 8-byte little-endian number of an entry and the floats after it (`None`
@@ -221,7 +219,10 @@ impl Store {
 
     /// Full traces for `ids`, in that order (missing ids are skipped).
     fn rows(&self, ids: &[String]) -> Result<Vec<Trace>> {
-        let rx = self.db.begin_read()?;
+        self.rows_in(&self.db.begin_read()?, ids)
+    }
+
+    fn rows_in(&self, rx: &redb::ReadTransaction, ids: &[String]) -> Result<Vec<Trace>> {
         let (rows, listed, lists) = (rx.open_table(ROWS)?, rx.open_table(LISTED)?, rx.open_table(LISTS)?);
         let mut out = Vec::with_capacity(ids.len());
         for id in ids {
@@ -241,8 +242,11 @@ impl Store {
     }
 
     /// Calls `f` with the ids of `view`, in the view's order, until it returns false.
-    fn scan(&self, view: View<'_>, mut f: impl FnMut(&str) -> bool) -> Result<()> {
-        let rx = self.db.begin_read()?;
+    fn scan(&self, view: View<'_>, f: impl FnMut(&str) -> bool) -> Result<()> {
+        self.scan_in(&self.db.begin_read()?, view, f)
+    }
+
+    fn scan_in(&self, rx: &redb::ReadTransaction, view: View<'_>, mut f: impl FnMut(&str) -> bool) -> Result<()> {
         match view {
             View::All => {
                 for item in rx.open_table(ROWS)?.iter()? {
@@ -316,6 +320,16 @@ impl Store {
         }
         Ok(())
     }
+}
+
+/// Persists or removes a centroid entry.
+fn save_list(centroids: &mut redb::Table<'_, (&'static str, u32), &'static [u8]>, model: &str, l: &List) -> Result<()> {
+    if l.size == 0 {
+        centroids.remove((model, l.id))?;
+    } else {
+        centroids.insert((model, l.id), entry_bytes(l.size, &l.centroid).as_slice())?;
+    }
+    Ok(())
 }
 
 /// One write transaction's tables, and the lists it changed.
@@ -441,12 +455,7 @@ impl Tx<'_> {
     }
 
     fn save_list(&mut self, model: &str, l: &List) -> Result<()> {
-        if l.size == 0 {
-            self.centroids.remove((model, l.id))?;
-        } else {
-            self.centroids.insert((model, l.id), centroid_entry(l.size, &l.centroid).as_slice())?;
-        }
-        Ok(())
+        save_list(&mut self.centroids, model, l)
     }
 
     /// Files the vector of `t` in the list with the nearest centroid; splits it when full.
@@ -454,8 +463,8 @@ impl Tx<'_> {
     /// doubled, so the attempts cost O(1) per insert amortized.
     fn list(&mut self, t: &Trace) -> Result<()> {
         let model = t.model_id.as_str();
-        let lists = self.lists_of(model)?;
-        let best = lists
+        let best = self
+            .lists_of(model)?
             .iter()
             .enumerate()
             .filter(|(_, l)| l.centroid.len() == t.vector.len())
@@ -470,15 +479,21 @@ impl Tx<'_> {
                 lists.len() - 1
             }
         };
-        let lists = self.lists_of(model)?;
-        lists[at].size = lists[at].size.saturating_add(1);
-        let l = lists[at].clone();
-        self.lists.insert((model, l.id, t.id.as_str()), list_entry(t.created_at, &t.vector).as_slice())?;
-        self.listed.insert(t.id.as_str(), l.id)?;
-        self.save_list(model, &l)?;
-        let over = l.size.saturating_sub(1);
+        let list_id = {
+            let lists = self.lists_of(model)?;
+            lists[at].size = lists[at].size.saturating_add(1);
+            lists[at].id
+        };
+        self.lists.insert((model, list_id, t.id.as_str()), entry_bytes(t.created_at as u64, &t.vector).as_slice())?;
+        self.listed.insert(t.id.as_str(), list_id)?;
+        let (list_size, over) = {
+            let l = &self.touched.get(model).expect("just inserted")[at];
+            save_list(&mut self.centroids, model, l)?;
+            (l.size, l.size.saturating_sub(1))
+        };
+        let _ = list_size;
         if over >= LIST_MAX && over % LIST_MAX == 0 && (over / LIST_MAX).is_power_of_two() {
-            self.split(model, l.id)?;
+            self.split(model, list_id)?;
         }
         Ok(())
     }
@@ -490,11 +505,20 @@ impl Tx<'_> {
         let lists = self.lists_of(model)?;
         if let Some(i) = lists.iter().position(|l| l.id == list) {
             lists[i].size = lists[i].size.saturating_sub(1);
-            let l = lists[i].clone();
-            if l.size == 0 {
+            let encoded = if lists[i].size == 0 {
                 lists.remove(i);
+                None
+            } else {
+                Some(entry_bytes(lists[i].size, &lists[i].centroid))
+            };
+            match encoded {
+                None => {
+                    self.centroids.remove((model, list))?;
+                }
+                Some(b) => {
+                    self.centroids.insert((model, list), b.as_slice())?;
+                }
             }
-            self.save_list(model, &l)?;
         }
         Ok(())
     }
@@ -519,18 +543,23 @@ impl Tx<'_> {
         let far = members.iter().min_by(|a, b| dot(&a.2, &first).total_cmp(&dot(&b.2, &first))).expect("members").2.clone();
         let mut c = [first, far];
         let mut side = vec![false; members.len()];
+        let mut sum = vec![0.0f64; c[0].len()];
+        let mut buf = vec![0.0f32; c[0].len()];
         for _ in 0..4 {
             for (s, m) in side.iter_mut().zip(&members) {
                 *s = dot(&m.2, &c[1]) > dot(&m.2, &c[0]);
             }
             for (k, cent) in c.iter_mut().enumerate() {
-                let mut sum = vec![0.0f64; cent.len()];
+                sum.fill(0.0);
                 for (m, _) in members.iter().zip(&side).filter(|(_, s)| **s == (k == 1)) {
                     for (a, &x) in sum.iter_mut().zip(&m.2) {
                         *a += f64::from(x);
                     }
                 }
-                *cent = normalized(&sum.iter().map(|&x| x as f32).collect::<Vec<_>>());
+                for (b, &x) in buf.iter_mut().zip(&sum) {
+                    *b = x as f32;
+                }
+                *cent = normalized(&buf);
             }
         }
         let moved = side.iter().filter(|&&s| s).count() as u64;
@@ -540,17 +569,23 @@ impl Tx<'_> {
         let new = u32::try_from(self.bump(&format!("next:{model}"), 1)?)?;
         for (m, _) in members.iter().zip(&side).filter(|(_, s)| **s) {
             self.lists.remove((model, list, m.0.as_str()))?;
-            self.lists.insert((model, new, m.0.as_str()), list_entry(m.1, &m.2).as_slice())?;
+            self.lists.insert((model, new, m.0.as_str()), entry_bytes(m.1 as u64, &m.2).as_slice())?;
             self.listed.insert(m.0.as_str(), new)?;
         }
-        let lists = self.lists_of(model)?;
-        let i = lists.iter().position(|l| l.id == list).expect("listed");
-        lists[i].size = lists[i].size.saturating_sub(moved);
-        lists[i].centroid = c[0].clone();
-        let (old, fresh) = (lists[i].clone(), List { id: new, size: moved, centroid: c[1].clone() });
-        lists.push(fresh.clone());
-        self.save_list(model, &old)?;
-        self.save_list(model, &fresh)
+        let (old_bytes, fresh_bytes) = {
+            let lists = self.lists_of(model)?;
+            let i = lists.iter().position(|l| l.id == list).expect("listed");
+            lists[i].size = lists[i].size.saturating_sub(moved);
+            lists[i].centroid = c[0].clone();
+            let old_bytes = entry_bytes(lists[i].size, &lists[i].centroid);
+            let fresh = List { id: new, size: moved, centroid: c[1].clone() };
+            let fresh_bytes = entry_bytes(fresh.size, &fresh.centroid);
+            lists.push(fresh);
+            (old_bytes, fresh_bytes)
+        };
+        self.centroids.insert((model, list), old_bytes.as_slice())?;
+        self.centroids.insert((model, new), fresh_bytes.as_slice())?;
+        Ok(())
     }
 
     /// The row and the state indexes (band, labile) of `t`.
@@ -605,7 +640,12 @@ impl Tx<'_> {
     fn same_vector(&self, t: &Trace) -> Result<bool> {
         let Some(list) = self.listed.get(t.id.as_str())?.map(|g| g.value()) else { return Ok(t.vector.is_empty()) };
         let filed = self.lists.get((t.model_id.as_str(), list, t.id.as_str()))?;
-        Ok(filed.is_some_and(|e| e.value() == list_entry(t.created_at, &t.vector).as_slice()))
+        Ok(filed.is_some_and(|e| {
+            let b = e.value();
+            b.len() == 8 + t.vector.len() * 4
+                && b[..8] == t.created_at.to_le_bytes()
+                && b[8..].as_chunks::<4>().0.iter().zip(&t.vector).all(|(c, &x)| *c == x.to_le_bytes())
+        }))
     }
 
     fn apply(&mut self, w: &Write<'_>) -> Result<()> {
@@ -654,17 +694,19 @@ impl Tx<'_> {
 
 impl Storage for Store {
     fn find(&self, view: View<'_>, limit: usize) -> Result<Vec<Trace>> {
-        let mut ids = Vec::new();
-        if limit > 0 {
-            self.scan(view, |id| {
-                ids.push(id.to_owned());
-                ids.len() < limit
-            })?;
+        if limit == 0 {
+            return Ok(Vec::new());
         }
+        let rx = self.db.begin_read()?;
+        let mut ids = Vec::new();
+        self.scan_in(&rx, view, |id| {
+            ids.push(id.to_owned());
+            ids.len() < limit
+        })?;
         if ids.is_empty() {
             return Ok(Vec::new()); // empty bands are common: skip the second read
         }
-        self.rows(&ids)
+        self.rows_in(&rx, &ids)
     }
 
     fn count(&self, view: View<'_>) -> Result<usize> {

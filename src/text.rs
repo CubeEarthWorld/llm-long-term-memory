@@ -6,22 +6,30 @@ fn is_space(c: char) -> bool {
     c.is_whitespace() || ('\u{1C}'..='\u{1F}').contains(&c) || c == '\u{FEFF}'
 }
 
+/// Byte end index for `shorten` in one pass with zero allocations.
+fn shorten_end(text: &str, max_chars: usize) -> usize {
+    let mut cuts = [None; 5];
+    let mut end_at_max = 0usize;
+    for (count, (idx, c)) in text.char_indices().enumerate() {
+        if count == max_chars {
+            return cuts.into_iter().flatten().next().unwrap_or(end_at_max);
+        }
+        let end = idx + c.len_utf8();
+        if count > max_chars / 2
+            && let Some(p) = ['。', '．', '.', '、', ' '].iter().position(|&s| s == c)
+        {
+            cuts[p] = Some(end);
+        }
+        end_at_max = end;
+    }
+    text.len()
+}
+
 /// Truncates to `max_chars` characters, preferring a sentence/clause boundary in the
 /// second half of the cut.
+#[cfg(test)]
 pub fn shorten(text: &str, max_chars: usize) -> String {
-    let chars: Vec<char> = text.chars().collect();
-    if chars.len() <= max_chars {
-        return text.to_owned();
-    }
-    let cut = &chars[..max_chars];
-    for sep in ['。', '．', '.', '、', ' '] {
-        if let Some(idx) = cut.iter().rposition(|&c| c == sep)
-            && idx as f64 > max_chars as f64 * 0.5
-        {
-            return cut[..=idx].iter().collect();
-        }
-    }
-    cut.iter().collect()
+    text[..shorten_end(text, max_chars)].to_owned()
 }
 
 /// Characters a stored text never keeps: the pack delimiters `《》` (a stored text can
@@ -58,7 +66,12 @@ pub fn clean_text(text: &str, max_chars: usize) -> String {
             out.push(c);
         }
     }
-    shorten(&out, max_chars).trim().to_owned() // a boundary cut keeps its separator
+    let end = shorten_end(&out, max_chars);
+    out.truncate(end);
+    while out.ends_with(' ') {
+        out.pop();
+    }
+    out
 }
 
 /// Splits a query into cues (lines, then sentences) so a trace relevant to any part
